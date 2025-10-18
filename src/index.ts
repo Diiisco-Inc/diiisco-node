@@ -6,17 +6,18 @@ import environment from "./environment/environment";
 import path from "path";
 import fs from "fs";
 
-import { createLibp2p } from 'libp2p'
-import { tcp } from '@libp2p/tcp'
-import { noise } from '@chainsafe/libp2p-noise'
-import { multiaddr } from '@multiformats/multiaddr'
+import { createLibp2p } from 'libp2p';
+import { tcp } from '@libp2p/tcp';
+import { noise } from '@chainsafe/libp2p-noise';
+import { multiaddr } from '@multiformats/multiaddr';
+import { gossipsub } from '@libp2p/gossipsub';
 
 // Types
-  export interface NodeOptions {
+export interface NodeOptions {
   apiAccess: boolean;
   peerId: PeerId | undefined;
+  serveModels: boolean;
 }
-
 
 // Get the ID for the Node
 const loadPeerId = (): peerId.JSONPeerId | undefined => {
@@ -57,6 +58,9 @@ const createNode = async (peerId: PeerId) => {
     },
     transports: [tcp()],
     connectionEncrypters: [noise()],
+    services: {
+      pubsub: gossipsub()
+    }
   });
 
   await node.start()
@@ -72,7 +76,8 @@ const main = async () => {
   // Get Settings Shared to Node
   const options: NodeOptions = {
     apiAccess: hasFlag("api-access"),
-    peerId: undefined
+    peerId: undefined,
+    serveModels: hasFlag("share-models"),
   };
 
   // Get or Create Peer ID
@@ -80,7 +85,16 @@ const main = async () => {
 
   // Create the Node
   if (options.peerId) {
-    await createNode(options.peerId);
+    const node = await createNode(options.peerId);
+
+    if (options.apiAccess) {
+      console.log("🔜 Serving an OpenAI Compatible Endpoint");
+    }
+
+    if (options.serveModels) {
+      console.log("🔜 Serving Models to the Diiisco Network");
+
+    }
   } else {
     console.error("❌ Failed to obtain or create a Peer ID.");
   }

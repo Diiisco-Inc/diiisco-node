@@ -11,7 +11,10 @@
   "license": "ISC",
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
+    "@libp2p/gossipsub": "^15.0.7",
+    "@libp2p/interface": "^3.0.2",
     "@libp2p/tcp": "^11.0.5",
+    "@multiformats/multiaddr": "^13.0.1",
     "has-flag": "^5.0.1",
     "it-pipe": "^3.0.1",
     "it-pushable": "^3.2.3",
