@@ -1,0 +1,17 @@
+{
+  "name": "diiisco-node",
+  "version": "1.0.0",
+  "description": "Run a Diiisco Node in Node.JS!",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "tsc && node dist/index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "has-flag": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.8.1"
+  }
+}
