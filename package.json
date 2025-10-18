@@ -3,13 +3,21 @@
   "version": "1.0.0",
   "description": "Run a Diiisco Node in Node.JS!",
   "main": "dist/index.js",
+  "type": "module",
   "scripts": {
     "test": "tsc && node dist/index.js"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "has-flag": "^5.0.1"
+    "@chainsafe/libp2p-noise": "^17.0.0",
+    "@libp2p/tcp": "^11.0.5",
+    "has-flag": "^5.0.1",
+    "it-pipe": "^3.0.1",
+    "it-pushable": "^3.2.3",
+    "libp2p": "^3.0.6",
+    "libp2p-tcp": "^0.17.2",
+    "peer-id": "^0.16.0"
   },
   "devDependencies": {
     "@types/node": "^24.8.1"
