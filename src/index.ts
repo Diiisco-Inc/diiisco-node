@@ -11,6 +11,10 @@ import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
 import { multiaddr } from '@multiformats/multiaddr';
 import { gossipsub } from '@libp2p/gossipsub';
+import { identify } from '@libp2p/identify'
+import { identifyPush } from '@libp2p/identify' // optional, but handy
+
+import { OpenAIInferenceModel } from "./utils/models";
 
 // Types
 export interface NodeOptions {
@@ -59,6 +63,8 @@ const createNode = async (peerId: PeerId) => {
     transports: [tcp()],
     connectionEncrypters: [noise()],
     services: {
+      identify: identify(),
+      identifyPush: identifyPush(),
       pubsub: gossipsub()
     }
   });
@@ -77,7 +83,7 @@ const main = async () => {
   const options: NodeOptions = {
     apiAccess: hasFlag("api-access"),
     peerId: undefined,
-    serveModels: hasFlag("share-models"),
+    serveModels: hasFlag("serve-models"),
   };
 
   // Get or Create Peer ID
@@ -92,8 +98,11 @@ const main = async () => {
     }
 
     if (options.serveModels) {
-      console.log("🔜 Serving Models to the Diiisco Network");
-
+      const model = new OpenAIInferenceModel(`${environment.models.baseURL}:${environment.models.port}`);
+      const models = await model.getModels();
+      
+      console.log("🤖 Serving Models:");
+      console.log(models);
     }
   } else {
     console.error("❌ Failed to obtain or create a Peer ID.");
