@@ -5,13 +5,14 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "test": "tsc && node dist/index.js"
+    "test": "tsup src/index.ts --format=esm --dts --out-dir=dist && node dist/index.js"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@libp2p/gossipsub": "^15.0.7",
+    "@libp2p/identify": "^4.0.5",
     "@libp2p/interface": "^3.0.2",
     "@libp2p/tcp": "^11.0.5",
     "@multiformats/multiaddr": "^13.0.1",
@@ -20,9 +21,12 @@
     "it-pushable": "^3.2.3",
     "libp2p": "^3.0.6",
     "libp2p-tcp": "^0.17.2",
+    "openai": "^6.5.0",
     "peer-id": "^0.16.0"
   },
   "devDependencies": {
-    "@types/node": "^24.8.1"
+    "@types/node": "^24.8.1",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3"
   }
 }
