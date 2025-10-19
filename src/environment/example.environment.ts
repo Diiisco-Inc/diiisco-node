@@ -19,7 +19,7 @@ const environment: any = {
       port: 443,
       token: ""
     },
-    paymentAssetId: 31566704
+    paymentAssetId: 0
   },
   api: {
     enabled: true,
