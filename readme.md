@@ -75,6 +75,8 @@ npm run serve
 
 Not sure is globally distributed compute is right for you? Head over to [Our Demo Page](https://diiisco.tunn.dev) and explore how it works in action.
 
+<img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/ui_screenshot.png?raw=true", width="1000" />
+
 ## ❤️ Love Diiisco, Use Diiisco
 
 Any Diiisco Node can share a set of REST API endpoints and these endpoints are identical to the OpenAI standard endpoints, for that reason, it's easy to substitute Diiisco into any codebase where you would call the OpenAI API or use the OpenAI SDK.
