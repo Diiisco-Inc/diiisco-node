@@ -13,6 +13,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { gossipsub } from '@libp2p/gossipsub';
 import { identify } from '@libp2p/identify'
 import { identifyPush } from '@libp2p/identify' // optional, but handy
+import { mdns } from '@libp2p/mdns';
 
 import { OpenAIInferenceModel } from "./utils/models";
 import OpenAI from "openai";
@@ -64,6 +65,7 @@ const createNode = async () => {
     },
     transports: [tcp()],
     connectionEncrypters: [noise()],
+    peerDiscovery: [mdns()],
     services: {
       identify: identify(),
       identifyPush: identifyPush(),
@@ -262,6 +264,12 @@ const main = async () => {
           nodeEvents.emit(`inference-response-${msg.id}`, { ...msg, payment: payment, quote: msg.payload.quote });
         }
       }
+    });
+
+    node.addEventListener('peer:discovery', async (e) => {
+      const id = e.detail.id
+      console.log('👋 Discovered Peer:', id.toString())
+      try { await node.dial(id); console.log('✅ Connected to Peer:', id.toString()) } catch {}
     });
   }
 };

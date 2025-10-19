@@ -14,6 +14,7 @@
     "@libp2p/gossipsub": "^15.0.7",
     "@libp2p/identify": "^4.0.5",
     "@libp2p/interface": "^3.0.2",
+    "@libp2p/mdns": "^12.0.6",
     "@libp2p/tcp": "^11.0.5",
     "@multiformats/multiaddr": "^13.0.1",
     "algosdk": "^3.5.2",
