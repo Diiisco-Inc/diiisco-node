@@ -64,7 +64,7 @@ export default class algorand {
     const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       receiver: toAddr,
       sender: this.addr,
-      amount: this.parseUnits(amount, environment.algorand.paymentAssetDecimals || 6), //DSCO has 6 Decimals
+      amount: this.parseUnits(Math.max(amount, 0.000001), environment.algorand.paymentAssetDecimals || 6), //DSCO has 6 Decimals
       assetIndex: environment.algorand.paymentAssetId,
       note: new TextEncoder().encode("Payment for Diiisco model inference."),
       suggestedParams: sp
