@@ -71,7 +71,7 @@ const createNode = async () => {
       identifyPush: identifyPush(),
       pubsub: gossipsub({
         allowPublishToZeroTopicPeers: true,
-        emitSelf: true
+        emitSelf: false
       })
     }
   });
@@ -84,6 +84,17 @@ const createNode = async () => {
   node.getMultiaddrs().forEach(addr => console.log(`   ${addr.toString()}`));
   return node;
 };
+
+// Wait until someone else is actually subscribed to our topic
+export async function waitForMesh(node: any, topic: string, { min = 1, timeoutMs = 10000 } = {}) {
+  const start = Date.now()
+  for (;;) {
+    const subs = node.services.pubsub.getSubscribers(topic)
+    if (subs.length >= min) return subs
+    if (Date.now() - start > timeoutMs) throw new Error(`No peers in topic "${topic}"`)
+    await new Promise(r => setTimeout(r, 300))
+  }
+}
 
 //Define the Main Function
 const main = async () => {
@@ -135,6 +146,7 @@ const main = async () => {
       };
       
       // Publish the Quote Request to the Model Topic
+      await waitForMesh(node, `models/${req.body.model}`, { min: 1, timeoutMs: 15000 })
       node.services.pubsub.publish(`models/${req.body.model}`, encode(quoteMessage));
       console.log(`📤 Published message to 'models/${req.body.model}'. ID: ${quoteMessage.id}`);
 
