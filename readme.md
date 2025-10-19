@@ -75,7 +75,7 @@ npm run serve
 
 Not sure is globally distributed compute is right for you? Head over to [Our Demo Page](https://diiisco.tunn.dev) and explore how it works in action.
 
-<img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/ui_screenshot.png?raw=true", width="1000" />
+<img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/ui_screenshot.png?raw=true" width="1000" />
 
 ## ❤️ Love Diiisco, Use Diiisco
 
