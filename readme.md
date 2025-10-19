@@ -1,6 +1,6 @@
-# <img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/diiisco_no_bg.png?raw=true" width="30" height="30" /> Diiisco
+<img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/diiisco-logo.png?raw=true" width="1000" />
 
-Diiisco is a globally distributed network of machines running large language models. Send a prompt to any node on the Diiisco network and our shared compute will get you a response from the model of your choice. If you have a laptop, a desktop or a super computer you can join the Diiisco network, contribute your compute and get rewarded in USDC on Algorand - it's fast, efficient and getter than paying $25 a month! 
+Diiisco is a globally distributed network of machines running large language models. Send a prompt to any node on the Diiisco network and our shared compute will get you a response from the model of your choice. If you have a laptop, a desktop or a super computer you can join the Diiisco network, contribute your compute and get rewarded in Algorand - it's fast, efficient and getter than paying $25 a month! 
 
 ## 👋 Join the Network
 
@@ -46,7 +46,7 @@ npm install
       port: 443,
       token: ""
     },
-    paymentAssetId: 31566704
+    paymentAssetId: 0
   },
   api: {
     enabled: true,
@@ -75,7 +75,7 @@ npm run serve
 
 Not sure is globally distributed compute is right for you? Head over to [Our Demo Page](https://diiisco.tunn.dev) and explore how it works in action.
 
-## ❤️ Love Diiisco, use Diiisco
+## ❤️ Love Diiisco, Use Diiisco
 
 Any Diiisco Node can share a set of REST API endpoints and these endpoints are identical to the OpenAI standard endpoints, for that reason, it's easy to substitute Diiisco into any codebase where you would call the OpenAI API or use the OpenAI SDK.
 
