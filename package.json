@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "test": "tsup src/index.ts --format=esm --dts --out-dir=dist && node dist/index.js"
+    "test": "tsup src/index.ts --format=esm --dts --out-dir=dist && node dist/index.js --serve-models --api-access"
   },
   "author": "",
   "license": "ISC",
@@ -16,15 +16,22 @@
     "@libp2p/interface": "^3.0.2",
     "@libp2p/tcp": "^11.0.5",
     "@multiformats/multiaddr": "^13.0.1",
+    "algosdk": "^3.5.2",
+    "express": "^5.1.0",
     "has-flag": "^5.0.1",
     "it-pipe": "^3.0.1",
     "it-pushable": "^3.2.3",
+    "js-sha256": "^0.11.1",
     "libp2p": "^3.0.6",
     "libp2p-tcp": "^0.17.2",
+    "llama-tokenizer-js": "^1.2.2",
+    "msgpack-lite": "^0.1.26",
+    "msgpackr": "^1.11.5",
     "openai": "^6.5.0",
     "peer-id": "^0.16.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.3",
     "@types/node": "^24.8.1",
     "tsup": "^8.5.0",
     "typescript": "^5.9.3"
