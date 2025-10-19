@@ -25,6 +25,9 @@ const environment: any = {
       "sk-testkey2"
     ],
     port: 8181
+  },
+  quoteEngine: {
+    waitTime: 1000
   }
 }
 
