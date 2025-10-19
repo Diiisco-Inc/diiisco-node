@@ -25,7 +25,8 @@ import algorand from "./utils/algorand";
 import express from 'express';
 import { requireBearer } from "./utils/endpoint";
 import { sha256 } from "js-sha256";
-import { EventEmitter } from 'events'
+import { EventEmitter } from 'events';
+import quoteEngine from "./utils/quoteEngine";
 
 // Get the ID for the Node
 const loadPeerId = (): peerId.JSONPeerId | undefined => {
@@ -73,7 +74,7 @@ const createNode = async () => {
       identifyPush: identifyPush(),
       pubsub: gossipsub({
         allowPublishToZeroTopicPeers: true,
-        emitSelf: false
+        emitSelf: true
       })
     }
   });
@@ -109,6 +110,7 @@ const main = async () => {
   node.services.pubsub.subscribe(node.peerId.toString());
 
   const nodeEvents: EventEmitter = new EventEmitter();
+  const quoteMgr: quoteEngine = new quoteEngine(nodeEvents);
 
   if (hasFlag("api-access")) {
     //Create Express App
@@ -148,7 +150,7 @@ const main = async () => {
       };
       
       // Publish the Quote Request to the Model Topic
-      await waitForMesh(node, `models/${req.body.model}`, { min: 1, timeoutMs: 15000 })
+      //await waitForMesh(node, `models/${req.body.model}`, { min: 1, timeoutMs: 15000 })
       node.services.pubsub.publish(`models/${req.body.model}`, encode(quoteMessage));
       console.log(`📤 Published message to 'models/${req.body.model}'. ID: ${quoteMessage.id}`);
 
@@ -156,6 +158,27 @@ const main = async () => {
       nodeEvents.once(`inference-response-${quoteMessage.id}`, (response: any) => {
         console.log(`🚀 Sending inference response for request ID ${quoteMessage.id}:`, response);
         res.status(200).send(response.payload.completion);
+      });
+
+      // Listen for a Quote Selection
+      nodeEvents.once(`quote-selected-${quoteMessage.id}`, async (quote: any) => {
+        console.log(`✅ Quote selected for request ID ${quoteMessage.id}:`, quote.msg);
+
+        // Create the Quote Accepted Message
+          let acceptance = {
+            role: 'quote-accepted',
+            timestamp: Date.now(),
+            id: quote.msg.id,
+            paymentSourceAddr: environment.algorand.addr,
+            payload: {
+              ...quote.msg.payload,
+            }
+          };
+
+
+          // Send the quote-accepted back to the sender's topic
+          node.services.pubsub.publish(quote.from.toString(), encode(acceptance));
+          console.log(`📤 Sent quote-accepted to ${quote.from.toString()}: ${JSON.stringify(acceptance)}`);
       });
     });
 
@@ -230,21 +253,7 @@ const main = async () => {
         // Role: Quote Response
         if (msg.role == 'quote-response') {
           console.log(`📥 Received quote-response: ${JSON.stringify(msg)}`);
-          
-          //Automatically Accept the Quote
-          let acceptance = {
-            role: 'quote-accepted',
-            timestamp: Date.now(),
-            id: msg.id,
-            paymentSourceAddr: environment.algorand.addr,
-            payload: {
-              ...msg.payload,
-            }
-          };
-
-          // Send the quote-accepted back to the sender's topic
-          node.services.pubsub.publish(evt.detail.from.toString(), encode(acceptance));
-          console.log(`📤 Sent quote-accepted to ${evt.detail.from.toString()}: ${JSON.stringify(acceptance)}`);  
+          quoteMgr.addQuote({msg: msg, from: evt.detail.from.toString()});  
         }
 
         // Role: Quote Accepted
@@ -286,8 +295,6 @@ const main = async () => {
       try { await node.dial(id); console.log('✅ Connected to Peer:', id.toString()) } catch {}
     });
   }
-
-  await node.dial('/ip4/127.0.0.1/tcp/4321/p2p/12D3KooWL7MB3RaWiWAL88RJMd1NVwyRjRoPC9eoMyqResvjoACu' as any);
 };
 
 // Start the Server
