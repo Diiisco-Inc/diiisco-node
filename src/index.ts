@@ -11,9 +11,10 @@ import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
 import { multiaddr } from '@multiformats/multiaddr';
 import { gossipsub } from '@libp2p/gossipsub';
-import { identify } from '@libp2p/identify'
-import { identifyPush } from '@libp2p/identify' // optional, but handy
+import { identify } from '@libp2p/identify';
+import { identifyPush } from '@libp2p/identify';
 import { mdns } from '@libp2p/mdns';
+import { mplex } from '@libp2p/mplex';
 
 import { OpenAIInferenceModel } from "./utils/models";
 import OpenAI from "openai";
@@ -66,6 +67,7 @@ const createNode = async () => {
     transports: [tcp()],
     connectionEncrypters: [noise()],
     peerDiscovery: [mdns()],
+    streamMuxers: [mplex()],
     services: {
       identify: identify(),
       identifyPush: identifyPush(),
@@ -284,6 +286,8 @@ const main = async () => {
       try { await node.dial(id); console.log('✅ Connected to Peer:', id.toString()) } catch {}
     });
   }
+
+  await node.dial('/ip4/127.0.0.1/tcp/4321/p2p/12D3KooWL7MB3RaWiWAL88RJMd1NVwyRjRoPC9eoMyqResvjoACu' as any);
 };
 
 // Start the Server
