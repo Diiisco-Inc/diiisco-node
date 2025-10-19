@@ -28,6 +28,8 @@ import { sha256 } from "js-sha256";
 import { EventEmitter } from 'events';
 import quoteEngine from "./utils/quoteEngine";
 
+import cors from "cors";
+
 // Get the ID for the Node
 const loadPeerId = (): peerId.JSONPeerId | undefined => {
   try {
@@ -116,6 +118,7 @@ const main = async () => {
     //Create Express App
     const app = express();
     const port = environment.api.port || 8181;
+    app.use(cors());
 
     //Middleware
     app.use(express.json());

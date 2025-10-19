@@ -19,6 +19,7 @@
     "@libp2p/tcp": "^11.0.5",
     "@multiformats/multiaddr": "^13.0.1",
     "algosdk": "^3.5.2",
+    "cors": "^2.8.5",
     "express": "^5.1.0",
     "has-flag": "^5.0.1",
     "it-pipe": "^3.0.1",
@@ -33,6 +34,7 @@
     "peer-id": "^0.16.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^24.8.1",
     "tsup": "^8.5.0",
