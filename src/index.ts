@@ -25,13 +25,6 @@ import { requireBearer } from "./utils/endpoint";
 import { sha256 } from "js-sha256";
 import { EventEmitter } from 'events'
 
-// Types
-export interface NodeOptions {
-  apiAccess: boolean;
-  peerId: PeerId | undefined;
-  serveModels: boolean;
-}
-
 // Get the ID for the Node
 const loadPeerId = (): peerId.JSONPeerId | undefined => {
   try {
@@ -64,7 +57,7 @@ const getPeerId = async (): Promise<PeerId> => {
   }
 };
 
-const createNode = async (peerId: PeerId) => {
+const createNode = async () => {
   const node = await createLibp2p({
     addresses: {
       listen: ['/ip4/0.0.0.0/tcp/4321']
@@ -92,186 +85,184 @@ const createNode = async (peerId: PeerId) => {
 
 //Define the Main Function
 const main = async () => {
-  // Get Settings Shared to Node
-  const options: NodeOptions = {
-    apiAccess: hasFlag("api-access"),
-    peerId: undefined,
-    serveModels: hasFlag("serve-models"),
-  };
-
   //Create the Algorand Object
   const algo = new algorand();
 
-  // Get or Create Peer ID
-  options.peerId = await getPeerId();
-
   // Create the Node
-  if (options.peerId) {
-    const node = await createNode(options.peerId);
-    const topics: string[] = [node.peerId.toString()]; //Always Subscribe to Your Own PeerID Topic
-    node.services.pubsub.subscribe(node.peerId.toString());
+  const node = await createNode();
+  const topics: string[] = [node.peerId.toString()]; //Always Subscribe to Your Own PeerID Topic
+  node.services.pubsub.subscribe(node.peerId.toString());
 
-    const nodeEvents: EventEmitter = new EventEmitter();
+  const nodeEvents: EventEmitter = new EventEmitter();
 
-    if (options.apiAccess) {
-      //Create Express App
-      const app = express();
-      const port = environment.api.port || 8181;
+  if (hasFlag("api-access")) {
+    //Create Express App
+    const app = express();
+    const port = environment.api.port || 8181;
 
-      //Middleware
-      app.use(express.json());
+    //Middleware
+    app.use(express.json());
 
-      if (environment.api.bearerAuthentication) {
-        app.use("/v1", requireBearer);
-      }
-
-      //Define a Health Check Endpoint
-      app.get('/health', (req, res) => {
-        res.status(200).send('API is healthy');
-      });
-
-      // Define the Chat Completion Endpoint
-      app.post(`/v1/chat/completions`, async (req, res) => {
-        console.log("🚀 Received /v1/chat/completions request.");
-        // Validate Request Body
-        if (!req.body || !req.body.model || !req.body.inputs) {
-          return res.status(400).send({ error: "Missing model or messages in request body." });
-        };
-
-        // Create the Quote Request Message
-        const quoteMessage = {
-          role: "quote-request",
-          from: node.peerId.toString(),
-          timestamp: Date.now(),
-          id: `${Date.now()}-${sha256(JSON.stringify(req.body))}`,
-          payload: {
-            ...req.body
-          }
-        };
-        
-        // Publish the Quote Request to the Model Topic
-        node.services.pubsub.publish(`models/${req.body.model}`, encode(quoteMessage));
-        console.log(`📤 Published message to 'models/${req.body.model}'. ID: ${quoteMessage.id}`);
-
-        // Wait for the Inference Response
-        nodeEvents.once(`inference-response-${quoteMessage.id}`, (response: any) => {
-          console.log(`🚀 Sending inference response for request ID ${quoteMessage.id}:`, response);
-          res.status(200).send(response.payload.completion);
-        });
-      });
-
-      // Start the Express Server
-      app.listen(port, () => {
-        console.log(`🚀 API server listening at http://localhost:${port}`);
-      });
+    if (environment.api.bearerAuthentication) {
+      app.use("/v1", requireBearer);
     }
 
-    if (options.serveModels) {
-      // See What Models are Available from the Inference Server
-      const model = new OpenAIInferenceModel(`${environment.models.baseURL}:${environment.models.port}/v1`);
-      const models = await model.getModels();
-      // topics.push('models');  //General Models Topic
+    //Define a Health Check Endpoint
+    app.get('/health', (req, res) => {
+      res.status(200).send('API is healthy');
+    });
 
-      // Prepare the Topics && Subscribe to a Topic for All Models
-      node.services.pubsub.subscribe('models');
+    // Define the Chat Completion Endpoint
+    app.post(`/v1/chat/completions`, async (req, res) => {
+      console.log("🚀 Received /v1/chat/completions request.");
+      // Validate Request Body
+      if (!req.body || !req.body.model || !req.body.inputs) {
+        return res.status(400).send({ error: "Missing model or messages in request body." });
+      };
 
-      // Subscribe to a topic for each model
-      models.filter((m: OpenAI.Models.Model) => m.object == 'model').forEach((modelInfo: OpenAI.Models.Model) => {
-        node.services.pubsub.subscribe(`models/${modelInfo.id}`);
-        topics.push(`models/${modelInfo.id}`);
-        console.log(`🤖 Serving Model: ${modelInfo.id}`);
+      // Create the Quote Request Message
+      const quoteMessage = {
+        role: "quote-request",
+        from: node.peerId.toString(),
+        paymentSourceAddr: environment.algorand.addr,
+        timestamp: Date.now(),
+        id: `${Date.now()}-${sha256(JSON.stringify(req.body))}`,
+        payload: {
+          ...req.body
+        }
+      };
+      
+      // Publish the Quote Request to the Model Topic
+      node.services.pubsub.publish(`models/${req.body.model}`, encode(quoteMessage));
+      console.log(`📤 Published message to 'models/${req.body.model}'. ID: ${quoteMessage.id}`);
+
+      // Wait for the Inference Response
+      nodeEvents.once(`inference-response-${quoteMessage.id}`, (response: any) => {
+        console.log(`🚀 Sending inference response for request ID ${quoteMessage.id}:`, response);
+        res.status(200).send(response.payload.completion);
       });
+    });
+
+    // Start the Express Server
+    app.listen(port, () => {
+      console.log(`🚀 API server listening at http://localhost:${port}`);
+    });
+  }
+
+  if (hasFlag("serve-models")) {
+    // See What Models are Available from the Inference Server
+    const model = new OpenAIInferenceModel(`${environment.models.baseURL}:${environment.models.port}/v1`);
+    const models = await model.getModels();
+    // topics.push('models');  //General Models Topic
+
+    // Prepare the Topics && Subscribe to a Topic for All Models
+    node.services.pubsub.subscribe('models');
+
+    // Subscribe to a topic for each model
+    models.filter((m: OpenAI.Models.Model) => m.object == 'model').forEach((modelInfo: OpenAI.Models.Model) => {
+      node.services.pubsub.subscribe(`models/${modelInfo.id}`);
+      topics.push(`models/${modelInfo.id}`);
+      console.log(`🤖 Serving Model: ${modelInfo.id}`);
+    });
 
 
-      //Listen to Requests
-      node.services.pubsub.addEventListener('message', async (evt: any) => {
-        if (topics.includes(evt.detail.topic)) {
-          // Decode the Message
-          const msg = decode(evt.detail.data);
+    //Listen to Requests
+    node.services.pubsub.addEventListener('message', async (evt: any) => {
+      if (topics.includes(evt.detail.topic)) {
+        // Decode the Message
+        const msg = decode(evt.detail.data);
 
-          // Role: Quote Request
-          if (msg.role == 'quote-request'){
-            const tokenCount: number = await model.countEmbeddings(msg.payload.model, msg.payload.inputs);
-            const modelRate = environment.models.chargePer1KTokens[msg.payload.model] || environment.models.chargePer1KTokens.default || 0.000001; //Default Rate if Model Not Found
-            let response = {
-              role: 'quote-response',
-              timestamp: Date.now(),
-              id: msg.id,
-              payload: {
-                ...msg.payload,
-                quote: {
-                  model: msg.payload.model,
-                  inputCount: msg.payload.inputs.length,
-                  tokenCount: tokenCount,
-                  pricePer1K: modelRate,
-                  totalPrice: (tokenCount / 1000) * modelRate,
-                  addr: algo.addr,
-                },
-                signature: ''
-              }
-            };
-
-            //Sign the Quote
-            response.payload.signature = await algo.signObject(response.payload.quote);
-
-            // Send the quote-response back to the sender's topic
-            node.services.pubsub.publish(evt.detail.from.toString(), encode(response));
-            console.log(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
+        // Role: Quote Request
+        if (msg.role == 'quote-request'){
+          // Check the Requester has the means to Pay
+          const x = await algo.checkIfOptedIn(msg.paymentSourceAddr, environment.algorand.paymentAssetId);
+          if (!x.optedIn || Number(x.balance) <= 0) {
+            console.log(`❌ Quote request from ${msg.paymentSourceAddr} cannot be fulfilled - not opted in or zero balance.`);
+            return; //Cannot Fulfill Request
           }
 
-          // Role: Quote Response
-          if (msg.role == 'quote-response') {
-            console.log(`📥 Received quote-response: ${JSON.stringify(msg)}`);
-            
-            //Automatically Accept the Quote
-            let acceptance = {
-              role: 'quote-accepted',
-              timestamp: Date.now(),
-              id: msg.id,
-              payload: {
-                ...msg.payload,
-              }
-            };
-
-            // Send the quote-accepted back to the sender's topic
-            node.services.pubsub.publish(evt.detail.from.toString(), encode(acceptance));
-            console.log(`📤 Sent quote-accepted to ${evt.detail.from.toString()}: ${JSON.stringify(acceptance)}`);  
-          }
-
-          // Role: Quote Accepted
-          if (msg.role == 'quote-accepted') {
-            const validQuote: boolean = await algo.verifySignature(msg.payload.quote, msg.payload.signature);
-            if (validQuote) {
-              const completion = await model.getResponse(msg.payload.model, msg.payload.inputs);
-              let response = {
-                role: 'inference-response',
-                timestamp: Date.now(),
-                id: msg.id,
-                payload: {
-                  ...msg.payload,
-                  completion: completion,
-                }
-              };
-              
-              // Send the inference-response back to the sender's topic
-              node.services.pubsub.publish(evt.detail.from.toString(), encode(response));
-              console.log(`📤 Sent inference-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
+          // Calculate a Quote
+          const tokenCount: number = await model.countEmbeddings(msg.payload.model, msg.payload.inputs);
+          const modelRate = environment.models.chargePer1KTokens[msg.payload.model] || environment.models.chargePer1KTokens.default || 0.000001; //Default Rate if Model Not Found
+          let response = {
+            role: 'quote-response',
+            timestamp: Date.now(),
+            id: msg.id,
+            paymentSourceAddr: environment.algorand.addr,
+            payload: {
+              ...msg.payload,
+              quote: {
+                model: msg.payload.model,
+                inputCount: msg.payload.inputs.length,
+                tokenCount: tokenCount,
+                pricePer1K: modelRate,
+                totalPrice: (tokenCount / 1000) * modelRate,
+                addr: algo.addr,
+              },
+              signature: ''
             }
-          }
+          };
 
-          // Role: Inference Response
-          if (msg.role == 'inference-response') {
-            console.log(`📥 Received inference-response: ${JSON.stringify(msg)}`);
+          //Sign the Quote
+          response.payload.signature = await algo.signObject(response.payload.quote);
+
+          // Send the quote-response back to the sender's topic
+          node.services.pubsub.publish(evt.detail.from.toString(), encode(response));
+          console.log(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
+        }
+
+        // Role: Quote Response
+        if (msg.role == 'quote-response') {
+          console.log(`📥 Received quote-response: ${JSON.stringify(msg)}`);
+          
+          //Automatically Accept the Quote
+          let acceptance = {
+            role: 'quote-accepted',
+            timestamp: Date.now(),
+            id: msg.id,
+            paymentSourceAddr: environment.algorand.addr,
+            payload: {
+              ...msg.payload,
+            }
+          };
+
+          // Send the quote-accepted back to the sender's topic
+          node.services.pubsub.publish(evt.detail.from.toString(), encode(acceptance));
+          console.log(`📤 Sent quote-accepted to ${evt.detail.from.toString()}: ${JSON.stringify(acceptance)}`);  
+        }
+
+        // Role: Quote Accepted
+        if (msg.role == 'quote-accepted') {
+          const validQuote: boolean = await algo.verifySignature(msg.payload.quote, msg.payload.signature);
+          if (validQuote) {
+            const completion = await model.getResponse(msg.payload.model, msg.payload.inputs);
+            let response = {
+              role: 'inference-response',
+              timestamp: Date.now(),
+              id: msg.id,
+              paymentSourceAddr: environment.algorand.addr,
+              payload: {
+                ...msg.payload,
+                completion: completion,
+              }
+            };
             
-            // Make the Payment
-            const payment = await algo.makePayment(msg.payload.quote.addr, msg.payload.quote.totalPrice);
-            nodeEvents.emit(`inference-response-${msg.id}`, { ...msg, payment: payment, quote: msg.payload.quote });
+            // Send the inference-response back to the sender's topic
+            node.services.pubsub.publish(evt.detail.from.toString(), encode(response));
+            console.log(`📤 Sent inference-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
           }
         }
-      });
-    }
-  } else {
-    console.error("❌ Failed to obtain or create a Peer ID.");
+
+        // Role: Inference Response
+        if (msg.role == 'inference-response') {
+          console.log(`📥 Received inference-response: ${JSON.stringify(msg)}`);
+          
+          // Make the Payment
+          const payment = await algo.makePayment(msg.payload.quote.addr, msg.payload.quote.totalPrice);
+          nodeEvents.emit(`inference-response-${msg.id}`, { ...msg, payment: payment, quote: msg.payload.quote });
+        }
+      }
+    });
   }
 };
 

@@ -1,6 +1,7 @@
 import { sha256 } from 'js-sha256';
 import environment from '../environment/environment';
 import algosdk from 'algosdk';
+import { parse } from 'path';
 
 export default class algorand {
   addr: string;
@@ -63,8 +64,8 @@ export default class algorand {
     const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       receiver: toAddr,
       sender: this.addr,
-      amount: BigInt(amount),
-      assetIndex: 0,
+      amount: this.parseUnits(amount, environment.algorand.paymentAssetDecimals || 6), //DSCO has 6 Decimals
+      assetIndex: environment.algorand.paymentAssetId,
       note: new TextEncoder().encode("Payment for Diiisco model inference."),
       suggestedParams: sp
     });
@@ -132,4 +133,45 @@ export default class algorand {
     console.log(`✅ Opted in to asset ID ${assetId} for address ${address}. Transaction ID: ${txId.txid}`);
     return transactionCompletion;
   }
+
+  parseUnits(amount: number | string, decimals: number): bigint {
+  if (typeof amount === 'number') amount = String(amount); // avoid float ops where possible
+  amount = amount.trim();
+  if (!/^-?\d+(\.\d+)?$/.test(amount)) {
+    throw new Error('Invalid decimal amount format');
+  }
+
+  const negative = amount.startsWith('-');
+  if (negative) amount = amount.slice(1);
+
+  const [intPartRaw, fracPartRaw = ''] = amount.split('.');
+  let intPart = intPartRaw.replace(/^0+/, '') || '0';
+  let fracPart = fracPartRaw.replace(/[^0-9]/g, ''); // keep only digits
+
+  // If fractional digits <= decimals: pad right
+  if (fracPart.length <= decimals) {
+    const padded = fracPart + '0'.repeat(decimals - fracPart.length);
+    const whole = BigInt(intPart) * 10n ** BigInt(decimals) + BigInt(padded || '0');
+    return negative ? -whole : whole;
+  }
+
+  // If fractional digits > decimals: round half-up
+  const keep = fracPart.slice(0, decimals);            // digits to keep
+  const nextDigit = Number(fracPart[decimals]);       // digit after kept digits
+  let fracBig = BigInt(keep || '0');
+
+  if (nextDigit >= 5) {
+    fracBig = fracBig + 1n;
+    // handle carry if fracBig == 10^decimals
+    const maxFrac = 10n ** BigInt(decimals);
+    if (fracBig >= maxFrac) {
+      fracBig = 0n;
+      const whole = (BigInt(intPart) + 1n) * maxFrac + fracBig;
+      return negative ? -whole : whole;
+    }
+  }
+
+  const whole = BigInt(intPart) * 10n ** BigInt(decimals) + fracBig;
+  return negative ? -whole : whole;
+}
 }
