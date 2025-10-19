@@ -1,9 +1,6 @@
 // Imports
-import hasFlag from "has-flag";
-import { getArgValue } from "./utils/argv";
 import PeerId, * as peerId from 'peer-id';
 import environment from "./environment/environment";
-import path from "path";
 import fs from "fs";
 
 import { createLibp2p } from 'libp2p';
@@ -114,7 +111,7 @@ const main = async () => {
   const nodeEvents: EventEmitter = new EventEmitter();
   const quoteMgr: quoteEngine = new quoteEngine(nodeEvents);
 
-  if (hasFlag("api-access")) {
+  if (environment.api.enabled) {
     //Create Express App
     const app = express();
     const port = environment.api.port || 8181;
@@ -191,7 +188,7 @@ const main = async () => {
     });
   }
 
-  if (hasFlag("serve-models")) {
+  if (environment.models.enabled) {
     // See What Models are Available from the Inference Server
     const model = new OpenAIInferenceModel(`${environment.models.baseURL}:${environment.models.port}/v1`);
     const models = await model.getModels();

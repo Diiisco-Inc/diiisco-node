@@ -1,5 +1,8 @@
+import { enabled } from "@libp2p/logger";
+
 const environment: any = {
   models: {
+    enabled: true,
     baseURL: "http://localhost",
     port: 11434,
     apiKey: "YOUR_LOCAL_LLM_API_KEY_HERE_OFTEN_NOT_NEEDED",
@@ -19,6 +22,7 @@ const environment: any = {
     paymentAssetId: 31566704
   },
   api: {
+    enabled: true,
     bearerAuthentication: true,
     keys: [
       "sk-testkey1",

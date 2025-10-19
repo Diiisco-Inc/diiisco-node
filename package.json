@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "serve": "tsup src/index.ts --format=esm --dts --out-dir=dist && node dist/index.js --serve-models --api-access"
+    "serve": "tsup src/index.ts --format=esm --dts --out-dir=dist && node dist/index.js"
   },
   "author": "",
   "license": "ISC",
