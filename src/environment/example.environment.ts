@@ -2,7 +2,7 @@ const environment: any = {
   models: {
     baseURL: "http://localhost",
     port: 11434,
-    apiKey: "dummy",
+    apiKey: "YOUR_LOCAL_LLM_API_KEY_HERE_OFTEN_NOT_NEEDED",
     chargePer1KTokens: {
       default: 0.000001,
       "gpt-oss:20b": 0.000002,
