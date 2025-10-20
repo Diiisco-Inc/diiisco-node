@@ -8,7 +8,9 @@ Joining the network is easy, all you need is a computer, and Algorand wallet and
 
 ### 🦙 Run Your Own Large Language Model
 
-The best way to get started with this is with a tool like [Ollama](https://ollama.com/). Head to their website and download the application. then downlaod a model. We recommend small models for laptops, medium for desktop PCs and larger models for gaming PCs are equipment with dedicated GPUs. Then download this repo, install dependencies, set your configuration environment and run using Node.JS!
+The get started you'll a Local LLM Inference Runtime like [Shimmy](https://github.com/Michael-A-Kuykendall/shimmy) or [Ollama](https://ollama.com/) to serve your models. To install Ollama, head to their website and download the application. To install Shimmy follow the instructions on their [GitHub repo](https://github.com/Michael-A-Kuykendall/shimmy).
+
+Once you have your Model Runtime installed, then download a model. We recommend small models for laptops, medium for desktop PCs and larger models for gaming PCs are equipment with dedicated GPUs. Then download this repo, install dependencies, set your configuration environment and run using Node.JS!
 
 ### Get Setup with Algorand
 
