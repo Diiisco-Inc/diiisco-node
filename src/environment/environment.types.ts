@@ -36,9 +36,14 @@ export interface QuoteEngineConfig {
   waitTime: number;
 }
 
+export interface PeerIdStorageConfig {
+  path: string;
+}
+
 export interface PeerIdConfig extends PeerId.JSONPeerId {}
 
 export interface Environment {
+  peerIdStorage: PeerIdStorageConfig;
   models: ModelsConfig;
   algorand: AlgorandConfig;
   api: ApiConfig;

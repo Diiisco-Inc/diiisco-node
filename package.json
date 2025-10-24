@@ -5,8 +5,7 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "serve": "tsup src/index.ts --format=esm --dts --out-dir=dist && node dist/index.js",
-    "get-peer-id": "node -e \"require('peer-id').create({ bits: 1024, keyType: 'RSA' }).then(id => console.log(JSON.stringify(id.toJSON(), null, 2)))\""
+    "serve": "tsup src/index.ts --format=esm --dts --out-dir=dist && node dist/index.js"
   },
   "author": "",
   "license": "ISC",
@@ -17,6 +16,7 @@
     "@libp2p/interface": "^3.0.2",
     "@libp2p/mdns": "^12.0.6",
     "@libp2p/mplex": "^12.0.6",
+    "@libp2p/peer-id-factory": "^4.2.4",
     "@libp2p/tcp": "^11.0.5",
     "@multiformats/multiaddr": "^13.0.1",
     "algosdk": "^3.5.2",

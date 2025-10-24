@@ -1,6 +1,9 @@
 import { Environment } from "./environment.types"; // Import the new interface
 
 const environment: Environment = {
+  peerIdStorage: {
+    path: "~/Desktop/"
+  },
   models: {
     enabled: true,
     baseURL: "http://localhost",

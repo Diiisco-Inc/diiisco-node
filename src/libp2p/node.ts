@@ -1,26 +1,18 @@
-import PeerId, * as peerId from 'peer-id';
 import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
-import { identify } from '@libp2p/identify';
-import { identifyPush } from '@libp2p/identify';
+import { identify, identifyPush } from '@libp2p/identify';
 import { mdns } from '@libp2p/mdns';
 import { mplex } from '@libp2p/mplex';
 import { gossipsub } from '@libp2p/gossipsub';
 import { logger } from '../utils/logger';
-import environment from '../environment/environment';
+import { PeerIdManager } from './peerIdManager';
 
 export const createLibp2pNode = async () => {
-  const loadedPeerId = environment.peerId;
-  if (!loadedPeerId) {
-    logger.error("❌ PeerID not found in environment.ts. Please generate one using 'npm run get-peer-id' and add it to environment.ts.");
-    throw new Error("PeerID not found.");
-  }
-  const peer = await peerId.createFromJSON(loadedPeerId);
-  logger.info("✅ Loaded PeerID from environment.ts:", loadedPeerId.id);
+  const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
 
   const node = await createLibp2p({
-    peerId: peer,
+    privateKey: peer.privateKey,
     addresses: {
       listen: ['/ip4/0.0.0.0/tcp/4321']
     },
@@ -36,8 +28,13 @@ export const createLibp2pNode = async () => {
         emitSelf: true
       })
     }
-  } as any); // Temporary workaround for peerId type issue
+  });
 
+  
+  if (node.peerId.toString() !== peer.peerId.toString()) {
+    throw new Error('libp2p did not use the supplied peerId');
+  }
+  
   await node.start()
   logger.info('✅ Node started with id:', node.peerId.toString());
 
