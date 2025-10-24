@@ -48,5 +48,10 @@ export interface Environment {
   algorand: AlgorandConfig;
   api: ApiConfig;
   quoteEngine: QuoteEngineConfig;
-  peerId?: PeerIdConfig; // PeerId will be stored here
+  libp2pBootstrapServers?: string[]; // Array of multiaddrs for LibP2P bootstrapping
+  // Add a new property for the server URL
+  node?: {
+    url?: string;
+    port?: number;
+  };
 }

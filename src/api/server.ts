@@ -10,7 +10,7 @@ import { logger } from '../utils/logger';
 
 export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
   const app = express();
-  const port = environment.api.port || 8181;
+  const port = environment.api.port || 8080;
   app.use(cors());
   app.use(express.json());
 
@@ -67,7 +67,7 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
   });
 
   app.listen(port, () => {
-    logger.info(`🚀 API server listening at http://localhost:${port}`);
+    logger.info(`🚀 API server listening at ${environment.node?.url || `http://localhost:${port || 8080}`}`);
   });
 
   return app;
