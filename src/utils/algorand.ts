@@ -1,16 +1,21 @@
 import { sha256 } from 'js-sha256';
 import environment from '../environment/environment';
 import algosdk from 'algosdk';
-import { parse } from 'path';
+import { logger } from './logger';
+import { Environment } from '../environment/environment.types';
 
 export default class algorand {
   addr: string;
   mnemonic: string;
+  private env: Environment;
 
   constructor() {
-    this.addr = environment.algorand.addr;
-    this.mnemonic = environment.algorand.mnemonic;
+    this.env = environment;
+    this.addr = this.env.algorand.addr;
+    this.mnemonic = this.env.algorand.mnemonic;
+  }
 
+  async initialize() {
     // validate that address is valid
     if (!algosdk.isValidAddress(this.addr)) {
       throw new Error("❌ Invalid Algorand address provided in environment.");
@@ -22,16 +27,15 @@ export default class algorand {
     }
 
     // Check the Address is opted in to the Diiisco ASA (Asset ID)
-    this.checkIfOptedIn(this.addr, environment.algorand.paymentAssetId).then(({ optedIn, balance }) => {
+    try {
+      const { optedIn } = await this.checkIfOptedIn(this.addr, this.env.algorand.paymentAssetId);
       if (!optedIn) {
-        // Opt-in to the ASA
-        this.optInToAsset(this.addr, environment.algorand.paymentAssetId).then(() => {
-          console.log("✅ Opted in to Diiisco ASA");
-        }).catch((err) => {
-          console.error("❌ Failed to opt-in to Diiisco ASA:", err);
-        });
+        await this.optInToAsset(this.addr, this.env.algorand.paymentAssetId);
+        logger.info("✅ Opted in to Diiisco ASA");
       }
-    });
+    } catch (err) {
+      logger.error("❌ Failed to opt-in to Diiisco ASA:", err);
+    }
   }
 
   mnemonicMatchesAddress(mnemonic: string, address: string) {
@@ -54,9 +58,9 @@ export default class algorand {
 
   async makePayment(toAddr: string, amount: number){
     const algod = new algosdk.Algodv2(
-      environment.algorand.client.token,
-      environment.algorand.client.address,
-      environment.algorand.client.port
+      this.env.algorand.client.token,
+      this.env.algorand.client.address,
+      this.env.algorand.client.port
     );
     const sk = algosdk.mnemonicToSecretKey(this.mnemonic).sk;
 
@@ -64,25 +68,25 @@ export default class algorand {
     const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       receiver: toAddr,
       sender: this.addr,
-      amount: this.parseUnits(Math.max(amount, 0.000001), environment.algorand.paymentAssetDecimals || 6), //DSCO has 6 Decimals
-      assetIndex: environment.algorand.paymentAssetId,
+      amount: this.parseUnits(Math.max(amount, 0.000001), this.env.algorand.paymentAssetDecimals || 6), //DSCO has 6 Decimals
+      assetIndex: this.env.algorand.paymentAssetId,
       note: new TextEncoder().encode("Payment for Diiisco model inference."),
       suggestedParams: sp
     });
 
     const signed = txn.signTxn(sk)
     const txId = await algod.sendRawTransaction(signed).do();
-    console.log(`⏳ Waiting for confirmation of transaction ID: ${txId.txid}...`);
+    logger.info(`⏳ Waiting for confirmation of transaction ID: ${txId.txid}...`);
     const transactionCompletion = await algosdk.waitForConfirmation(algod, txId.txid, 5);
-    console.log(`💰 Payment of ${amount} DSCO sent to ${toAddr}. Transaction ID: ${txId.txid}`);
+    logger.info(`💰 Payment of ${amount} DSCO sent to ${toAddr}. Transaction ID: ${txId.txid}`);
     return transactionCompletion;
   }
 
   async checkIfOptedIn(address: string, assetId: number): Promise<{ optedIn: boolean; balance: BigInt }> {
     const algod = new algosdk.Algodv2(
-      environment.algorand.client.token,
-      environment.algorand.client.address,
-      environment.algorand.client.port
+      this.env.algorand.client.token,
+      this.env.algorand.client.address,
+      this.env.algorand.client.port
     );
     
     try {
@@ -99,20 +103,21 @@ export default class algorand {
 
       // Opted in; amount is in base units (respect asset decimals)
       return { optedIn: true, balance: BigInt(asset.amount) };
-    } catch (err: any) {
+    } catch (err: any) { // TODO: Refine error type
       if (err.response?.body?.message?.includes("account does not exist")) {
         // The address has never been funded
         return { optedIn: false, balance: BigInt(0) };
       }
+      console.error("Error checking if opted in:", err);
       throw err;
     }
   }
 
   async optInToAsset(address: string, assetId: number) {
     const algod = new algosdk.Algodv2(
-      environment.algorand.client.token,
-      environment.algorand.client.address,
-      environment.algorand.client.port
+      this.env.algorand.client.token,
+      this.env.algorand.client.address,
+      this.env.algorand.client.port
     );
     const sk = algosdk.mnemonicToSecretKey(this.mnemonic).sk;
 
@@ -128,50 +133,57 @@ export default class algorand {
 
     const signed = txn.signTxn(sk)
     const txId = await algod.sendRawTransaction(signed).do();
-    console.log(`⏳ Waiting for confirmation of opt-in transaction ID: ${txId.txid}...`);
+    logger.info(`⏳ Waiting for confirmation of opt-in transaction ID: ${txId.txid}...`);
     const transactionCompletion = await algosdk.waitForConfirmation(algod, txId.txid, 5);
-    console.log(`✅ Opted in to asset ID ${assetId} for address ${address}. Transaction ID: ${txId.txid}`);
+    logger.info(`✅ Opted in to asset ID ${assetId} for address ${address}. Transaction ID: ${txId.txid}`);
     return transactionCompletion;
   }
 
+  /**
+   * Converts a decimal amount to Algorand's microAlgos (or other asset's base units)
+   * with proper handling for decimals and rounding.
+   * @param amount The decimal amount as a number or string.
+   * @param decimals The number of decimal places for the asset.
+   * @returns The amount in base units as a BigInt.
+   */
   parseUnits(amount: number | string, decimals: number): bigint {
-  if (typeof amount === 'number') amount = String(amount); // avoid float ops where possible
-  amount = amount.trim();
-  if (!/^-?\d+(\.\d+)?$/.test(amount)) {
-    throw new Error('Invalid decimal amount format');
-  }
+    if (typeof amount === 'number') amount = String(amount); // avoid float ops where possible
+    amount = amount.trim();
+    if (!/^-?\d+(\.\d+)?$/.test(amount)) {
+      throw new Error('Invalid decimal amount format');
+    }
 
-  const negative = amount.startsWith('-');
-  if (negative) amount = amount.slice(1);
+    const negative = amount.startsWith('-');
+    if (negative) amount = amount.slice(1);
 
-  const [intPartRaw, fracPartRaw = ''] = amount.split('.');
-  let intPart = intPartRaw.replace(/^0+/, '') || '0';
-  let fracPart = fracPartRaw.replace(/[^0-9]/g, ''); // keep only digits
+    const [intPartRaw, fracPartRaw = ''] = amount.split('.');
+    let intPart = intPartRaw.replace(/^0+/, '') || '0';
+    let fracPart = fracPartRaw.replace(/[^0-9]/g, ''); // keep only digits
 
-  // If fractional digits <= decimals: pad right
-  if (fracPart.length <= decimals) {
-    const padded = fracPart + '0'.repeat(decimals - fracPart.length);
-    const whole = BigInt(intPart) * 10n ** BigInt(decimals) + BigInt(padded || '0');
-    return negative ? -whole : whole;
-  }
-
-  // If fractional digits > decimals: round half-up
-  const keep = fracPart.slice(0, decimals);            // digits to keep
-  const nextDigit = Number(fracPart[decimals]);       // digit after kept digits
-  let fracBig = BigInt(keep || '0');
-
-  if (nextDigit >= 5) {
-    fracBig = fracBig + 1n;
-    // handle carry if fracBig == 10^decimals
-    const maxFrac = 10n ** BigInt(decimals);
-    if (fracBig >= maxFrac) {
-      fracBig = 0n;
-      const whole = (BigInt(intPart) + 1n) * maxFrac + fracBig;
+    // If fractional digits <= decimals: pad right
+    if (fracPart.length <= decimals) {
+      const padded = fracPart + '0'.repeat(decimals - fracPart.length);
+      const whole = BigInt(intPart) * 10n ** BigInt(decimals) + BigInt(padded || '0');
       return negative ? -whole : whole;
     }
-  }
 
-  const whole = BigInt(intPart) * 10n ** BigInt(decimals) + fracBig;
-  return negative ? -whole : whole;
-}
+    // If fractional digits > decimals: round half-up
+    const keep = fracPart.slice(0, decimals);            // digits to keep
+    const nextDigit = Number(fracPart[decimals]);       // digit after kept digits
+    let fracBig = BigInt(keep || '0');
+
+    if (nextDigit >= 5) {
+      fracBig = fracBig + 1n;
+      // handle carry if fracBig == 10^decimals
+      const maxFrac = 10n ** BigInt(decimals);
+      if (fracBig >= maxFrac) {
+        fracBig = 0n;
+        const whole = (BigInt(intPart) + 1n) * maxFrac + fracBig;
+        return negative ? -whole : whole;
+      }
+    }
+
+    const whole = BigInt(intPart) * 10n ** BigInt(decimals) + fracBig;
+    return negative ? -whole : whole;
+  }
 }

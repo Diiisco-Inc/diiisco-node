@@ -1,6 +1,9 @@
-import { enabled } from "@libp2p/logger";
+import { Environment } from "./environment.types"; // Import the new interface
 
-const environment: any = {
+const environment: Environment = {
+  peerIdStorage: {
+    path: "~/Desktop/"
+  },
   models: {
     enabled: true,
     baseURL: "http://localhost",
@@ -32,7 +35,12 @@ const environment: any = {
   },
   quoteEngine: {
     waitTime: 1000
+  },
+  peerId: {
+    id: "YOUR_PEER_ID_HERE",
+    privKey: "YOUR_PRIVATE_KEY_HERE",
+    pubKey: "YOUR_PUBLIC_KEY_HERE"
   }
 }
 
-export default environment; 
+export default environment;
