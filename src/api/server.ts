@@ -66,8 +66,8 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
     });
   });
 
-  app.listen(port, () => {
-    logger.info(`🚀 API server listening at ${environment.node?.url || `http://localhost:${port || 8080}`}`);
+  app.listen(port, '0.0.0.0', () => {
+    logger.info(`🚀 API server listening at ${environment.node?.url || `http://0.0.0.0:${port || 8080}`}`);
   });
 
   return app;

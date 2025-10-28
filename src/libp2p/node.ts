@@ -48,7 +48,9 @@ export const createLibp2pNode = async () => {
   const node = await createLibp2p({
     privateKey: peer.privateKey,
     addresses: {
-      listen: [`/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`]
+      listen: [
+        `/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`
+    ]
     },
     transports: [tcp()],
     connectionEncrypters: [noise()],
