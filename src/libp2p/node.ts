@@ -9,8 +9,9 @@ import { gossipsub } from '@libp2p/gossipsub';
 import { kadDHT } from '@libp2p/kad-dht';
 import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
-import { bootstrap } from '@libp2p/bootstrap';
+import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import environment from '../environment/environment';
+import { NfdClient } from '@txnlab/nfd-sdk';
 
 export const createLibp2pNode = async () => {
   // Load or Create a Peer ID
@@ -20,8 +21,26 @@ export const createLibp2pNode = async () => {
   const peerDiscovery: any[] = [mdns()];
   
   if (environment.libp2pBootstrapServers && environment.libp2pBootstrapServers.length > 0) {
+    //Process Bootstrap Servers
+    const nfd = new NfdClient();
+    const parsedBootstrapServers = (await Promise.all(environment.libp2pBootstrapServers.map(async (addr: string) => {
+      addr = addr.trim();
+      if (addr.endsWith('diiisco.algo')) {
+        const nfdData = await nfd.resolve(addr, { view: 'full'});
+        const diiiscohost: string | null = nfdData.properties?.userDefined?.diiiscohost ?? null;
+        const libp2pAddressRegex = /^\/ip4\/[a-zA-Z0-9.-]+\/tcp\/\d+\/p2p\/[a-zA-Z0-9]+$/;
+        if (diiiscohost && libp2pAddressRegex.test(diiiscohost)) {
+          return diiiscohost;
+        } else {
+          logger.warn(`⚠️ Invalid libp2p address format in diiiscohost: ${diiiscohost}`);
+          return null;
+        }
+      }
+      return addr;
+    }))).filter((addr: string | null) => addr !== null);
+
     peerDiscovery.push(bootstrap({
-      list: environment.libp2pBootstrapServers
+      list: parsedBootstrapServers,
     }));
   }
 

@@ -21,6 +21,7 @@
     "@libp2p/peer-id-factory": "^4.2.4",
     "@libp2p/tcp": "^11.0.5",
     "@multiformats/multiaddr": "^13.0.1",
+    "@txnlab/nfd-sdk": "0.10.1",
     "algosdk": "^3.5.2",
     "cors": "^2.8.5",
     "express": "^5.1.0",
