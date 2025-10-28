@@ -9,7 +9,9 @@
   },
   "author": "",
   "license": "ISC",
-  "engines": { "node": "22" },
+  "engines": {
+    "node": "22"
+  },
   "dependencies": {
     "@chainsafe/libp2p-noise": "^17.0.0",
     "@libp2p/bootstrap": "^12.0.7",
@@ -25,6 +27,7 @@
     "@txnlab/nfd-sdk": "0.10.1",
     "algosdk": "^3.5.2",
     "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "has-flag": "^5.0.1",
     "it-pipe": "^3.0.1",

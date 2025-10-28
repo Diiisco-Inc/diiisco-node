@@ -16,7 +16,8 @@ npm-debug.log*
 .env.development.local
 .env.test.local
 .env.production.local
-src/environment/environment.ts
+src/environment/my.environment.ts
+.env.example
 
 # IDE and editor files
 .vscode/
