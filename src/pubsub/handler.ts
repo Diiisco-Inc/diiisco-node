@@ -53,7 +53,7 @@ export const handlePubSubMessage = async (
       };
 
       response.payload.signature = await algo.signObject(response.payload.quote);
-      node.services.pubsub.publish(evt.detail.from.toString(), encode(response));
+      node.services.pubsub.publish('diiisco/models', encode(response));
       logger.info(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
