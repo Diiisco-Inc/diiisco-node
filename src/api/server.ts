@@ -30,9 +30,6 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
       return res.status(400).send({ error: "Missing model or messages in request body." });
     };
 
-    // Broadcast the Model Topic So Others can Join
-    node.services.pubsub.publish('diiisco-relay', encode({ role: 'relay-subscribe', topic: `models/${req.body.model}` }));
-
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
       from: node.peerId.toString(),
@@ -44,9 +41,9 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
       }
     };
 
-    waitForMesh(node, `models/${req.body.model}`, { min: 1, timeoutMs: 5000 }).then(() => {
-      node.services.pubsub.publish(`models/${req.body.model}`, encode(quoteMessage));
-      logger.info(`📤 Published message to 'models/${req.body.model}'. ID: ${quoteMessage.id}`);
+    waitForMesh(node, "diiisco/models", { min: 1, timeoutMs: 5000 }).then(() => {
+      node.services.pubsub.publish("diiisco/models", encode(quoteMessage));
+      logger.info(`📤 Published message to 'diiisco/models'. ID: ${quoteMessage.id}`);
     }).catch((err: string) => {
       logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
       return res.status(500).send({ error: "No peers available to handle the request." });
@@ -62,6 +59,7 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
 
       let acceptance: QuoteAccepted = {
         role: 'quote-accepted',
+        to: quote.from.toString(),
         timestamp: Date.now(),
         id: quote.msg.id,
         paymentSourceAddr: environment.algorand.addr,
@@ -70,7 +68,7 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
         }
       };
 
-      node.services.pubsub.publish(quote.from.toString(), encode(acceptance));
+      node.services.pubsub.publish('diiisco/models', encode(acceptance));
       logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}: ${JSON.stringify(acceptance)}`);
     });
   });

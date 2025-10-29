@@ -15,35 +15,15 @@ export const handlePubSubMessage = async (
   algo: algorand,
   model: OpenAIInferenceModel,
   quoteMgr: quoteEngine,
-  topics: string[]
+  topics: string[],
+  models: string[],
 ) => {
   if (topics.includes(evt.detail.topic)) {
     const msg: PubSubMessage = decode(evt.detail.data);
     const env: Environment = environment; // Use the typed environment
 
-    if  (evt.detail.topic === 'diiisco-relay') {
-      // Ignore messages on the relay topic that are from self
-      if (evt.detail.from.toString() === node.peerId.toString()) {
-        return;
-      }
-
-      const relaySubMsg = msg as unknown as { role: 'relay-subscribe'; topic: string; };
-      if (!topics.includes(relaySubMsg.topic)) {
-        node.services.pubsub.subscribe(relaySubMsg.topic);
-        topics.push(relaySubMsg.topic);
-        logger.info(`✅ Subscribed to topic '${relaySubMsg.topic}' from relay request.`);
-        node.services.pubsub.publish('diiisco-relay', encode({ role: 'relay-subscribe', topic: relaySubMsg.topic }));
-      }
-      return;
-    }
-
-    // If Models are Disabled, this is a relay node and we do not process messages further
-    if (environment.models.enabled === false) {
-      return;
-    }
-
-    if (msg.role === 'quote-request') {
-      const quoteRequestMsg = msg as QuoteRequest;
+    const quoteRequestMsg = msg as QuoteRequest;
+    if (msg.role === 'quote-request' && models.includes(quoteRequestMsg.payload.model)) {
       const x = await algo.checkIfOptedIn(quoteRequestMsg.paymentSourceAddr, env.algorand.paymentAssetId);
       if (!x.optedIn || Number(x.balance) <= 0) {
         logger.warn(`❌ Quote request from ${quoteRequestMsg.paymentSourceAddr} cannot be fulfilled - not opted in or zero balance.`);
@@ -56,6 +36,7 @@ export const handlePubSubMessage = async (
         role: 'quote-response',
         timestamp: Date.now(),
         id: quoteRequestMsg.id,
+        to: evt.detail.from.toString(),
         paymentSourceAddr: env.algorand.addr,
         payload: {
           ...quoteRequestMsg.payload,
@@ -72,23 +53,24 @@ export const handlePubSubMessage = async (
       };
 
       response.payload.signature = await algo.signObject(response.payload.quote);
-      node.services.pubsub.publish(evt.detail.from.toString(), encode(response));
+      node.services.pubsub.publish('diiisco/models', encode(response));
       logger.info(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
-    if (msg.role === 'quote-response') {
+    if (msg.role === 'quote-response' && msg.to === node.peerId.toString()) {
       const quoteResponseMsg = msg as QuoteResponse;
       logger.info(`📥 Received quote-response: ${JSON.stringify(quoteResponseMsg)}`);
       quoteMgr.addQuote({ msg: quoteResponseMsg, from: evt.detail.from.toString() });
     }
 
-    if (msg.role === 'quote-accepted') {
+    if (msg.role === 'quote-accepted' && msg.to === node.peerId.toString()) {
       const quoteAcceptedMsg = msg as QuoteAccepted;
       const validQuote: boolean = await algo.verifySignature(quoteAcceptedMsg.payload.quote, quoteAcceptedMsg.payload.signature);
       if (validQuote) {
         const completion = await model.getResponse(quoteAcceptedMsg.payload.model, quoteAcceptedMsg.payload.inputs);
         let response: InferenceResponse = {
           role: 'inference-response',
+          to: evt.detail.from.toString(),
           timestamp: Date.now(),
           id: quoteAcceptedMsg.id,
           paymentSourceAddr: env.algorand.addr,
@@ -97,13 +79,13 @@ export const handlePubSubMessage = async (
             completion: completion,
           }
         };
-        
-        node.services.pubsub.publish(evt.detail.from.toString(), encode(response));
+
+        node.services.pubsub.publish('diiisco/models', encode(response));
         logger.info(`📤 Sent inference-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
       }
     }
 
-    if (msg.role === 'inference-response') {
+    if (msg.role === 'inference-response' && msg.to === node.peerId.toString()) {
       const inferenceResponseMsg = msg as InferenceResponse;
       logger.info(`📥 Received inference-response: ${JSON.stringify(inferenceResponseMsg)}`);
       const payment = await algo.makePayment(inferenceResponseMsg.payload.quote.addr, inferenceResponseMsg.payload.quote.totalPrice);

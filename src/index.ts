@@ -15,6 +15,7 @@ class Application extends EventEmitter {
   private node: any; // TODO: Replace 'any' with a specific Libp2p node type
   private algo: algorand;
   private model: OpenAIInferenceModel;
+  private availableModels: string[] = [];
   private quoteMgr: quoteEngine;
   private topics: string[] = [];
   private env: Environment; // Explicitly type the environment
@@ -33,12 +34,10 @@ class Application extends EventEmitter {
 
     // Create and Start the Libp2p Node
     this.node = await createLibp2pNode();
-    this.topics.push(this.node.peerId.toString());
-    this.node.services.pubsub.subscribe(this.node.peerId.toString());
 
     //Create a Relay PubSub Topic
-    this.node.services.pubsub.subscribe('diiisco-relay');
-    this.topics.push('diiisco-relay');
+    this.node.services.pubsub.subscribe('diiisco/models');
+    this.topics.push('diiisco/models');
 
     // Start the API Server
     if (this.env.api.enabled) {
@@ -48,17 +47,15 @@ class Application extends EventEmitter {
     // Listen for Model PubSub Events
     if (this.env.models.enabled) {
       const models = await this.model.getModels();
-      this.node.services.pubsub.subscribe('models'); // Subscribe to general models topic
-      models.filter((m: OpenAI.Models.Model) => m.object == 'model').forEach((modelInfo: OpenAI.Models.Model) => {
-        this.node.services.pubsub.subscribe(`models/${modelInfo.id}`); // Subscribe to specific model topics
-        this.topics.push(`models/${modelInfo.id}`);
+      this.availableModels = models.filter((m: OpenAI.Models.Model) => m.object == 'model').map((modelInfo: OpenAI.Models.Model) => {
         logger.info(`🤖 Serving Model: ${modelInfo.id}`);
+        return modelInfo.id;
       });
     }
 
     // Listen for PubSub Messages
     this.node.services.pubsub.addEventListener('message', async (evt: { detail: { topic: string; data: Uint8Array; from: any; }; }) => { // TODO: Define a proper type for evt
-      await handlePubSubMessage(evt, this.node, this, this.algo, this.model, this.quoteMgr, this.topics);
+      await handlePubSubMessage(evt, this.node, this, this.algo, this.model, this.quoteMgr, this.topics, this.availableModels);
     });
 
     // Listen for Peer Discovery Events
@@ -68,11 +65,6 @@ class Application extends EventEmitter {
       try { await this.node.dial(id); logger.info('✅ Connected to Peer:', id.toString()) } catch (err) {
         logger.error('❌ Failed to connect to peer:', err);
       }
-
-      // Let the New Peer Know About our Subscribed Topics
-      this.topics.forEach(topic => {
-        this.node.services.pubsub.publish('diiisco-relay', encode({ role: 'relay-subscribe', topic }));
-      });
     });
 
     // Listen for Disconnection Events
