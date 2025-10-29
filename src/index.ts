@@ -37,6 +37,7 @@ class Application extends EventEmitter {
 
     //Create a Relay PubSub Topic
     this.node.services.pubsub.subscribe('diiisco/models');
+    this.topics.push('diiisco/models');
 
     // Start the API Server
     if (this.env.api.enabled) {
