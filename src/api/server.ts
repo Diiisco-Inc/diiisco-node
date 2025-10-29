@@ -30,6 +30,9 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
       return res.status(400).send({ error: "Missing model or messages in request body." });
     };
 
+    // Broadcast the Model Topic So Others can Join
+    node.services.pubsub.publish('diiisco-relay', encode({ role: 'relay-subscribe', topic: `models/${req.body.model}` }));
+
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
       from: node.peerId.toString(),
