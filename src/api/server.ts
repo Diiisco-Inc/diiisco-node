@@ -7,6 +7,7 @@ import { EventEmitter } from 'events';
 import { encode } from "msgpackr";
 import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse } from "../types/messages";
 import { logger } from '../utils/logger';
+import { waitForMesh } from '../libp2p/node';
 
 export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
   const app = express();
@@ -39,9 +40,14 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
         ...req.body
       }
     };
-    
-    node.services.pubsub.publish(`models/${req.body.model}`, encode(quoteMessage));
-    logger.info(`📤 Published message to 'models/${req.body.model}'. ID: ${quoteMessage.id}`);
+
+    waitForMesh(node, `models/${req.body.model}`, { min: 1, timeoutMs: 5000 }).then(() => {
+      node.services.pubsub.publish(`models/${req.body.model}`, encode(quoteMessage));
+      logger.info(`📤 Published message to 'models/${req.body.model}'. ID: ${quoteMessage.id}`);
+    }).catch((err: string) => {
+      logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
+      return res.status(500).send({ error: "No peers available to handle the request." });
+    });
 
     nodeEvents.once(`inference-response-${quoteMessage.id}`, (response: InferenceResponse) => {
       logger.info(`🚀 Sending inference response for request ID ${quoteMessage.id}:`, response);
