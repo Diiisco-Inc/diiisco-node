@@ -23,19 +23,24 @@ class Application extends EventEmitter {
     this.env = environment; // Assign the imported environment
     this.algo = new algorand();
     this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`);
-    this.quoteMgr = new quoteEngine(this); // Pass 'this' (Application instance) as EventEmitter
+    this.quoteMgr = new quoteEngine(this);
   }
 
   async start() {
-    await this.algo.initialize(); // Initialize Algorand here
+    // Initialize Algorand for DSCO Payments
+    await this.algo.initialize();
+
+    // Create and Start the Libp2p Node
     this.node = await createLibp2pNode();
     this.topics.push(this.node.peerId.toString());
-    this.node.services.pubsub.subscribe(this.node.peerId.toString()); // Subscribe to own peer ID for direct messages
+    this.node.services.pubsub.subscribe(this.node.peerId.toString());
 
+    // Start the API Server
     if (this.env.api.enabled) {
-      createApiServer(this.node, this); // Pass 'this' (Application instance) as EventEmitter
+      createApiServer(this.node, this);
     }
 
+    // Listen for Model PubSub Events
     if (this.env.models.enabled) {
       const models = await this.model.getModels();
       this.node.services.pubsub.subscribe('models'); // Subscribe to general models topic
@@ -46,10 +51,12 @@ class Application extends EventEmitter {
       });
     }
 
+    // Listen for PubSub Messages
     this.node.services.pubsub.addEventListener('message', async (evt: { detail: { topic: string; data: Uint8Array; from: any; }; }) => { // TODO: Define a proper type for evt
       await handlePubSubMessage(evt, this.node, this, this.algo, this.model, this.quoteMgr, this.topics);
     });
 
+    // Listen for Peer Discovery Events
     this.node.addEventListener('peer:discovery', async (e: { detail: { id: any; }; }) => { // TODO: Define a proper type for e
       const id = e.detail.id
       logger.info('👋 Discovered Peer:', id.toString())
@@ -57,6 +64,11 @@ class Application extends EventEmitter {
         logger.error('❌ Failed to connect to peer:', err);
       }
     });
+
+    // Listen for Disconnection Events
+    this.node.addEventListener('peer:disconnect', (evt: any) => {
+    logger.info(`💔 Disconnected from peer: ${evt.detail.toString()}`);
+  });
   }
 }
 
