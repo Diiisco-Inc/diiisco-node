@@ -21,6 +21,27 @@ export const handlePubSubMessage = async (
     const msg: PubSubMessage = decode(evt.detail.data);
     const env: Environment = environment; // Use the typed environment
 
+    if  (evt.detail.topic === 'diiisco-relay') {
+      // Ignore messages on the relay topic that are from self
+      if (evt.detail.from.toString() === node.peerId.toString()) {
+        return;
+      }
+
+      const relaySubMsg = msg as unknown as { role: 'relay-subscribe'; topic: string; };
+      if (!topics.includes(relaySubMsg.topic)) {
+        node.services.pubsub.subscribe(relaySubMsg.topic);
+        topics.push(relaySubMsg.topic);
+        logger.info(`✅ Subscribed to topic '${relaySubMsg.topic}' from relay request.`);
+        node.services.pubsub.publish('diiisco-relay', encode({ role: 'relay-subscribe', topic: relaySubMsg.topic }));
+      }
+      return;
+    }
+
+    // If Models are Disabled, this is a relay node and we do not process messages further
+    if (environment.models.enabled === false) {
+      return;
+    }
+
     if (msg.role === 'quote-request') {
       const quoteRequestMsg = msg as QuoteRequest;
       const x = await algo.checkIfOptedIn(quoteRequestMsg.paymentSourceAddr, env.algorand.paymentAssetId);

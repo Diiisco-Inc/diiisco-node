@@ -9,6 +9,7 @@ import { OpenAIInferenceModel } from "./utils/models";
 import quoteEngine from "./utils/quoteEngine";
 import OpenAI from "openai";
 import { logger } from './utils/logger';
+import { encode } from "msgpackr";
 
 class Application extends EventEmitter {
   private node: any; // TODO: Replace 'any' with a specific Libp2p node type
@@ -34,6 +35,10 @@ class Application extends EventEmitter {
     this.node = await createLibp2pNode();
     this.topics.push(this.node.peerId.toString());
     this.node.services.pubsub.subscribe(this.node.peerId.toString());
+
+    //Create a Relay PubSub Topic
+    this.node.services.pubsub.subscribe('diiisco-relay');
+    this.topics.push('diiisco-relay');
 
     // Start the API Server
     if (this.env.api.enabled) {
@@ -63,6 +68,11 @@ class Application extends EventEmitter {
       try { await this.node.dial(id); logger.info('✅ Connected to Peer:', id.toString()) } catch (err) {
         logger.error('❌ Failed to connect to peer:', err);
       }
+
+      // Let the New Peer Know About our Subscribed Topics
+      this.topics.forEach(topic => {
+        this.node.services.pubsub.publish('diiisco-relay', encode({ role: 'relay-subscribe', topic }));
+      });
     });
 
     // Listen for Disconnection Events
