@@ -4,7 +4,7 @@ import { noise } from '@chainsafe/libp2p-noise';
 import { identify, identifyPush } from '@libp2p/identify';
 import { ping } from '@libp2p/ping';
 import { mdns } from '@libp2p/mdns';
-import { mplex } from '@libp2p/mplex';
+import { yamux } from '@libp2p/yamux';
 import { gossipsub } from '@libp2p/gossipsub';
 import { kadDHT } from '@libp2p/kad-dht';
 import { logger } from '../utils/logger';
@@ -55,6 +55,7 @@ export const createLibp2pNode = async () => {
     transports: [tcp()],
     connectionEncrypters: [noise()],
     peerDiscovery,
+    streamMuxers: [yamux()],
     services: {
       identify: identify(),
       identifyPush: identifyPush(),
