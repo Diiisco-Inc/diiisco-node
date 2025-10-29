@@ -24,6 +24,7 @@ export interface QuoteResponsePayload {
 export interface QuoteResponse {
   role: "quote-response";
   timestamp: number;
+  to: string;
   id: string;
   paymentSourceAddr: string;
   payload: {
@@ -39,6 +40,7 @@ export interface QuoteAcceptedPayload {
 
 export interface QuoteAccepted {
   role: "quote-accepted";
+  to: string;
   timestamp: number;
   id: string;
   paymentSourceAddr: string;
@@ -52,6 +54,7 @@ export interface InferenceResponsePayload {
 
 export interface InferenceResponse {
   role: "inference-response";
+  to: string;
   timestamp: number;
   id: string;
   paymentSourceAddr: string;
