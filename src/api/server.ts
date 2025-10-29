@@ -41,9 +41,9 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
       }
     };
 
-    waitForMesh(node, "diiisco/models", { min: 1, timeoutMs: 5000 }).then(() => {
-      node.services.pubsub.publish("diiisco/models", encode(quoteMessage));
-      logger.info(`📤 Published message to 'diiisco/models'. ID: ${quoteMessage.id}`);
+    waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(() => {
+      node.services.pubsub.publish("diiisco/models/1.0.0", encode(quoteMessage));
+      logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${quoteMessage.id}`);
     }).catch((err: string) => {
       logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
       return res.status(500).send({ error: "No peers available to handle the request." });
@@ -68,7 +68,7 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
         }
       };
 
-      node.services.pubsub.publish('diiisco/models', encode(acceptance));
+      node.services.pubsub.publish('diiisco/models/1.0.0', encode(acceptance));
       logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}: ${JSON.stringify(acceptance)}`);
     });
   });

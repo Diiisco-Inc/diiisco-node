@@ -36,8 +36,8 @@ class Application extends EventEmitter {
     this.node = await createLibp2pNode();
 
     //Create a Relay PubSub Topic
-    this.node.services.pubsub.subscribe('diiisco/models');
-    this.topics.push('diiisco/models');
+    this.node.services.pubsub.subscribe('diiisco/models/1.0.0');
+    this.topics.push('diiisco/models/1.0.0');
 
     // Start the API Server
     if (this.env.api.enabled) {

@@ -53,7 +53,7 @@ export const handlePubSubMessage = async (
       };
 
       response.payload.signature = await algo.signObject(response.payload.quote);
-      node.services.pubsub.publish('diiisco/models', encode(response));
+      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
@@ -80,7 +80,7 @@ export const handlePubSubMessage = async (
           }
         };
 
-        node.services.pubsub.publish('diiisco/models', encode(response));
+        node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
         logger.info(`📤 Sent inference-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
       }
     }
