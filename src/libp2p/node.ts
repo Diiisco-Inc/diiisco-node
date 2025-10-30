@@ -13,15 +13,13 @@ import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import environment from '../environment/environment';
 import { NfdClient } from '@txnlab/nfd-sdk';
 
-export const createLibp2pNode = async () => {
-  // Load or Create a Peer ID
-  const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
+export const lookupBootstrapServers = async (): Promise<string[]> => {
+  // No Bootstrap Servers Configured
+  if (!environment.libp2pBootstrapServers || environment.libp2pBootstrapServers.length === 0) {
+    return [];
+  }
 
-  // Prepare Peer Discovery Modules
-  const peerDiscovery: any[] = [mdns()];
-  
-  if (environment.libp2pBootstrapServers && environment.libp2pBootstrapServers.length > 0) {
-    //Process Bootstrap Servers
+  // Process Bootstrap Servers
     const nfd = new NfdClient();
     const parsedBootstrapServers = (await Promise.all(environment.libp2pBootstrapServers.map(async (addr: string) => {
       addr = addr.trim();
@@ -38,6 +36,18 @@ export const createLibp2pNode = async () => {
       }
       return addr;
     }))).filter((addr: string | null) => addr !== null);
+  return parsedBootstrapServers;
+};
+
+export const createLibp2pNode = async () => {
+  // Load or Create a Peer ID
+  const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
+
+  // Prepare Peer Discovery Modules
+  const peerDiscovery: any[] = [mdns()];
+  
+  if (environment.libp2pBootstrapServers && environment.libp2pBootstrapServers.length > 0) {
+    const parsedBootstrapServers = await lookupBootstrapServers();
 
     peerDiscovery.push(bootstrap({
       list: parsedBootstrapServers,
