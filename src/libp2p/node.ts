@@ -26,7 +26,7 @@ export const lookupBootstrapServers = async (): Promise<string[]> => {
       if (addr.endsWith('diiisco.algo')) {
         const nfdData = await nfd.resolve(addr, { view: 'full'});
         const diiiscohost: string | null = nfdData.properties?.userDefined?.diiiscohost ?? null;
-        const libp2pAddressRegex = /^\/ip4\/[a-zA-Z0-9.-]+\/tcp\/\d+\/p2p\/[a-zA-Z0-9]+$/;
+        const libp2pAddressRegex = /^\/dns4\/[a-zA-Z0-9.-]+\/tcp\/\d+\/p2p\/[a-zA-Z0-9]+$/;
         if (diiiscohost && libp2pAddressRegex.test(diiiscohost)) {
           return diiiscohost;
         } else {
