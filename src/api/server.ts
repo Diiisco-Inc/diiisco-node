@@ -8,8 +8,10 @@ import { encode } from "msgpackr";
 import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse } from "../types/messages";
 import { logger } from '../utils/logger';
 import { waitForMesh } from '../libp2p/node';
+import { Libp2p } from '@libp2p/interface';
+import { Connection } from 'libp2p-tcp';
 
-export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter) => {
   const app = express();
   const port = environment.api.port || 8080;
   app.use(cors());
@@ -26,7 +28,12 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
 
   app.get('/peers', async (req, res) => {
     try {
-      const peers = node.getMultiaddrs().map((addr: any) => addr.toString());
+      const peers = node.getConnections().map((conn: Connection) => {
+        return {
+          remoteAddr: conn.remoteAddr.toString(),
+          peerId: conn.remotePeer.toString()
+        };
+      });
       res.status(200).send({ peers });
     } catch (error) {
       logger.error("Error fetching peers:", error);
@@ -53,7 +60,7 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
     };
 
     waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(() => {
-      node.services.pubsub.publish("diiisco/models/1.0.0", encode(quoteMessage));
+      (node.services.pubsub as any).publish("diiisco/models/1.0.0", encode(quoteMessage));
       logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${quoteMessage.id}`);
     }).catch((err: string) => {
       logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
@@ -79,7 +86,7 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
         }
       };
 
-      node.services.pubsub.publish('diiisco/models/1.0.0', encode(acceptance));
+      (node.services.pubsub as any).publish('diiisco/models/1.0.0', encode(acceptance));
       logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}: ${JSON.stringify(acceptance)}`);
     });
   });
