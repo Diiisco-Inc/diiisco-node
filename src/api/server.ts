@@ -17,10 +17,21 @@ export const createApiServer = (node: any, nodeEvents: EventEmitter) => {
 
   if (environment.api.bearerAuthentication) {
     app.use("/v1", requireBearer);
+    app.use("/peers", requireBearer);
   }
 
   app.get('/health', (req, res) => {
     res.status(200).send('API is healthy');
+  });
+
+  app.get('/peers', async (req, res) => {
+    try {
+      const peers = node.getMultiaddrs().map((addr: any) => addr.toString());
+      res.status(200).send({ peers });
+    } catch (error) {
+      logger.error("Error fetching peers:", error);
+      res.status(500).send({ error: "Error fetching peers" });
+    }
   });
 
   app.post(`/v1/chat/completions`, async (req, res) => {
