@@ -9,7 +9,6 @@ import { OpenAIInferenceModel } from "./utils/models";
 import quoteEngine from "./utils/quoteEngine";
 import OpenAI from "openai";
 import { logger } from './utils/logger';
-import { encode } from "msgpackr";
 
 class Application extends EventEmitter {
   private node: any; // TODO: Replace 'any' with a specific Libp2p node type
@@ -69,8 +68,8 @@ class Application extends EventEmitter {
 
     // Listen for Disconnection Events
     this.node.addEventListener('peer:disconnect', (evt: any) => {
-    logger.info(`💔 Disconnected from peer: ${evt.detail.toString()}`);
-  });
+      logger.info(`💔 Disconnected from peer: ${evt.detail.toString()}`);
+    });
   }
 }
 
