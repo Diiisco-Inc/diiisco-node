@@ -62,9 +62,14 @@ class Application extends EventEmitter {
     this.node.addEventListener('peer:discovery', async (e: { detail: { id: any; }; }) => { // TODO: Define a proper type for e
       const id = e.detail.id
       logger.info('👋 Discovered Peer:', id.toString())
-      try { await this.node.dial(id); logger.info('✅ Connected to Peer:', id.toString()) } catch (err) {
+      try { await this.node.dial(id); } catch (err) {
         logger.error('❌ Failed to connect to peer:', err);
       }
+    });
+
+    // Listen for Connection Events
+    this.node.addEventListener('peer:connect', (evt: any) => {
+      logger.info(`💚 Connected to peer: ${evt.detail.toString()}`);
     });
 
     // Listen for Disconnection Events
