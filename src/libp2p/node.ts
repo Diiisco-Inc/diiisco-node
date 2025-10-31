@@ -2,45 +2,89 @@ import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
 import { identify, identifyPush } from '@libp2p/identify';
+import { ping } from '@libp2p/ping';
 import { mdns } from '@libp2p/mdns';
-import { mplex } from '@libp2p/mplex';
+import { yamux } from '@libp2p/yamux';
 import { gossipsub } from '@libp2p/gossipsub';
+import { kadDHT } from '@libp2p/kad-dht';
 import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
+import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
+import environment from '../environment/environment';
+import { nfdToNodeAddress } from '../utils/algorand';
+
+export const lookupBootstrapServers = async (): Promise<string[]> => {
+  // No Bootstrap Servers Configured
+  if (!environment.libp2pBootstrapServers || environment.libp2pBootstrapServers.length === 0) {
+    return [];
+  }
+
+  // Process Bootstrap Servers
+    const parsedBootstrapServers = (await Promise.all(environment.libp2pBootstrapServers.map(async (addr: string) => {
+      addr = addr.trim();
+      if (addr?.endsWith('diiisco.algo')) {
+        const nfdAddress = await nfdToNodeAddress(addr);
+        return nfdAddress;
+      }
+      return addr;
+    }))).filter((addr: string | null) => addr !== null);
+  return parsedBootstrapServers;
+};
 
 export const createLibp2pNode = async () => {
+  // Load or Create a Peer ID
   const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
 
+  // Prepare Peer Discovery Modules
+  const peerDiscovery: any[] = [mdns()];
+  
+  if (environment.libp2pBootstrapServers && environment.libp2pBootstrapServers.length > 0) {
+    const parsedBootstrapServers = await lookupBootstrapServers();
+
+    peerDiscovery.push(bootstrap({
+      list: parsedBootstrapServers,
+    }));
+  }
+
+  // Create the Libp2p Node
   const node = await createLibp2p({
     privateKey: peer.privateKey,
     addresses: {
-      listen: ['/ip4/0.0.0.0/tcp/4321']
+      listen: [
+        `/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`
+    ]
     },
     transports: [tcp()],
     connectionEncrypters: [noise()],
-    peerDiscovery: [mdns()],
-    streamMuxers: [mplex()],
+    peerDiscovery,
+    streamMuxers: [yamux()],
     services: {
       identify: identify(),
       identifyPush: identifyPush(),
+      ping: ping(),
       pubsub: gossipsub({
         allowPublishToZeroTopicPeers: true,
         emitSelf: true
-      })
+      }),
+      dht: kadDHT()
     }
   });
 
-  
+  // Check if Libp2p used the supplied Peer ID
   if (node.peerId.toString() !== peer.peerId.toString()) {
     throw new Error('libp2p did not use the supplied peerId');
   }
   
+  // Start the Libp2p Node
   await node.start()
   logger.info('✅ Node started with id:', node.peerId.toString());
 
-  // Show multiaddresses
+  // Show Connection Details
   logger.info('👂 Listening on:');
   node.getMultiaddrs().forEach(addr => logger.info(`   ${addr.toString()}`));
+  if (environment.node && environment.node.url && !environment.node.url.includes('localhost')) {
+    logger.info(`📬 Other nodes can Connect at: "/dns4/${environment.node.url}/tcp/${environment.node?.port || 4242}/p2p/${node.peerId.toString()}"`);
+  }
   return node;
 };
 

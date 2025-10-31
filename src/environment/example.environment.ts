@@ -31,15 +31,21 @@ const environment: Environment = {
       "sk-testkey1",
       "sk-testkey2"
     ],
-    port: 8181
+    port: 8080
   },
   quoteEngine: {
     waitTime: 1000
   },
-  peerId: {
-    id: "YOUR_PEER_ID_HERE",
-    privKey: "YOUR_PRIVATE_KEY_HERE",
-    pubKey: "YOUR_PUBLIC_KEY_HERE"
+  libp2pBootstrapServers: [
+    // To connect to nyc.diiisco.com, you need its full multiaddr, which includes its Peer ID.
+    // You would obtain this Peer ID from the logs of the nyc.diiisco.com server when it starts.
+    // Example: "/dns4/nyc.diiisco.com/tcp/8181/p2p/Qm...NYC_PEER_ID"
+    // For now, using a placeholder. Replace "Qm...NYC_PEER_ID" with the actual Peer ID.
+    "/dns4/nyc.diiisco.com/tcp/4242/p2p/Qm...NYC_PEER_ID_PLACEHOLDER"
+  ],
+  node: {
+    url: "http://localhost",
+    port: 4242
   }
 }
 
