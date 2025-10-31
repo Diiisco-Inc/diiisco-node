@@ -11,7 +11,7 @@ import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import environment from '../environment/environment';
-import { NfdClient } from '@txnlab/nfd-sdk';
+import { nfdToNodeAddress } from '../utils/algorand';
 
 export const lookupBootstrapServers = async (): Promise<string[]> => {
   // No Bootstrap Servers Configured
@@ -20,19 +20,11 @@ export const lookupBootstrapServers = async (): Promise<string[]> => {
   }
 
   // Process Bootstrap Servers
-    const nfd = new NfdClient();
     const parsedBootstrapServers = (await Promise.all(environment.libp2pBootstrapServers.map(async (addr: string) => {
       addr = addr.trim();
-      if (addr.endsWith('diiisco.algo')) {
-        const nfdData = await nfd.resolve(addr, { view: 'full'});
-        const diiiscohost: string | null = nfdData.properties?.userDefined?.diiiscohost ?? null;
-        const libp2pAddressRegex = /^\/dns4\/[a-zA-Z0-9.-]+\/tcp\/\d+\/p2p\/[a-zA-Z0-9]+$/;
-        if (diiiscohost && libp2pAddressRegex.test(diiiscohost)) {
-          return diiiscohost;
-        } else {
-          logger.warn(`⚠️ Invalid libp2p address format in diiiscohost: ${diiiscohost}`);
-          return null;
-        }
+      if (addr?.endsWith('diiisco.algo')) {
+        const nfdAddress = await nfdToNodeAddress(addr);
+        return nfdAddress;
       }
       return addr;
     }))).filter((addr: string | null) => addr !== null);

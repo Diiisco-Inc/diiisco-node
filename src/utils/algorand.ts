@@ -3,19 +3,23 @@ import environment from '../environment/environment';
 import algosdk from 'algosdk';
 import { logger } from './logger';
 import { Environment } from '../environment/environment.types';
+import { NfdClient } from '@txnlab/nfd-sdk';
+import { verify } from 'crypto';
 
 export default class algorand {
   addr: string;
   mnemonic: string;
+  nfdAddr: string | null;
   private env: Environment;
 
   constructor() {
     this.env = environment;
     this.addr = this.env.algorand.addr;
     this.mnemonic = this.env.algorand.mnemonic;
+    this.nfdAddr = this.env.algorand.nfd || null;
   }
 
-  async initialize() {
+  async initialize(nodeId: string) {
     // validate that address is valid
     if (!algosdk.isValidAddress(this.addr)) {
       throw new Error("❌ Invalid Algorand address provided in environment.");
@@ -35,6 +39,19 @@ export default class algorand {
       }
     } catch (err) {
       logger.error("❌ Failed to opt-in to Diiisco ASA:", err);
+    }
+
+    //Verify the NFD if Provided
+    if (this.nfdAddr) {
+      verifyNFD(nodeId, this.addr, this.nfdAddr).then((isValid) => {
+        if (isValid) {
+          logger.info(`✅  NFD ${this.nfdAddr} successfully verified for node ID and wallet address.`);
+        } else {
+          logger.warn(`⚠️  NFD ${this.nfdAddr} verification failed for node ID and wallet address. Peers are less likely to trust this node.`);
+        }
+      }).catch((err) => {
+        logger.error(`❌ Error verifying NFD ${this.nfdAddr}:`, err);
+      });
     }
   }
 
@@ -186,4 +203,45 @@ export default class algorand {
     const whole = BigInt(intPart) * 10n ** BigInt(decimals) + fracBig;
     return negative ? -whole : whole;
   }
+}
+
+export async function nfdToNodeAddress(addr: string): Promise<string | null> {
+  const nfd = new NfdClient();
+  const nfdData = await nfd.resolve(addr, { view: 'full'}).catch((err) => null);
+  const diiiscohost: string | null = nfdData?.properties?.userDefined?.diiiscohost ?? null;
+  const libp2pAddressRegex = /^\/(dns4|ip4)\/[a-zA-Z0-9.-]+\/tcp\/\d+\/p2p\/[a-zA-Z0-9]+$/;
+  if (diiiscohost && libp2pAddressRegex.test(diiiscohost)) {
+    return diiiscohost;
+  } else {
+    logger.warn(`⚠️ Invalid libp2p address format in diiiscohost: ${diiiscohost}`);
+    return null;
+  }
+}
+
+export async function nfdToWalletAddress(nfdAddr: string): Promise<string | null> {
+  const nfd = new NfdClient();
+  const nfdData = await nfd.resolve(nfdAddr, { view: 'full'}).catch((err) => null);
+  const walletAddr: string | null = nfdData?.owner ?? null;
+  if (walletAddr && algosdk.isValidAddress(walletAddr)) {
+    return walletAddr;
+  } else {
+    logger.warn(`⚠️ Invalid Algorand wallet address in NFD record: ${walletAddr}`);
+    return null;
+  }
+}
+
+export async function verifyNFD(nodeId: string, walletAddr: string, nfdAddr: string): Promise<boolean> {
+  // Check the Official Record of the Node ID Associated with the NFD
+  const checkNodePath: string | null = await nfdToNodeAddress(nfdAddr);
+  if (!checkNodePath) return false;
+  const checkNodeSegments: string[] = checkNodePath.split('/');
+  const checkNodeId: string = checkNodeSegments[checkNodeSegments.length - 1];
+  if (checkNodeId !== nodeId) return false;
+
+  // Check the Official Record of the Wallet Address Associated with the NFD
+  const checkWalletAddr: string | null = await nfdToWalletAddress(nfdAddr);
+  if (!checkWalletAddr) return false;
+  if (checkWalletAddr !== walletAddr) return false;
+
+  return true;
 }

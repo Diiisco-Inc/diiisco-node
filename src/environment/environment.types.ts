@@ -12,6 +12,7 @@ export interface AlgorandConfig {
   client: AlgorandClientConfig;
   paymentAssetId: number;
   paymentAssetDecimals?: number;
+  nfd?: string;
 }
 
 export interface ModelsConfig {

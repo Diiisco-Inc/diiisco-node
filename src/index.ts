@@ -28,11 +28,12 @@ class Application extends EventEmitter {
   }
 
   async start() {
-    // Initialize Algorand for DSCO Payments
-    await this.algo.initialize();
-
+    
     // Create and Start the Libp2p Node
     this.node = await createLibp2pNode();
+    
+    // Initialize Algorand for DSCO Payments
+    await this.algo.initialize(this.node.peerId.toString());
 
     //Create a Relay PubSub Topic
     this.node.services.pubsub.subscribe('diiisco/models/1.0.0');
