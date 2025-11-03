@@ -6,6 +6,29 @@ import { Environment } from '../environment/environment.types';
 import { NfdClient } from '@txnlab/nfd-sdk';
 import { verify } from 'crypto';
 import { PubSubMessage } from '../types/messages';
+/**
+ * Recursively sorts object keys and stringifies to ensure a canonical representation.
+ * This is crucial for consistent signing and verification of objects.
+ * @param obj The object to stringify.
+ * @returns A canonical JSON string representation of the object.
+ */
+function canonicalStringify(obj: any): string {
+  if (obj === null || typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(item => canonicalStringify(item)).join(',') + ']';
+  }
+
+  const sortedKeys = Object.keys(obj).sort();
+  const parts: string[] = [];
+  for (const key of sortedKeys) {
+    parts.push(JSON.stringify(key) + ':' + canonicalStringify(obj[key]));
+  }
+  return '{' + parts.join(',') + '}';
+}
+
 
 export default class algorand {
   addr: string;
@@ -73,9 +96,9 @@ export default class algorand {
     }
 
     // Sign the Payload
-    const bytes = new TextEncoder().encode(`${JSON.stringify(obj)}`);
-    const signature = algosdk.signBytes(bytes, algosdk.mnemonicToSecretKey(this.mnemonic).sk);
-    const signatureB64 = Buffer.from(signature).toString('base64');
+    const bytes = new TextEncoder().encode(canonicalStringify(obj));
+    const signedBytes = algosdk.signBytes(bytes, algosdk.mnemonicToSecretKey(this.mnemonic).sk);
+    const signatureB64 = Buffer.from(signedBytes).toString('base64');
     return signatureB64;
   }
 
@@ -91,7 +114,7 @@ export default class algorand {
     }
 
     // Verify the Signature and Payload
-    const bytes = new TextEncoder().encode(`${JSON.stringify(obj)}`);
+    const bytes = new TextEncoder().encode(canonicalStringify(obj));
     const signatureBytes = Buffer.from(sig!, 'base64');
     const verified = algosdk.verifyBytes(bytes, signatureBytes, obj.fromWalletAddr);
     return verified;
