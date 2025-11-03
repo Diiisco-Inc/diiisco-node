@@ -18,9 +18,14 @@ export default class quoteEngine {
     if (!Object.keys(this.quoteQueue).includes(quoteEvent.msg.id)) {
       this.quoteQueue[quoteEvent.msg.id] = {
         quotes: [quoteEvent],
-        timeout: setTimeout(() => {
+        timeout: setTimeout(async () => {
+          // Select Quote based on selection function
+          const selectionFunction = environment.quoteEngine.quoteSelectionFunction;
+          const selectedQuote = await selectionFunction(this.quoteQueue[quoteEvent.msg.id].quotes);
+
           // Emit event that quote is ready
-          this.nodeEventEmitter.emit(`quote-selected-${quoteEvent.msg.id}`, this.quoteQueue[quoteEvent.msg.id].quotes.sort((a: QuoteEvent, b: QuoteEvent) => a.msg.payload.quote.totalPrice - b.msg.payload.quote.totalPrice)[0]);
+          this.nodeEventEmitter.emit(`quote-selected-${quoteEvent.msg.id}`, selectedQuote);
+
           // Clean up
           delete this.quoteQueue[quoteEvent.msg.id];
         }, this.waitTime)
