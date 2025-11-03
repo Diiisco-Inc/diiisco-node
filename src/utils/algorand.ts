@@ -6,6 +6,8 @@ import { Environment } from '../environment/environment.types';
 import { NfdClient } from '@txnlab/nfd-sdk';
 import { verify } from 'crypto';
 import { PubSubMessage } from '../types/messages';
+import { canonicalize } from 'json-canonicalize';
+
 /**
  * Recursively sorts object keys and stringifies to ensure a canonical representation.
  * This is crucial for consistent signing and verification of objects.
@@ -96,7 +98,7 @@ export default class algorand {
     }
 
     // Sign the Payload
-    const bytes = new TextEncoder().encode(canonicalStringify(obj));
+    const bytes = new TextEncoder().encode(canonicalize(obj));
     const signedBytes = algosdk.signBytes(bytes, algosdk.mnemonicToSecretKey(this.mnemonic).sk);
     const signatureB64 = Buffer.from(signedBytes).toString('base64');
     return signatureB64;
@@ -114,7 +116,7 @@ export default class algorand {
     }
 
     // Verify the Signature and Payload
-    const bytes = new TextEncoder().encode(canonicalStringify(obj));
+    const bytes = new TextEncoder().encode(canonicalize(obj));
     const signatureBytes = Buffer.from(sig!, 'base64');
     const verified = algosdk.verifyBytes(bytes, signatureBytes, obj.fromWalletAddr);
     return verified;

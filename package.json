@@ -34,6 +34,7 @@
     "it-pipe": "^3.0.1",
     "it-pushable": "^3.2.3",
     "js-sha256": "^0.11.1",
+    "json-canonicalize": "^2.0.0",
     "libp2p": "^3.0.6",
     "libp2p-tcp": "^0.17.2",
     "llama-tokenizer-js": "^1.2.2",

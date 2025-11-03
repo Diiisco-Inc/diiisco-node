@@ -31,7 +31,8 @@ export const handlePubSubMessage = async (
     //Verify the Signature is Correct
     const verifiedMessage: boolean = await algo.verifySignature(msg);
     if (!verifiedMessage) {
-      logger.warn("❌ Message from rejected due to invalid signature.");
+      logger.warn("❌ Message rejected due to invalid signature.");
+      console.log("Rejected Message:", msg.role);
       return;
     }
     logger.info("🔐 Signature of incoming message has been successfully verified.");
@@ -67,7 +68,7 @@ export const handlePubSubMessage = async (
         }
       };
 
-      response.signature = await algo.signObject(response.payload);
+      response.signature = await algo.signObject(response);
       node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
