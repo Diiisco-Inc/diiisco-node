@@ -22,14 +22,30 @@ export const handlePubSubMessage = async (
     const msg: PubSubMessage = decode(evt.detail.data);
     const env: Environment = environment; // Use the typed environment
 
+    //Verify the Signature on the Exists on the Message
+    if (!msg.signature){
+      logger.warn("❌ Message rejected due to missing signature.");
+      return;
+    }
+
+    //Verify the Signature is Correct
+    const verifiedMessage: boolean = await algo.verifySignature(msg);
+    if (!verifiedMessage) {
+      logger.warn("❌ Message from rejected due to invalid signature.");
+      return;
+    }
+    logger.info("🔐 Signature of incoming message has been successfully verified.");
+
     const quoteRequestMsg = msg as QuoteRequest;
     if (msg.role === 'quote-request' && models.includes(quoteRequestMsg.payload.model)) {
-      const x = await algo.checkIfOptedIn(quoteRequestMsg.paymentSourceAddr, env.algorand.paymentAssetId);
+      //Check If Opted In to DSCO
+      const x = await algo.checkIfOptedIn(quoteRequestMsg.fromWalletAddr, env.algorand.paymentAssetId);
       if (!x.optedIn || Number(x.balance) <= 0) {
-        logger.warn(`❌ Quote request from ${quoteRequestMsg.paymentSourceAddr} cannot be fulfilled - not opted in or zero balance.`);
+        logger.warn(`❌ Quote request from ${quoteRequestMsg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
         return;
       }
 
+      //Generate Quote
       const tokenCount: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
       const modelRate = env.models.chargePer1KTokens[quoteRequestMsg.payload.model] || env.models.chargePer1KTokens.default || 0.000001;
       let response: QuoteResponse = {
@@ -37,7 +53,7 @@ export const handlePubSubMessage = async (
         timestamp: Date.now(),
         id: quoteRequestMsg.id,
         to: evt.detail.from.toString(),
-        paymentSourceAddr: env.algorand.addr,
+        fromWalletAddr: algo.addr,
         payload: {
           ...quoteRequestMsg.payload,
           quote: {
@@ -48,11 +64,10 @@ export const handlePubSubMessage = async (
             totalPrice: (tokenCount / 1000) * modelRate,
             addr: algo.addr,
           },
-          signature: ''
         }
       };
 
-      response.payload.signature = await algo.signObject(response.payload.quote);
+      response.signature = await algo.signObject(response.payload);
       node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
@@ -65,24 +80,22 @@ export const handlePubSubMessage = async (
 
     if (msg.role === 'quote-accepted' && msg.to === node.peerId.toString()) {
       const quoteAcceptedMsg = msg as QuoteAccepted;
-      const validQuote: boolean = await algo.verifySignature(quoteAcceptedMsg.payload.quote, quoteAcceptedMsg.payload.signature);
-      if (validQuote) {
-        const completion = await model.getResponse(quoteAcceptedMsg.payload.model, quoteAcceptedMsg.payload.inputs);
-        let response: InferenceResponse = {
-          role: 'inference-response',
-          to: evt.detail.from.toString(),
-          timestamp: Date.now(),
-          id: quoteAcceptedMsg.id,
-          paymentSourceAddr: env.algorand.addr,
-          payload: {
-            ...quoteAcceptedMsg.payload,
-            completion: completion,
-          }
-        };
+      const completion = await model.getResponse(quoteAcceptedMsg.payload.model, quoteAcceptedMsg.payload.inputs);
+      let response: InferenceResponse = {
+        role: 'inference-response',
+        to: evt.detail.from.toString(),
+        timestamp: Date.now(),
+        id: quoteAcceptedMsg.id,
+        fromWalletAddr: env.algorand.addr,
+        payload: {
+          ...quoteAcceptedMsg.payload,
+          completion: completion,
+        }
+      };
 
-        node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
-        logger.info(`📤 Sent inference-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
-      }
+      response.signature = await algo.signObject(response);
+      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      logger.info(`📤 Sent inference-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
     if (msg.role === 'inference-response' && msg.to === node.peerId.toString()) {

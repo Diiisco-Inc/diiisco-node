@@ -5,6 +5,7 @@ import { logger } from './logger';
 import { Environment } from '../environment/environment.types';
 import { NfdClient } from '@txnlab/nfd-sdk';
 import { verify } from 'crypto';
+import { PubSubMessage } from '../types/messages';
 
 export default class algorand {
   addr: string;
@@ -65,16 +66,34 @@ export default class algorand {
   }
 
   async signObject(obj: any){
+    // Remove signature field if it exists to avoid signing the signature itself
+    if ('signature' in obj) {
+      const { signature, ...objWithoutSignature } = obj;
+      obj = objWithoutSignature;
+    }
+
+    // Sign the Payload
     const bytes = new TextEncoder().encode(`${JSON.stringify(obj)}`);
     const signature = algosdk.signBytes(bytes, algosdk.mnemonicToSecretKey(this.mnemonic).sk);
     const signatureB64 = Buffer.from(signature).toString('base64');
     return signatureB64;
   }
 
-  async verifySignature(obj: any, signature: string, addr: string){
+  async verifySignature(obj: PubSubMessage){
+    // Remove signature field if it exists to avoid verifying the signature itself
+    let sig: string | undefined = "";
+    if ('signature' in obj) {
+      const { signature, ...objWithoutSignature } = obj;
+      sig = signature;
+      obj = objWithoutSignature;
+    } else {
+      return false
+    }
+
+    // Verify the Signature and Payload
     const bytes = new TextEncoder().encode(`${JSON.stringify(obj)}`);
-    const signatureBytes = Buffer.from(signature, 'base64');
-    const verified = algosdk.verifyBytes(bytes, signatureBytes, addr);
+    const signatureBytes = Buffer.from(sig!, 'base64');
+    const verified = algosdk.verifyBytes(bytes, signatureBytes, obj.fromWalletAddr);
     return verified;
   }
 
