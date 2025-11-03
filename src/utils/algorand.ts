@@ -65,12 +65,17 @@ export default class algorand {
   }
 
   async signObject(obj: any){
-    return sha256(`${JSON.stringify(obj)}, ${this.mnemonic}`);
+    const bytes = new TextEncoder().encode(`${JSON.stringify(obj)}`);
+    const signature = algosdk.signBytes(bytes, algosdk.mnemonicToSecretKey(this.mnemonic).sk);
+    const signatureB64 = Buffer.from(signature).toString('base64');
+    return signatureB64;
   }
 
-  async verifySignature(obj: any, signature: string){
-    const expectedSignature = await this.signObject(obj);
-    return expectedSignature === signature;
+  async verifySignature(obj: any, signature: string, addr: string){
+    const bytes = new TextEncoder().encode(`${JSON.stringify(obj)}`);
+    const signatureBytes = Buffer.from(signature, 'base64');
+    const verified = algosdk.verifyBytes(bytes, signatureBytes, addr);
+    return verified;
   }
 
   async makePayment(toAddr: string, amount: number){
