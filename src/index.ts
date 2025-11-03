@@ -41,7 +41,7 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      createApiServer(this.node, this);
+      createApiServer(this.node, this, this.algo);
     }
 
     // Listen for Model PubSub Events

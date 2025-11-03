@@ -10,8 +10,9 @@ import { logger } from '../utils/logger';
 import { waitForMesh } from '../libp2p/node';
 import { Libp2p } from '@libp2p/interface';
 import { Connection } from 'libp2p-tcp';
+import algorand from '../utils/algorand';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand ) => {
   const app = express();
   const port = environment.api.port || 8080;
   app.use(cors());
@@ -51,13 +52,15 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter) => {
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
       from: node.peerId.toString(),
-      paymentSourceAddr: environment.algorand.addr,
+      fromWalletAddr: environment.algorand.addr,
       timestamp: Date.now(),
       id: `${Date.now()}-${sha256(JSON.stringify(req.body))}`,
       payload: {
         ...req.body
       }
     };
+
+    quoteMessage.signature = await algo.signObject(quoteMessage);
 
     waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(() => {
       (node.services.pubsub as any).publish("diiisco/models/1.0.0", encode(quoteMessage));
@@ -80,12 +83,13 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter) => {
         to: quote.from.toString(),
         timestamp: Date.now(),
         id: quote.msg.id,
-        paymentSourceAddr: environment.algorand.addr,
+        fromWalletAddr: environment.algorand.addr,
         payload: {
           ...quote.msg.payload,
         }
       };
 
+      acceptance.signature = await algo.signObject(acceptance);
       (node.services.pubsub as any).publish('diiisco/models/1.0.0', encode(acceptance));
       logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}: ${JSON.stringify(acceptance)}`);
     });

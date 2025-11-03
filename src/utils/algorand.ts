@@ -5,6 +5,32 @@ import { logger } from './logger';
 import { Environment } from '../environment/environment.types';
 import { NfdClient } from '@txnlab/nfd-sdk';
 import { verify } from 'crypto';
+import { PubSubMessage } from '../types/messages';
+import { canonicalize } from 'json-canonicalize';
+
+/**
+ * Recursively sorts object keys and stringifies to ensure a canonical representation.
+ * This is crucial for consistent signing and verification of objects.
+ * @param obj The object to stringify.
+ * @returns A canonical JSON string representation of the object.
+ */
+function canonicalStringify(obj: any): string {
+  if (obj === null || typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(item => canonicalStringify(item)).join(',') + ']';
+  }
+
+  const sortedKeys = Object.keys(obj).sort();
+  const parts: string[] = [];
+  for (const key of sortedKeys) {
+    parts.push(JSON.stringify(key) + ':' + canonicalStringify(obj[key]));
+  }
+  return '{' + parts.join(',') + '}';
+}
+
 
 export default class algorand {
   addr: string;
@@ -65,12 +91,35 @@ export default class algorand {
   }
 
   async signObject(obj: any){
-    return sha256(`${JSON.stringify(obj)}, ${this.mnemonic}`);
+    // Remove signature field if it exists to avoid signing the signature itself
+    if ('signature' in obj) {
+      const { signature, ...objWithoutSignature } = obj;
+      obj = objWithoutSignature;
+    }
+
+    // Sign the Payload
+    const bytes = new TextEncoder().encode(canonicalize(obj));
+    const signedBytes = algosdk.signBytes(bytes, algosdk.mnemonicToSecretKey(this.mnemonic).sk);
+    const signatureB64 = Buffer.from(signedBytes).toString('base64');
+    return signatureB64;
   }
 
-  async verifySignature(obj: any, signature: string){
-    const expectedSignature = await this.signObject(obj);
-    return expectedSignature === signature;
+  async verifySignature(obj: PubSubMessage){
+    // Remove signature field if it exists to avoid verifying the signature itself
+    let sig: string | undefined = "";
+    if ('signature' in obj) {
+      const { signature, ...objWithoutSignature } = obj;
+      sig = signature;
+      obj = objWithoutSignature;
+    } else {
+      return false
+    }
+
+    // Verify the Signature and Payload
+    const bytes = new TextEncoder().encode(canonicalize(obj));
+    const signatureBytes = Buffer.from(sig!, 'base64');
+    const verified = algosdk.verifyBytes(bytes, signatureBytes, obj.fromWalletAddr);
+    return verified;
   }
 
   async makePayment(toAddr: string, amount: number){

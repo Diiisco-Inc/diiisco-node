@@ -6,10 +6,11 @@ export interface QuoteRequestPayload {
 export interface QuoteRequest {
   role: "quote-request";
   from: string;
-  paymentSourceAddr: string;
+  fromWalletAddr: string;
   timestamp: number;
   id: string;
   payload: QuoteRequestPayload;
+  signature?: string;
 }
 
 export interface QuoteResponsePayload {
@@ -26,12 +27,12 @@ export interface QuoteResponse {
   timestamp: number;
   to: string;
   id: string;
-  paymentSourceAddr: string;
+  fromWalletAddr: string;
   payload: {
     quote: QuoteResponsePayload;
-    signature: string;
     [key: string]: any; // Allow other properties from original payload
   };
+  signature?: string;
 }
 
 export interface QuoteAcceptedPayload {
@@ -43,8 +44,9 @@ export interface QuoteAccepted {
   to: string;
   timestamp: number;
   id: string;
-  paymentSourceAddr: string;
+  fromWalletAddr: string;
   payload: QuoteAcceptedPayload;
+  signature?: string;
 }
 
 export interface InferenceResponsePayload {
@@ -57,8 +59,9 @@ export interface InferenceResponse {
   to: string;
   timestamp: number;
   id: string;
-  paymentSourceAddr: string;
+  fromWalletAddr: string;
   payload: InferenceResponsePayload;
+  signature?: string;
 }
 
 export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | InferenceResponse;
