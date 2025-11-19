@@ -1,4 +1,5 @@
 import { Environment } from "./environment.types"; // Import the new interface
+import { selectHighestStakeQuote } from "../utils/quoteSelectionMethods";
 
 const environment: Environment = {
   peerIdStorage: {
@@ -34,7 +35,8 @@ const environment: Environment = {
     port: 8080
   },
   quoteEngine: {
-    waitTime: 1000
+    waitTime: 1000,
+    quoteSelectionFunction: selectHighestStakeQuote,
   },
   libp2pBootstrapServers: [
     // To connect to nyc.diiisco.com, you need its full multiaddr, which includes its Peer ID.
