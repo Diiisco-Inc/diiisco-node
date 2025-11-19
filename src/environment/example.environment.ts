@@ -39,11 +39,8 @@ const environment: Environment = {
     quoteSelectionFunction: selectHighestStakeQuote,
   },
   libp2pBootstrapServers: [
-    // To connect to nyc.diiisco.com, you need its full multiaddr, which includes its Peer ID.
-    // You would obtain this Peer ID from the logs of the nyc.diiisco.com server when it starts.
-    // Example: "/dns4/nyc.diiisco.com/tcp/8181/p2p/Qm...NYC_PEER_ID"
-    // For now, using a placeholder. Replace "Qm...NYC_PEER_ID" with the actual Peer ID.
-    "/dns4/nyc.diiisco.com/tcp/4242/p2p/Qm...NYC_PEER_ID_PLACEHOLDER"
+    "lon.diiisco.algo",
+    "nyc.diiisco.algo",
   ],
   node: {
     url: "http://localhost",
