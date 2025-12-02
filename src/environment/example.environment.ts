@@ -22,7 +22,6 @@ const environment: Environment = {
       port: 443,
       token: ""
     },
-    paymentAssetId: 31566704
   },
   api: {
     enabled: true,
