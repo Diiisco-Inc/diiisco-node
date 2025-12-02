@@ -49,6 +49,26 @@ export interface QuoteAccepted {
   signature?: string;
 }
 
+export interface ContractCreated {
+  role: "contract-created";
+  to: string;
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  payload: QuoteAcceptedPayload;
+  signature?: string;
+}
+
+export interface ContractSigned {
+  role: "contract-signed";
+  to: string;
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  payload: QuoteAcceptedPayload;
+  signature?: string;
+}
+
 export interface InferenceResponsePayload {
   completion: any; // TODO: Define a more specific type for completion
   [key: string]: any; // Allow other properties from original payload
@@ -64,7 +84,7 @@ export interface InferenceResponse {
   signature?: string;
 }
 
-export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | InferenceResponse;
+export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | ContractCreated | ContractSigned | InferenceResponse;
 
 export interface QuoteEvent {
   msg: QuoteResponse;
