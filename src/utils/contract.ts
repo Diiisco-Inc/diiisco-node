@@ -1,10 +1,16 @@
 import environment from '../environment/example.environment';
+import { DiiiscoSmartContractConfig } from '../types/algorand';
 import { ABIContractParams } from 'algosdk';
 
 //ABI Specs
 const DIIISCO_ABI_SPEC: ABIContractParams = {
   name: 'Diiisco',
   methods: [
+    {
+      name: 'optInToApplication',
+      args: [],
+      returns: { type: 'void' },
+    },
     {
       name: 'createQuote',
       args: [
@@ -53,9 +59,9 @@ const DIIISCO_ABI_SPEC: ABIContractParams = {
 // TESTNET INFO PROVDIED FOR PROD. REPALDE WHEN LIVE. 
 const DIIISCO_CONTRACT: DiiiscoSmartContractConfig = { 
   abiSpec: DIIISCO_ABI_SPEC,
-  app: 123456789, // Once the pool is live, we will replace this with appID of the deployed contract
+  app: 749916870, // Once the pool is live, we will replace this with appID of the deployed contract
   usdc: 31566704,
-  asset: 3303055052,
+  asset: 748970589,
   tinymanPoolAddress: "POOL_ADDR_HERE",
   tinymanApp: 1002541853, // Once the pool is live, we will replace this with appID of the Tinyman pool
   defaultMinDscoOut: 1,
@@ -64,24 +70,13 @@ const DIIISCO_CONTRACT: DiiiscoSmartContractConfig = {
 // Prepare Smart Contract Object
 const DIIISCO_CONTRACT_TESTNET: DiiiscoSmartContractConfig = { 
   abiSpec: DIIISCO_ABI_SPEC,
-  app: 123456789, // Once the pool is live, we will replace this with appID of the deployed contract
-  usdc: 31566704,
-  asset: 3303055052,
-  tinymanPoolAddress: "POOL_ADDR_HERE",
-  tinymanApp: 1002541853, // Once the pool is live, we will replace this with appID of the Tinyman pool
+  app: 749916870, // Once the pool is live, we will replace this with appID of the deployed contract
+  usdc: 10458941,
+  asset: 748970589,
+  tinymanPoolAddress: "E5VVQRI6J7FIN45YJ4WTNQ7IKBUCCOJP72FKON3HUZW6UJDBT7UG2WJ2EI",
+  tinymanApp: 148607000, // Once the pool is live, we will replace this with appID of the Tinyman pool
   defaultMinDscoOut: 1,
-};
-
-export interface DiiiscoSmartContractConfig {
-  abiSpec: ABIContractParams;
-  app: number;
-  usdc: number;
-  asset: number;
-  tinymanPoolAddress: string;
-  tinymanApp: number;
-  defaultMinDscoOut?: number; // Use number for bigint representation
-}
-  
+};  
 
 // Export the contract object
 export const diiiscoContract = environment.algorand.network === 'mainnet' ? DIIISCO_CONTRACT : DIIISCO_CONTRACT_TESTNET;

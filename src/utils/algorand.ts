@@ -9,6 +9,7 @@ import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
 import { diiiscoContract } from './contract';
 import { QuoteDetails, VerifyQuoteFundedResult } from '../types/algorand';
+import { ApplicationLocalState } from 'algosdk/dist/types/client/v2/algod/models/types';
 
 /**
  * Recursively sorts object keys and stringifies to ensure a canonical representation.
@@ -45,7 +46,7 @@ function makeSigner(acct: algosdk.Account): algosdk.TransactionSigner {
 
 export default class algorand {
   mnemonic: string;
-  private account: algosdk.Account;
+  account: algosdk.Account;
   nfdAddr: string | null;
   private env: Environment;
   private algod: algosdk.Algodv2;
@@ -76,13 +77,35 @@ export default class algorand {
 
     // Check the Address is opted in to the Diiisco ASA (Asset ID)
     try {
-      const { optedIn } = await this.checkIfOptedIn(this.account.addr.toString(), diiiscoContract.asset);
+      const { optedIn } = await this.checkIfOptedInToAsset(this.account.addr.toString(), diiiscoContract.asset);
       if (!optedIn) {
         await this.optInToAsset(this.account.addr.toString(), diiiscoContract.asset);
         logger.info("✅ Opted in to Diiisco ASA");
       }
     } catch (err) {
       logger.error("❌ Failed to opt-in to Diiisco ASA:", err);
+    }
+
+    // Check the Address is Opted into USDC ASA (Asset ID)
+    try {
+      const { optedIn } = await this.checkIfOptedInToAsset(this.account.addr.toString(), diiiscoContract.usdc);
+      if (!optedIn) {
+        await this.optInToAsset(this.account.addr.toString(), diiiscoContract.usdc);
+        logger.info("✅ Opted in to USDC ASA");
+      }
+    } catch (err) {
+      logger.error("❌ Failed to opt-in to USDC ASA:", err);
+    }
+
+    // Check if the Address is registered in the Diiisco Contract
+    try {
+      const registered = await this.checkIfRegistered(this.account.addr.toString(), diiiscoContract.app);
+      if (!registered) {
+        await this.registerAddressForContract();
+        logger.info("✅ Registered address in Diiisco Contract");
+      }
+    } catch (err) {
+      logger.error("❌ Failed to register address in Diiisco Contract:", err);
     }
 
     //Verify the NFD if Provided
@@ -140,7 +163,7 @@ export default class algorand {
     return verified;
   }
 
-  async checkIfOptedIn(address: string, assetId: number): Promise<{ optedIn: boolean; balance: BigInt }> {
+  async checkIfOptedInToAsset(address: string, assetId: number): Promise<{ optedIn: boolean; balance: BigInt }> {
     const algod = new algosdk.Algodv2(
       this.env.algorand.client.token,
       this.env.algorand.client.address,
@@ -253,6 +276,42 @@ export default class algorand {
     const sp = await this.algod.getTransactionParams().do();
     sp.flatFee = false;
     return sp;
+  }
+
+  async checkIfRegistered(address: string, app: number): Promise<boolean> {
+    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
+    try {
+      const accountInfo = await this.algod.accountInformation(address).do();
+      const appOptInState: ApplicationLocalState | undefined = accountInfo.appsLocalState?.find(
+        (localState: any) => localState.id === BigInt(app)
+      );
+      return appOptInState !== undefined ;
+    } catch(error) {
+      return false;
+    }
+  }
+
+  async registerAddressForContract(): Promise<number> {
+    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
+    const sc = diiiscoContract;
+
+    const sp = await this.getSuggestedParams();
+    const atc = new algosdk.AtomicTransactionComposer();
+    const method = this.contract.getMethodByName('optInToApplication');
+
+    atc.addMethodCall({
+      appID: sc.app,
+      method,
+      methodArgs: [],
+      sender: this.account.addr,
+      suggestedParams: sp,
+      signer: this.signer,
+      boxes: [],
+      onComplete: algosdk.OnApplicationComplete.OptInOC,
+    });
+
+    const res = await atc.execute(this.algod, 4);
+    return Number(res.confirmedRound);
   }
 
   async createQuote(options: {

@@ -1,3 +1,5 @@
+import { ABIContractParams } from 'algosdk';
+
 export interface VerifyQuoteFundedResult {
   funded: bigint;
   status: bigint;
@@ -12,4 +14,14 @@ export interface QuoteDetails {
   dscoAmount: bigint;
   status: bigint;
   lastUpdatedAt: bigint;
+}
+
+export interface DiiiscoSmartContractConfig {
+  abiSpec: ABIContractParams;
+  app: number;
+  usdc: number;
+  asset: number;
+  tinymanPoolAddress: string;
+  tinymanApp: number;
+  defaultMinDscoOut?: number; // Use number for bigint representation
 }
