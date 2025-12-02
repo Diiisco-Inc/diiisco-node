@@ -17,8 +17,9 @@ const environment: Environment = {
   algorand: {
     addr: "YOUR_ALGORAND_ADDRESS_HERE",
     mnemonic: "YOUR_ALGORAND_MNEMONIC_HERE",
+    network: "testnet",
     client: {
-      address: "https://mainnet-api.algonode.cloud/",
+      address: "https://testnet-api.algonode.cloud/",
       port: 443,
       token: ""
     },

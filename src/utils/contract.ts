@@ -1,3 +1,4 @@
+import environment from '../environment/example.environment';
 import { ABIContractParams } from 'algosdk';
 
 //ABI Specs
@@ -83,6 +84,6 @@ export interface DiiiscoSmartContractConfig {
   
 
 // Export the contract object
-export const diiiscoContract = process.env.NODE_ENV === 'production' ? DIIISCO_CONTRACT : DIIISCO_CONTRACT_TESTNET;
+export const diiiscoContract = environment.algorand.network === 'mainnet' ? DIIISCO_CONTRACT : DIIISCO_CONTRACT_TESTNET;
 
 export default diiiscoContract;

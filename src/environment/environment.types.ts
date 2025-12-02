@@ -11,6 +11,7 @@ export interface AlgorandConfig {
   addr: string;
   mnemonic: string;
   client: AlgorandClientConfig;
+  network?: 'mainnet' | 'testnet';
   nfd?: string;
 }
 
