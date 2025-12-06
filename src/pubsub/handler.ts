@@ -4,9 +4,10 @@ import algorand from "../utils/algorand";
 import environment from "../environment/environment";
 import { OpenAIInferenceModel } from "../utils/models";
 import quoteEngine from "../utils/quoteEngine";
-import { PubSubMessage, QuoteRequest, QuoteResponse, QuoteAccepted, InferenceResponse } from "../types/messages";
+import { PubSubMessage, QuoteRequest, QuoteResponse, QuoteAccepted, InferenceResponse, ContractSigned, ContractCreated } from "../types/messages";
 import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
+import diiiscoContract from "../utils/contract";
 
 export const handlePubSubMessage = async (
   evt: any,
@@ -28,7 +29,7 @@ export const handlePubSubMessage = async (
       return;
     }
 
-    //Verify the Signature is Correct
+    // Verify the Signature is Correct
     const verifiedMessage: boolean = await algo.verifySignature(msg);
     if (!verifiedMessage) {
       logger.warn("❌ Message rejected due to invalid signature.");
@@ -40,13 +41,13 @@ export const handlePubSubMessage = async (
     const quoteRequestMsg = msg as QuoteRequest;
     if (msg.role === 'quote-request' && models.includes(quoteRequestMsg.payload.model)) {
       //Check If Opted In to DSCO
-      const x = await algo.checkIfOptedIn(quoteRequestMsg.fromWalletAddr, env.algorand.paymentAssetId);
-      if (!x.optedIn || Number(x.balance) <= 0) {
+      const x = await algo.checkIfOptedInToAsset(quoteRequestMsg.fromWalletAddr, diiiscoContract.asset);
+      if (!x.optedIn) {
         logger.warn(`❌ Quote request from ${quoteRequestMsg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
         return;
       }
 
-      //Generate Quote
+      // Generate Quote
       const tokenCount: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
       const modelRate = env.models.chargePer1KTokens[quoteRequestMsg.payload.model] || env.models.chargePer1KTokens.default || 0.000001;
       let response: QuoteResponse = {
@@ -54,7 +55,7 @@ export const handlePubSubMessage = async (
         timestamp: Date.now(),
         id: quoteRequestMsg.id,
         to: evt.detail.from.toString(),
-        fromWalletAddr: algo.addr,
+        fromWalletAddr: algo.account.addr.toString(),
         payload: {
           ...quoteRequestMsg.payload,
           quote: {
@@ -62,8 +63,8 @@ export const handlePubSubMessage = async (
             inputCount: quoteRequestMsg.payload.inputs.length,
             tokenCount: tokenCount,
             pricePer1K: modelRate,
-            totalPrice: (tokenCount / 1000) * modelRate,
-            addr: algo.addr,
+            totalPrice: parseFloat(((tokenCount / 1000) * modelRate).toFixed(6)),
+            addr: algo.account.addr.toString(),
           },
         }
       };
@@ -81,15 +82,62 @@ export const handlePubSubMessage = async (
 
     if (msg.role === 'quote-accepted' && msg.to === node.peerId.toString()) {
       const quoteAcceptedMsg = msg as QuoteAccepted;
-      const completion = await model.getResponse(quoteAcceptedMsg.payload.model, quoteAcceptedMsg.payload.inputs);
+      await algo.createQuote({
+        quoteId: quoteAcceptedMsg.id,
+        customerAddress: quoteAcceptedMsg.fromWalletAddr,
+        usdcAmount: BigInt(quoteAcceptedMsg.payload.quote.totalPrice * 1_000_000), // 
+      });
+
+      let response: ContractCreated = {
+        ...quoteAcceptedMsg,
+        role: "contract-created",
+        timestamp: Date.now(),
+        to: evt.detail.from.toString(),
+        fromWalletAddr: algo.account.addr.toString(),
+      };
+      response.signature = await algo.signObject(response);
+      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      logger.info(`📤 Sent contract-created to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
+    }
+
+    if (msg.role === 'contract-created' && msg.to === node.peerId.toString()) {
+      // Sign the contract and send back to customer with role "contract-signed"
+      const contractCreatedMsg = msg as ContractCreated;
+      await algo.fundQuote({
+        quoteId: contractCreatedMsg.id,
+        usdcAmount: BigInt(contractCreatedMsg.payload.quote.totalPrice * 1_000_000),
+      });
+
+      let response: ContractSigned = {
+        ...contractCreatedMsg,
+        role: "contract-signed",
+        timestamp: Date.now(),
+        to: evt.detail.from.toString(),
+        fromWalletAddr: algo.account.addr.toString(),
+      };
+      response.signature = await algo.signObject(response);
+      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      logger.info(`📤 Sent contract-signed to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
+    }
+    
+    if (msg.role === 'contract-signed' && msg.to === node.peerId.toString()) {
+      const contractSignedMsg = msg as ContractSigned;
+      const funded = await algo.verifyQuoteFunded(contractSignedMsg.id);
+      if (!funded.funded || funded.usdcAmount < BigInt(contractSignedMsg.payload.quote.totalPrice * 1_000_000)) {
+        logger.warn(`❌ Contract ${contractSignedMsg.id} is not funded. Cannot proceed with inference.`);
+        return;
+      }
+      
+      //Execute Inference and send back to customer with role "inference-response"
+      const completion = await model.getResponse(contractSignedMsg.payload.model, contractSignedMsg.payload.inputs);
       let response: InferenceResponse = {
         role: 'inference-response',
         to: evt.detail.from.toString(),
         timestamp: Date.now(),
-        id: quoteAcceptedMsg.id,
+        id: contractSignedMsg.id,
         fromWalletAddr: env.algorand.addr,
         payload: {
-          ...quoteAcceptedMsg.payload,
+          ...contractSignedMsg.payload,
           completion: completion,
         }
       };
@@ -102,7 +150,7 @@ export const handlePubSubMessage = async (
     if (msg.role === 'inference-response' && msg.to === node.peerId.toString()) {
       const inferenceResponseMsg = msg as InferenceResponse;
       logger.info(`📥 Received inference-response: ${JSON.stringify(inferenceResponseMsg)}`);
-      const payment = await algo.makePayment(inferenceResponseMsg.payload.quote.addr, inferenceResponseMsg.payload.quote.totalPrice);
+      const payment = await algo.completeQuote({ quoteId: inferenceResponseMsg.id });
       nodeEvents.emit(`inference-response-${inferenceResponseMsg.id}`, { ...inferenceResponseMsg, payment: payment, quote: inferenceResponseMsg.payload.quote });
     }
   }
