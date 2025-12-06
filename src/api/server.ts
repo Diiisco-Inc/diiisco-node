@@ -54,7 +54,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       from: node.peerId.toString(),
       fromWalletAddr: environment.algorand.addr,
       timestamp: Date.now(),
-      id: `${Date.now()}-${sha256(JSON.stringify(req.body))}`,
+      id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
       payload: {
         ...req.body
       }

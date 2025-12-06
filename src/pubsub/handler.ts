@@ -42,7 +42,7 @@ export const handlePubSubMessage = async (
     if (msg.role === 'quote-request' && models.includes(quoteRequestMsg.payload.model)) {
       //Check If Opted In to DSCO
       const x = await algo.checkIfOptedInToAsset(quoteRequestMsg.fromWalletAddr, diiiscoContract.asset);
-      if (!x.optedIn || Number(x.balance) <= 0) {
+      if (!x.optedIn) {
         logger.warn(`❌ Quote request from ${quoteRequestMsg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
         return;
       }
@@ -63,7 +63,7 @@ export const handlePubSubMessage = async (
             inputCount: quoteRequestMsg.payload.inputs.length,
             tokenCount: tokenCount,
             pricePer1K: modelRate,
-            totalPrice: (tokenCount / 1000) * modelRate,
+            totalPrice: parseFloat(((tokenCount / 1000) * modelRate).toFixed(6)),
             addr: algo.account.addr.toString(),
           },
         }
@@ -91,8 +91,11 @@ export const handlePubSubMessage = async (
       let response: ContractCreated = {
         ...quoteAcceptedMsg,
         role: "contract-created",
+        timestamp: Date.now(),
+        to: evt.detail.from.toString(),
+        fromWalletAddr: algo.account.addr.toString(),
       };
-      quoteAcceptedMsg.signature = await algo.signObject(quoteAcceptedMsg);
+      response.signature = await algo.signObject(response);
       node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent contract-created to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
@@ -108,8 +111,11 @@ export const handlePubSubMessage = async (
       let response: ContractSigned = {
         ...contractCreatedMsg,
         role: "contract-signed",
+        timestamp: Date.now(),
+        to: evt.detail.from.toString(),
+        fromWalletAddr: algo.account.addr.toString(),
       };
-      contractCreatedMsg.signature = await algo.signObject(contractCreatedMsg);
+      response.signature = await algo.signObject(response);
       node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent contract-signed to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }

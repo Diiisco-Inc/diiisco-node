@@ -325,7 +325,7 @@ export default class algorand {
     const quoteId = options.quoteId;
     if (!quoteId) throw new Error('quoteId is required');
 
-    const customerAddress = options.customerAddress;
+    const customerAddressBytes = algosdk.decodeAddress(options.customerAddress).publicKey;
     const usdcAmount = options.usdcAmount;
     if (usdcAmount === undefined) throw new Error('usdcAmount is required');
 
@@ -339,7 +339,7 @@ export default class algorand {
     atc.addMethodCall({
       appID: sc.app,
       method,
-      methodArgs: [quoteIdBytes, customerAddress, usdcAmount],
+      methodArgs: [quoteIdBytes, customerAddressBytes, usdcAmount],
       sender: this.account.addr,
       suggestedParams: sp,
       signer: this.signer,
@@ -375,11 +375,12 @@ export default class algorand {
     const quoteIdBytes = toBytes(quoteId);
     const boxName = toBytes('quotes' + quoteId);
 
+    console.log("Funding quote:", { quoteId, usdcAmount, appAddress });
     const usdcTx = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       sender: this.account.addr,
       receiver: appAddress,
       assetIndex: sc.usdc,
-      amount: Number(usdcAmount),
+      amount: usdcAmount,
       suggestedParams: sp,
     });
 
@@ -508,7 +509,7 @@ export default class algorand {
     const quoteId = options.quoteId;
     if (!quoteId) throw new Error('quoteId is required');
 
-    const minDscoOut = options.minDscoOut ?? 0;
+    const minDscoOut = options.minDscoOut ?? 1n;
 
     const sp = await this.getSuggestedParams();
     const atc = new algosdk.AtomicTransactionComposer();

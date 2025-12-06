@@ -70,10 +70,10 @@ const DIIISCO_CONTRACT: DiiiscoSmartContractConfig = {
 // Prepare Smart Contract Object
 const DIIISCO_CONTRACT_TESTNET: DiiiscoSmartContractConfig = { 
   abiSpec: DIIISCO_ABI_SPEC,
-  app: 749916870, // Once the pool is live, we will replace this with appID of the deployed contract
+  app: 751491639, // Once the pool is live, we will replace this with appID of the deployed contract
   usdc: 10458941,
   asset: 748970589,
-  tinymanPoolAddress: "E5VVQRI6J7FIN45YJ4WTNQ7IKBUCCOJP72FKON3HUZW6UJDBT7UG2WJ2EI",
+  tinymanPoolAddress: "L2NEJ2YDVT3XYAHUMAWBV744E4AB6ZEKVLPW3YB3JY44Q6UUUGGD5XU5IA",
   tinymanApp: 148607000, // Once the pool is live, we will replace this with appID of the Tinyman pool
   defaultMinDscoOut: 1,
 };  
