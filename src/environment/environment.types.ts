@@ -1,5 +1,5 @@
 import PeerId from 'peer-id';
-import { QuoteResponse } from '../types/messages';
+import { QuoteEvent, QuoteResponse } from '../types/messages';
 
 export interface AlgorandClientConfig {
   address: string;
@@ -36,7 +36,7 @@ export interface ApiConfig {
 
 export interface QuoteEngineConfig {
   waitTime: number;
-  quoteSelectionFunction?: (quotes: { from: string; msg: QuoteResponse }[]) => { from: string; msg: QuoteResponse } | null;
+  quoteSelectionFunction?: (quotes: QuoteEvent[]) => Promise<QuoteEvent>;
 }
 
 export interface PeerIdStorageConfig {
