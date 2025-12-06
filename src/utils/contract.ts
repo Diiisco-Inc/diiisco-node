@@ -1,4 +1,3 @@
-import environment from '../environment/example.environment';
 import { DiiiscoSmartContractConfig } from '../types/algorand';
 import { ABIContractParams } from 'algosdk';
 
@@ -59,11 +58,11 @@ const DIIISCO_ABI_SPEC: ABIContractParams = {
 // TESTNET INFO PROVDIED FOR PROD. REPALDE WHEN LIVE. 
 const DIIISCO_CONTRACT: DiiiscoSmartContractConfig = { 
   abiSpec: DIIISCO_ABI_SPEC,
-  app: 749916870, // Once the pool is live, we will replace this with appID of the deployed contract
+  app: 3355033669,
   usdc: 31566704,
-  asset: 748970589,
-  tinymanPoolAddress: "POOL_ADDR_HERE",
-  tinymanApp: 1002541853, // Once the pool is live, we will replace this with appID of the Tinyman pool
+  asset: 3303055052,
+  tinymanPoolAddress: "4XIH23PHRS6KCB6EDOZAFMNGE4LWZN7DGDWAY4YLHENUMJYHI6QFH56STI",
+  tinymanApp: 1002541853,
   defaultMinDscoOut: 1,
 };
 
@@ -79,6 +78,6 @@ const DIIISCO_CONTRACT_TESTNET: DiiiscoSmartContractConfig = {
 };  
 
 // Export the contract object
-export const diiiscoContract = environment.algorand.network === 'mainnet' ? DIIISCO_CONTRACT : DIIISCO_CONTRACT_TESTNET;
+export const diiiscoContract = DIIISCO_CONTRACT;
 
 export default diiiscoContract;
