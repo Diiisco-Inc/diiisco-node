@@ -1,7 +1,11 @@
 import environment from '../environment/environment'
 import { EventEmitter } from 'events'
-import { QuoteEvent, QuoteQueueEntry } from '../types/messages';
+import { QuoteEvent, QuoteQueueEntry, QuoteRequest } from '../types/messages';
 import { Environment } from '../environment/environment.types';
+import { selectHighestStakeQuote } from './quoteSelectionMethods';
+import { OpenAIInferenceModel } from './models';
+import { createQuoteFromInputTokens } from './quoteCreationMethods';
+import { RawQuote } from '../types/quotes';
 
 export default class quoteEngine {
   quoteQueue: { [key: string]: QuoteQueueEntry };
@@ -20,7 +24,7 @@ export default class quoteEngine {
         quotes: [quoteEvent],
         timeout: setTimeout(async () => {
           // Select Quote based on selection function
-          const selectionFunction = environment.quoteEngine.quoteSelectionFunction;
+          const selectionFunction = environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote;
           const selectedQuote = await selectionFunction(this.quoteQueue[quoteEvent.msg.id].quotes);
 
           // Emit event that quote is ready
@@ -33,5 +37,19 @@ export default class quoteEngine {
     } else {
       this.quoteQueue[quoteEvent.msg.id].quotes.push(quoteEvent);
     }
+  }
+
+  async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel){
+    const creationFunctionSetting = environment.quoteEngine.quoteCreationFunction ?? [createQuoteFromInputTokens];
+    const creationFunctionArray: Function[] = Array.isArray(creationFunctionSetting) ? creationFunctionSetting : [creationFunctionSetting];
+    
+    for (const func of creationFunctionArray){
+      const result: RawQuote = await func(quoteRequestMsg, model);
+      if (result !== null){
+        return result;
+      }
+    }
+
+    return null
   }
 }

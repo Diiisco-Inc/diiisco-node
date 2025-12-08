@@ -8,6 +8,7 @@ import { PubSubMessage, QuoteRequest, QuoteResponse, QuoteAccepted, InferenceRes
 import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
 import diiiscoContract from "../utils/contract";
+import { RawQuote } from "../types/quotes";
 
 export const handlePubSubMessage = async (
   evt: any,
@@ -48,8 +49,13 @@ export const handlePubSubMessage = async (
       }
 
       // Generate Quote
-      const tokenCount: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
-      const modelRate = env.models.chargePer1KTokens[quoteRequestMsg.payload.model] || env.models.chargePer1KTokens.default || 0.000001;
+      const rawQuote: RawQuote | null= await quoteMgr.createQuote(quoteRequestMsg, model);
+      if (rawQuote === null){
+        logger.warn(`❌ Quote request from ${quoteRequestMsg.fromWalletAddr} cannot be fulfilled - no quote creation function returned a quote.`);
+        return;
+      }
+
+      // Create Quote Response
       let response: QuoteResponse = {
         role: 'quote-response',
         timestamp: Date.now(),
@@ -61,9 +67,9 @@ export const handlePubSubMessage = async (
           quote: {
             model: quoteRequestMsg.payload.model,
             inputCount: quoteRequestMsg.payload.inputs.length,
-            tokenCount: tokenCount,
-            pricePer1K: modelRate,
-            totalPrice: parseFloat(((tokenCount / 1000) * modelRate).toFixed(6)),
+            tokenCount: rawQuote.tokens,
+            pricePer1K: rawQuote.rate,
+            totalPrice: rawQuote.price,
             addr: algo.account.addr.toString(),
           },
         }
