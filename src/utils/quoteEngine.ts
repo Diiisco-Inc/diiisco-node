@@ -2,6 +2,7 @@ import environment from '../environment/environment'
 import { EventEmitter } from 'events'
 import { QuoteEvent, QuoteQueueEntry } from '../types/messages';
 import { Environment } from '../environment/environment.types';
+import { selectHighestStakeQuote } from './quoteSelectionMethods';
 
 export default class quoteEngine {
   quoteQueue: { [key: string]: QuoteQueueEntry };
@@ -20,7 +21,7 @@ export default class quoteEngine {
         quotes: [quoteEvent],
         timeout: setTimeout(async () => {
           // Select Quote based on selection function
-          const selectionFunction = environment.quoteEngine.quoteSelectionFunction;
+          const selectionFunction = environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote;
           const selectedQuote = await selectionFunction(this.quoteQueue[quoteEvent.msg.id].quotes);
 
           // Emit event that quote is ready
