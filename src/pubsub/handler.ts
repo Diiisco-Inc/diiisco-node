@@ -9,6 +9,7 @@ import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
 import diiiscoContract from "../utils/contract";
 import { RawQuote } from "../types/quotes";
+import { Address } from "algosdk";
 
 export const handlePubSubMessage = async (
   evt: any,
@@ -156,7 +157,7 @@ export const handlePubSubMessage = async (
     if (msg.role === 'inference-response' && msg.to === node.peerId.toString()) {
       const inferenceResponseMsg = msg as InferenceResponse;
       logger.info(`📥 Received inference-response: ${JSON.stringify(inferenceResponseMsg)}`);
-      const payment = await algo.completeQuote({ quoteId: inferenceResponseMsg.id });
+      const payment = await algo.completeQuote({ quoteId: inferenceResponseMsg.id, provider: Address.fromString(inferenceResponseMsg.fromWalletAddr) });
       nodeEvents.emit(`inference-response-${inferenceResponseMsg.id}`, { ...inferenceResponseMsg, payment: payment, quote: inferenceResponseMsg.payload.quote });
     }
   }

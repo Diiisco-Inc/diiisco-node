@@ -298,6 +298,7 @@ export default class algorand {
     const sp = await this.getSuggestedParams();
     const atc = new algosdk.AtomicTransactionComposer();
     const method = this.contract.getMethodByName('optInToApplication');
+    const providerAddressBytes = new Uint8Array([...toBytes('userBalance'), ...this.account.addr.publicKey]);
 
     atc.addMethodCall({
       appID: sc.app,
@@ -306,7 +307,12 @@ export default class algorand {
       sender: this.account.addr,
       suggestedParams: sp,
       signer: this.signer,
-      boxes: [],
+      boxes: [
+        {
+          appIndex: sc.app,
+          name: providerAddressBytes,
+        },
+      ],
       onComplete: algosdk.OnApplicationComplete.OptInOC,
     });
 
@@ -335,6 +341,7 @@ export default class algorand {
 
     const quoteIdBytes = toBytes(quoteId);
     const boxName = toBytes('quotes' + quoteId);
+    const providerAddressBytes = new Uint8Array([...toBytes('userBalance'), ...this.account.addr.publicKey]);
 
     atc.addMethodCall({
       appID: sc.app,
@@ -347,6 +354,10 @@ export default class algorand {
         {
           appIndex: sc.app,
           name: boxName,
+        },
+        {
+          appIndex: sc.app,
+          name: providerAddressBytes,
         },
       ],
     });
@@ -501,6 +512,7 @@ export default class algorand {
 
   async completeQuote(options: {
     quoteId: string;
+    provider: algosdk.Address;
     minDscoOut?: bigint;
   }): Promise<number> {
     if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
@@ -519,7 +531,8 @@ export default class algorand {
     const boxName = toBytes('quotes' + quoteId);
 
     const spFlat: algosdk.SuggestedParams = { ...sp, flatFee: true, fee: 5000 };
-
+    const providerAddressBytes = new Uint8Array([...toBytes('userBalance'), ...options.provider.publicKey]);
+    
     atc.addMethodCall({
       appID: sc.app,
       method,
@@ -532,8 +545,12 @@ export default class algorand {
           appIndex: sc.app,
           name: boxName,
         },
+        {
+          appIndex: sc.app,
+          name: providerAddressBytes,
+        }
       ],
-      appAccounts: [sc.tinymanPoolAddress],
+      appAccounts: [sc.tinymanPoolAddress, options.provider],
       appForeignAssets: [sc.usdc, sc.asset],
       appForeignApps: [sc.tinymanApp],
     });
