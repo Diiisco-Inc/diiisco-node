@@ -25,7 +25,13 @@ export const handlePubSubMessage = async (
     const msg: PubSubMessage = decode(evt.detail.data);
     const env: Environment = environment; // Use the typed environment
 
-    //Verify the Signature on the Exists on the Message
+    // Verify the Algroand Address from teh Sender
+    if (!msg.fromWalletAddr || !algo.isValidAddress(msg.fromWalletAddr)) {
+      logger.warn("❌ Message rejected due to invalid Algorand address.");
+      return;
+    }
+
+    // Verify the Signature on the Exists on the Message
     if (!msg.signature){
       logger.warn("❌ Message rejected due to missing signature.");
       return;
@@ -42,7 +48,7 @@ export const handlePubSubMessage = async (
 
     const quoteRequestMsg = msg as QuoteRequest;
     if (msg.role === 'quote-request' && models.includes(quoteRequestMsg.payload.model)) {
-      //Check If Opted In to DSCO
+      // Check If Opted In to DSCO
       const x = await algo.checkIfOptedInToAsset(quoteRequestMsg.fromWalletAddr, diiiscoContract.asset);
       if (!x.optedIn) {
         logger.warn(`❌ Quote request from ${quoteRequestMsg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
@@ -135,7 +141,7 @@ export const handlePubSubMessage = async (
         return;
       }
       
-      //Execute Inference and send back to customer with role "inference-response"
+      // Execute Inference and send back to customer with role "inference-response"
       const completion = await model.getResponse(contractSignedMsg.payload.model, contractSignedMsg.payload.inputs);
       let response: InferenceResponse = {
         role: 'inference-response',
