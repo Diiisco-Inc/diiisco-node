@@ -593,6 +593,10 @@ export default class algorand {
     const res = await atc.execute(this.algod, 4);
     return Number(res.confirmedRound);
   }
+
+  isValidAddress(addr: string): boolean {
+    return algosdk.isValidAddress(addr);
+  }
 }
 
 export async function nfdToNodeAddress(addr: string): Promise<string | null> {
