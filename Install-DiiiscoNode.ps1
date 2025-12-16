@@ -5,15 +5,29 @@
 
 .DESCRIPTION
     This script:
-    - Checks for and installs prerequisites (Git, Node.js)
+    - Checks for and installs prerequisites (Git, Node.js, Ollama)
     - Clones the diiisco-node repository
     - Installs npm dependencies
     - Creates the environment configuration file
     - Optionally starts the node
 
+.PARAMETER InstallPath
+    Where to install diiisco-node (default: $env:USERPROFILE\diiisco-node)
+
+.PARAMETER SkipPrerequisites
+    Skip checking/installing Git, Node.js, and Ollama
+
+.PARAMETER AutoStart
+    Automatically start the node after installation
+
+.EXAMPLE
+    .\Install-DiiiscoNode.ps1
+    .\Install-DiiiscoNode.ps1 -InstallPath "D:\diiisco-node"
+    .\Install-DiiiscoNode.ps1 -AutoStart
+
 .NOTES
-    Run as Administrator for best results (allows automatic prerequisite installation)
-    Requires: Internet connection, Algorand wallet (address + mnemonic), Local LLM runtime (Ollama recommended)
+    Run as Administrator for automatic prerequisite installation
+    Requires: Internet connection, Algorand wallet (address + mnemonic)
 #>
 
 param(
@@ -25,10 +39,13 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-# Colors for output
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
 function Write-Step { param($msg) Write-Host "`n[*] $msg" -ForegroundColor Cyan }
 function Write-Success { param($msg) Write-Host "[+] $msg" -ForegroundColor Green }
-function Write-Warning { param($msg) Write-Host "[!] $msg" -ForegroundColor Yellow }
+function Write-Warn { param($msg) Write-Host "[!] $msg" -ForegroundColor Yellow }
 function Write-Err { param($msg) Write-Host "[-] $msg" -ForegroundColor Red }
 
 function Test-Administrator {
@@ -42,11 +59,391 @@ function Test-CommandExists {
     $null -ne (Get-Command $Command -ErrorAction SilentlyContinue)
 }
 
+# ============================================================================
+# HARDWARE DETECTION
+# ============================================================================
+
+function Get-SystemSpecs {
+    Write-Step "Detecting system hardware..."
+    
+    $specs = @{
+        CPU = @{
+            Name = "Unknown"
+            Cores = 0
+            Threads = 0
+            Speed = 0
+        }
+        RAM = @{
+            TotalGB = 0
+            AvailableGB = 0
+        }
+        GPU = @{
+            Name = "Unknown"
+            VRAM_GB = 0
+            IsNvidia = $false
+            IsAMD = $false
+            IsIntel = $false
+            IsDedicated = $false
+        }
+        Tier = "unknown"
+    }
+    
+    # Detect CPU
+    try {
+        $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
+        $specs.CPU.Name = $cpu.Name.Trim()
+        $specs.CPU.Cores = $cpu.NumberOfCores
+        $specs.CPU.Threads = $cpu.NumberOfLogicalProcessors
+        $specs.CPU.Speed = [math]::Round($cpu.MaxClockSpeed / 1000, 2)
+        Write-Host "  CPU: $($specs.CPU.Name)" -ForegroundColor Gray
+        Write-Host "       $($specs.CPU.Cores) cores / $($specs.CPU.Threads) threads @ $($specs.CPU.Speed) GHz" -ForegroundColor DarkGray
+    }
+    catch {
+        Write-Warn "Could not detect CPU"
+    }
+    
+    # Detect RAM
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem
+        $specs.RAM.TotalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+        $specs.RAM.AvailableGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+        Write-Host "  RAM: $($specs.RAM.TotalGB) GB total ($($specs.RAM.AvailableGB) GB available)" -ForegroundColor Gray
+    }
+    catch {
+        Write-Warn "Could not detect RAM"
+    }
+    
+    # Detect GPU
+    try {
+        $gpus = Get-CimInstance -ClassName Win32_VideoController
+        
+        # Find the best GPU (prefer dedicated over integrated)
+        $bestGpu = $null
+        $bestVram = 0
+        
+        foreach ($gpu in $gpus) {
+            $vram = 0
+            if ($gpu.AdapterRAM -and $gpu.AdapterRAM -gt 0) {
+                $vram = [math]::Round($gpu.AdapterRAM / 1GB, 1)
+                # Handle overflow for GPUs with >4GB VRAM (32-bit limitation)
+                if ($vram -lt 0 -or $vram -gt 1000) {
+                    # Try to detect from name
+                    if ($gpu.Name -match "(\d+)\s*GB") {
+                        $vram = [int]$Matches[1]
+                    }
+                }
+            }
+            
+            $isDedicated = $gpu.Name -notmatch "Intel|UHD|Integrated|Microsoft Basic"
+            
+            if ($isDedicated -and $vram -ge $bestVram) {
+                $bestGpu = $gpu
+                $bestVram = $vram
+            } elseif (-not $bestGpu) {
+                $bestGpu = $gpu
+                $bestVram = $vram
+            }
+        }
+        
+        if ($bestGpu) {
+            $specs.GPU.Name = $bestGpu.Name.Trim()
+            $specs.GPU.VRAM_GB = $bestVram
+            $specs.GPU.IsNvidia = $bestGpu.Name -match "NVIDIA|GeForce|RTX|GTX|Quadro"
+            $specs.GPU.IsAMD = $bestGpu.Name -match "AMD|Radeon|RX\s*\d"
+            $specs.GPU.IsIntel = $bestGpu.Name -match "Intel|UHD|Iris"
+            $specs.GPU.IsDedicated = $bestGpu.Name -notmatch "Intel|UHD|Integrated|Microsoft Basic"
+            
+            Write-Host "  GPU: $($specs.GPU.Name)" -ForegroundColor Gray
+            
+            # Try nvidia-smi for accurate VRAM on NVIDIA cards
+            if ($specs.GPU.IsNvidia -and (Test-CommandExists "nvidia-smi")) {
+                try {
+                    $nvidiaSmi = nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
+                    if ($nvidiaSmi) {
+                        $specs.GPU.VRAM_GB = [math]::Round([int]$nvidiaSmi.Trim() / 1024, 0)
+                    }
+                }
+                catch {}
+            }
+            
+            if ($specs.GPU.VRAM_GB -gt 0) {
+                Write-Host "       $($specs.GPU.VRAM_GB) GB VRAM" -ForegroundColor DarkGray
+            }
+        }
+    }
+    catch {
+        Write-Warn "Could not detect GPU"
+    }
+    
+    # Determine system tier
+    $ramGB = $specs.RAM.TotalGB
+    $vramGB = $specs.GPU.VRAM_GB
+    $hasDedicatedGPU = $specs.GPU.IsDedicated
+    
+    if ($ramGB -ge 64 -and $vramGB -ge 16) {
+        $specs.Tier = "enthusiast"
+    } elseif ($ramGB -ge 32 -and $vramGB -ge 8) {
+        $specs.Tier = "high"
+    } elseif ($ramGB -ge 16 -and ($vramGB -ge 4 -or $hasDedicatedGPU)) {
+        $specs.Tier = "mid"
+    } elseif ($ramGB -ge 8) {
+        $specs.Tier = "low"
+    } else {
+        $specs.Tier = "minimal"
+    }
+    
+    Write-Host ""
+    Write-Host "  System Tier: " -NoNewline -ForegroundColor Gray
+    switch ($specs.Tier) {
+        "enthusiast" { Write-Host "ENTHUSIAST" -ForegroundColor Magenta }
+        "high" { Write-Host "HIGH-END" -ForegroundColor Green }
+        "mid" { Write-Host "MID-RANGE" -ForegroundColor Cyan }
+        "low" { Write-Host "ENTRY-LEVEL" -ForegroundColor Yellow }
+        default { Write-Host "MINIMAL" -ForegroundColor Red }
+    }
+    
+    return $specs
+}
+
+function Get-RecommendedModels {
+    param($Specs)
+    
+    # Model database with requirements
+    $models = @(
+        # Tiny models (1-3B) - Good for minimal/low systems
+        @{ Name = "tinyllama"; Size = "637MB"; Params = "1.1B"; MinRAM = 4; MinVRAM = 0; Tier = "minimal"; Description = "Tiny but capable, great for testing" }
+        @{ Name = "phi3:mini"; Size = "2.2GB"; Params = "3.8B"; MinRAM = 6; MinVRAM = 0; Tier = "minimal"; Description = "Microsoft's efficient small model" }
+        @{ Name = "gemma2:2b"; Size = "1.6GB"; Params = "2B"; MinRAM = 6; MinVRAM = 0; Tier = "minimal"; Description = "Google's compact model" }
+        
+        # Small models (7-8B) - Good for low/mid systems
+        @{ Name = "llama3.2:3b"; Size = "2.0GB"; Params = "3B"; MinRAM = 8; MinVRAM = 2; Tier = "low"; Description = "Meta's latest small model" }
+        @{ Name = "mistral:7b"; Size = "4.1GB"; Params = "7B"; MinRAM = 8; MinVRAM = 4; Tier = "low"; Description = "Excellent general-purpose model" }
+        @{ Name = "llama3.2:latest"; Size = "2.0GB"; Params = "3B"; MinRAM = 8; MinVRAM = 2; Tier = "low"; Description = "Meta's latest efficient model" }
+        @{ Name = "qwen2.5:7b"; Size = "4.4GB"; Params = "7B"; MinRAM = 10; MinVRAM = 4; Tier = "low"; Description = "Alibaba's strong 7B model" }
+        @{ Name = "gemma2:9b"; Size = "5.4GB"; Params = "9B"; MinRAM = 12; MinVRAM = 6; Tier = "low"; Description = "Google's capable mid-size model" }
+        @{ Name = "deepseek-r1:8b"; Size = "4.9GB"; Params = "8B"; MinRAM = 10; MinVRAM = 4; Tier = "low"; Description = "DeepSeek's reasoning model" }
+        
+        # Medium models (13-14B) - Good for mid systems
+        @{ Name = "llama3:8b"; Size = "4.7GB"; Params = "8B"; MinRAM = 12; MinVRAM = 6; Tier = "mid"; Description = "Meta's balanced performance model" }
+        @{ Name = "qwen2.5:14b"; Size = "9.0GB"; Params = "14B"; MinRAM = 16; MinVRAM = 8; Tier = "mid"; Description = "Strong multilingual capabilities" }
+        @{ Name = "deepseek-r1:14b"; Size = "9.0GB"; Params = "14B"; MinRAM = 16; MinVRAM = 8; Tier = "mid"; Description = "Advanced reasoning at 14B" }
+        @{ Name = "mixtral:8x7b"; Size = "26GB"; Params = "47B"; MinRAM = 32; MinVRAM = 10; Tier = "mid"; Description = "MoE architecture, very capable" }
+        
+        # Large models (32-70B) - Good for high-end systems  
+        @{ Name = "qwen2.5:32b"; Size = "19GB"; Params = "32B"; MinRAM = 32; MinVRAM = 12; Tier = "high"; Description = "Excellent for complex tasks" }
+        @{ Name = "deepseek-r1:32b"; Size = "19GB"; Params = "32B"; MinRAM = 32; MinVRAM = 12; Tier = "high"; Description = "Top-tier reasoning model" }
+        @{ Name = "llama3:70b"; Size = "40GB"; Params = "70B"; MinRAM = 48; MinVRAM = 16; Tier = "high"; Description = "Meta's flagship model" }
+        @{ Name = "codellama:34b"; Size = "19GB"; Params = "34B"; MinRAM = 32; MinVRAM = 12; Tier = "high"; Description = "Specialized for coding" }
+        
+        # XL models (70B+) - For enthusiast systems
+        @{ Name = "qwen2.5:72b"; Size = "43GB"; Params = "72B"; MinRAM = 64; MinVRAM = 24; Tier = "enthusiast"; Description = "Alibaba's flagship model" }
+        @{ Name = "llama3.1:70b"; Size = "40GB"; Params = "70B"; MinRAM = 64; MinVRAM = 20; Tier = "enthusiast"; Description = "Latest Llama flagship" }
+        @{ Name = "deepseek-r1:70b"; Size = "43GB"; Params = "70B"; MinRAM = 64; MinVRAM = 24; Tier = "enthusiast"; Description = "Best reasoning capabilities" }
+        @{ Name = "mixtral:8x22b"; Size = "80GB"; Params = "141B"; MinRAM = 96; MinVRAM = 32; Tier = "enthusiast"; Description = "Massive MoE model" }
+        
+        # Specialized models - Various tiers
+        @{ Name = "codellama:7b"; Size = "3.8GB"; Params = "7B"; MinRAM = 8; MinVRAM = 4; Tier = "low"; Description = "Code-focused model" }
+        @{ Name = "starcoder2:7b"; Size = "4.0GB"; Params = "7B"; MinRAM = 10; MinVRAM = 4; Tier = "low"; Description = "Excellent for code generation" }
+        @{ Name = "llava:7b"; Size = "4.5GB"; Params = "7B"; MinRAM = 10; MinVRAM = 4; Tier = "low"; Description = "Vision + language model" }
+        @{ Name = "dolphin-mixtral:8x7b"; Size = "26GB"; Params = "47B"; MinRAM = 32; MinVRAM = 10; Tier = "mid"; Description = "Uncensored MoE model" }
+        @{ Name = "yi:34b"; Size = "19GB"; Params = "34B"; MinRAM = 32; MinVRAM = 12; Tier = "high"; Description = "01.AI's strong model" }
+    )
+    
+    $ramGB = $Specs.RAM.TotalGB
+    $vramGB = $Specs.GPU.VRAM_GB
+    $tier = $Specs.Tier
+    
+    # Categorize recommendations
+    $recommended = @{
+        MustHave = @()
+        Recommended = @()
+        Optional = @()
+        Specialized = @()
+    }
+    
+    foreach ($model in $models) {
+        $canRun = ($ramGB -ge $model.MinRAM) -and ($vramGB -ge $model.MinVRAM -or $model.MinVRAM -eq 0)
+        
+        if (-not $canRun) { continue }
+        
+        $isSpecialized = $model.Name -match "code|starcoder|llava|dolphin"
+        
+        if ($isSpecialized) {
+            $recommended.Specialized += $model
+        } elseif ($model.Tier -eq $tier) {
+            $recommended.MustHave += $model
+        } elseif ($model.Tier -eq "minimal" -or $model.Tier -eq "low") {
+            $recommended.Recommended += $model
+        } else {
+            $recommended.Optional += $model
+        }
+    }
+    
+    # Limit results
+    $recommended.MustHave = $recommended.MustHave | Select-Object -First 4
+    $recommended.Recommended = $recommended.Recommended | Select-Object -First 4
+    $recommended.Optional = $recommended.Optional | Select-Object -First 3
+    $recommended.Specialized = $recommended.Specialized | Select-Object -First 3
+    
+    return $recommended
+}
+
+function Show-ModelRecommendations {
+    param($Specs)
+    
+    Write-Host "`n========================================" -ForegroundColor Magenta
+    Write-Host "  RECOMMENDED MODELS FOR YOUR SYSTEM" -ForegroundColor Magenta
+    Write-Host "========================================" -ForegroundColor Magenta
+    
+    $recommendations = Get-RecommendedModels -Specs $Specs
+    
+    # Must Have
+    if ($recommendations.MustHave.Count -gt 0) {
+        Write-Host "`n  [BEST FOR YOUR HARDWARE]" -ForegroundColor Green
+        foreach ($model in $recommendations.MustHave) {
+            Write-Host "    * " -NoNewline -ForegroundColor Green
+            Write-Host "$($model.Name)" -NoNewline -ForegroundColor White
+            Write-Host " ($($model.Size), $($model.Params))" -NoNewline -ForegroundColor DarkGray
+            Write-Host " - $($model.Description)" -ForegroundColor Gray
+        }
+    }
+    
+    # Recommended  
+    if ($recommendations.Recommended.Count -gt 0) {
+        Write-Host "`n  [ALSO RECOMMENDED]" -ForegroundColor Cyan
+        foreach ($model in $recommendations.Recommended) {
+            Write-Host "    - " -NoNewline -ForegroundColor Cyan
+            Write-Host "$($model.Name)" -NoNewline -ForegroundColor White
+            Write-Host " ($($model.Size))" -NoNewline -ForegroundColor DarkGray
+            Write-Host " - $($model.Description)" -ForegroundColor Gray
+        }
+    }
+    
+    # Optional
+    if ($recommendations.Optional.Count -gt 0) {
+        Write-Host "`n  [OPTIONAL - May be slower]" -ForegroundColor Yellow
+        foreach ($model in $recommendations.Optional) {
+            Write-Host "    - " -NoNewline -ForegroundColor Yellow
+            Write-Host "$($model.Name)" -NoNewline -ForegroundColor White
+            Write-Host " ($($model.Size))" -ForegroundColor DarkGray
+        }
+    }
+    
+    # Specialized
+    if ($recommendations.Specialized.Count -gt 0) {
+        Write-Host "`n  [SPECIALIZED]" -ForegroundColor Magenta
+        foreach ($model in $recommendations.Specialized) {
+            Write-Host "    - " -NoNewline -ForegroundColor Magenta
+            Write-Host "$($model.Name)" -NoNewline -ForegroundColor White
+            Write-Host " - $($model.Description)" -ForegroundColor Gray
+        }
+    }
+    
+    Write-Host ""
+    
+    return $recommendations
+}
+
+function Install-RecommendedModels {
+    param($Specs)
+    
+    $recommendations = Show-ModelRecommendations -Specs $Specs
+    
+    # Combine must-have and recommended for install prompt
+    $allModels = @()
+    $allModels += $recommendations.MustHave
+    $allModels += $recommendations.Recommended
+    $allModels += $recommendations.Specialized
+    
+    if ($allModels.Count -eq 0) {
+        Write-Warn "No models found suitable for your hardware."
+        Write-Host "You can manually install models with: ollama pull <model-name>"
+        return
+    }
+    
+    Write-Host "`n----------------------------------------" -ForegroundColor DarkGray
+    Write-Host "Diiisco works best with multiple models to serve diverse requests." -ForegroundColor Gray
+    Write-Host "More models = more earning potential on the network!" -ForegroundColor Gray
+    Write-Host "----------------------------------------" -ForegroundColor DarkGray
+    
+    Write-Host "`nWould you like to install models now?" -ForegroundColor Yellow
+    Write-Host "  [1] Install top recommended models ($(($recommendations.MustHave | Measure-Object).Count) models)" -ForegroundColor White
+    Write-Host "  [2] Choose which models to install" -ForegroundColor White
+    Write-Host "  [3] Skip - I'll install models later" -ForegroundColor White
+    Write-Host ""
+    
+    $choice = Read-Host "Select option (1/2/3)"
+    
+    switch ($choice) {
+        "1" {
+            # Install must-have models
+            $modelsToInstall = $recommendations.MustHave
+            if ($modelsToInstall.Count -eq 0) {
+                $modelsToInstall = $recommendations.Recommended | Select-Object -First 2
+            }
+            
+            Write-Host ""
+            foreach ($model in $modelsToInstall) {
+                Write-Step "Installing $($model.Name) ($($model.Size))..."
+                ollama pull $model.Name
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Success "Installed $($model.Name)"
+                } else {
+                    Write-Warn "Failed to install $($model.Name)"
+                }
+            }
+        }
+        "2" {
+            # Interactive selection
+            Write-Host "`nEnter model numbers to install (comma-separated), or 'all':" -ForegroundColor Yellow
+            Write-Host ""
+            
+            $i = 1
+            $modelList = @()
+            foreach ($model in $allModels) {
+                Write-Host "  [$i] $($model.Name) ($($model.Size)) - $($model.Description)" -ForegroundColor Gray
+                $modelList += $model
+                $i++
+            }
+            
+            Write-Host ""
+            $selection = Read-Host "Selection"
+            
+            $indicesToInstall = @()
+            if ($selection -eq "all") {
+                $indicesToInstall = 1..$modelList.Count
+            } else {
+                $indicesToInstall = $selection -split ',' | ForEach-Object { [int]$_.Trim() }
+            }
+            
+            Write-Host ""
+            foreach ($idx in $indicesToInstall) {
+                if ($idx -ge 1 -and $idx -le $modelList.Count) {
+                    $model = $modelList[$idx - 1]
+                    Write-Step "Installing $($model.Name) ($($model.Size))..."
+                    ollama pull $model.Name
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Success "Installed $($model.Name)"
+                    } else {
+                        Write-Warn "Failed to install $($model.Name)"
+                    }
+                }
+            }
+        }
+        default {
+            Write-Host "`nSkipping model installation." -ForegroundColor Gray
+            Write-Host "Install models later with: ollama pull <model-name>" -ForegroundColor Gray
+        }
+    }
+}
+
+# ============================================================================
+# PREREQUISITE INSTALLATION
+# ============================================================================
+
 function Install-Winget {
     if (-not (Test-CommandExists "winget")) {
-        Write-Warning "winget not found. Attempting to install..."
-        
-        # Try to install via Microsoft Store
+        Write-Warn "winget not found. Attempting to install..."
         try {
             Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe -ErrorAction Stop
             Write-Success "winget installed successfully"
@@ -69,7 +466,7 @@ function Install-Git {
         return
     }
     
-    Write-Warning "Git not found. Installing..."
+    Write-Warn "Git not found. Installing..."
     
     if (Test-Administrator) {
         Install-Winget
@@ -80,14 +477,12 @@ function Install-Git {
         
         if (Test-CommandExists "git") {
             Write-Success "Git installed successfully"
-        }
-        else {
+        } else {
             Write-Err "Git installation completed but 'git' command not found."
             Write-Host "Please restart your terminal or add Git to PATH manually."
             exit 1
         }
-    }
-    else {
+    } else {
         Write-Err "Git is not installed and admin rights are required for automatic installation."
         Write-Host "Please either:"
         Write-Host "  1. Run this script as Administrator"
@@ -103,15 +498,14 @@ function Install-NodeJS {
         $nodeVersion = node --version
         Write-Success "Node.js is already installed: $nodeVersion"
         
-        # Check if version is at least 18
         $versionNum = [int]($nodeVersion -replace 'v(\d+)\..*', '$1')
         if ($versionNum -lt 18) {
-            Write-Warning "Node.js version $nodeVersion may be too old. Version 18+ recommended."
+            Write-Warn "Node.js version $nodeVersion may be too old. Version 18+ recommended."
         }
         return
     }
     
-    Write-Warning "Node.js not found. Installing..."
+    Write-Warn "Node.js not found. Installing..."
     
     if (Test-Administrator) {
         Install-Winget
@@ -123,14 +517,12 @@ function Install-NodeJS {
         if (Test-CommandExists "node") {
             $nodeVersion = node --version
             Write-Success "Node.js installed successfully: $nodeVersion"
-        }
-        else {
+        } else {
             Write-Err "Node.js installation completed but 'node' command not found."
             Write-Host "Please restart your terminal and run this script again."
             exit 1
         }
-    }
-    else {
+    } else {
         Write-Err "Node.js is not installed and admin rights are required for automatic installation."
         Write-Host "Please either:"
         Write-Host "  1. Run this script as Administrator"
@@ -139,16 +531,215 @@ function Install-NodeJS {
     }
 }
 
+function Test-OllamaInstalled {
+    if (Test-CommandExists "ollama") { return $true }
+    
+    $commonPaths = @(
+        "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe",
+        "$env:ProgramFiles\Ollama\ollama.exe",
+        "${env:ProgramFiles(x86)}\Ollama\ollama.exe"
+    )
+    
+    foreach ($path in $commonPaths) {
+        if (Test-Path $path) { return $true }
+    }
+    
+    return $false
+}
+
+function Test-OllamaRunning {
+    try {
+        $tcpClient = New-Object System.Net.Sockets.TcpClient
+        $tcpClient.Connect("127.0.0.1", 11434)
+        $tcpClient.Close()
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Install-Ollama {
+    Write-Step "Checking for Ollama..."
+    
+    if (Test-OllamaInstalled) {
+        Write-Success "Ollama is already installed"
+        return $true
+    }
+    
+    Write-Warn "Ollama not found. Installing..."
+    
+    if (Test-Administrator) {
+        Install-Winget
+        
+        Write-Host "Installing Ollama via winget..." -ForegroundColor Cyan
+        winget install --id Ollama.Ollama -e --silent --accept-package-agreements --accept-source-agreements
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "winget installation failed. Trying direct download..."
+            
+            $ollamaInstaller = "$env:TEMP\OllamaSetup.exe"
+            Write-Host "Downloading Ollama installer..."
+            
+            try {
+                Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile $ollamaInstaller -UseBasicParsing
+                Write-Host "Running Ollama installer (silent)..."
+                Start-Process -FilePath $ollamaInstaller -ArgumentList "/S" -Wait -NoNewWindow
+                Remove-Item $ollamaInstaller -Force -ErrorAction SilentlyContinue
+            }
+            catch {
+                Write-Err "Failed to download/install Ollama: $_"
+                Write-Host "Please install Ollama manually from: https://ollama.com/download"
+                return $false
+            }
+        }
+        
+        # Refresh PATH
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        
+        Start-Sleep -Seconds 2
+        
+        if (Test-OllamaInstalled) {
+            Write-Success "Ollama installed successfully"
+            return $true
+        } else {
+            Write-Warn "Ollama installed but command not found in PATH."
+            Write-Host "You may need to restart your terminal or log out and back in."
+            return $true
+        }
+    } else {
+        Write-Err "Ollama is not installed and admin rights are required for automatic installation."
+        Write-Host "Please either:"
+        Write-Host "  1. Run this script as Administrator"
+        Write-Host "  2. Install Ollama manually from: https://ollama.com/download"
+        return $false
+    }
+}
+
+function Start-OllamaService {
+    Write-Step "Ensuring Ollama is running..."
+    
+    if (Test-OllamaRunning) {
+        Write-Success "Ollama is already running"
+        return $true
+    }
+    
+    Write-Host "Starting Ollama service..."
+    
+    $ollamaExePaths = @(
+        "$env:LOCALAPPDATA\Programs\Ollama\ollama app.exe",
+        "$env:LOCALAPPDATA\Programs\Ollama\Ollama.exe",
+        "$env:ProgramFiles\Ollama\ollama app.exe"
+    )
+    
+    foreach ($exePath in $ollamaExePaths) {
+        if (Test-Path $exePath) {
+            Write-Host "Starting Ollama from: $exePath"
+            Start-Process -FilePath $exePath -WindowStyle Hidden
+            
+            $maxWait = 15
+            $waited = 0
+            while (-not (Test-OllamaRunning) -and $waited -lt $maxWait) {
+                Start-Sleep -Seconds 1
+                $waited++
+                Write-Host "." -NoNewline
+            }
+            Write-Host ""
+            
+            if (Test-OllamaRunning) {
+                Write-Success "Ollama started successfully"
+                return $true
+            }
+        }
+    }
+    
+    Write-Warn "Could not start Ollama automatically."
+    Write-Host "Please start Ollama manually by:"
+    Write-Host "  - Opening the Ollama app from your Start menu, OR"
+    Write-Host "  - Running 'ollama serve' in a separate terminal"
+    
+    return $false
+}
+
+function Detect-OllamaRuntime {
+    Write-Step "Auto-detecting Ollama runtime..."
+    
+    $baseURL = "http://localhost"
+    $port = 11434
+    
+    # Check OLLAMA_HOST environment variable
+    $ollamaHostEnv = $env:OLLAMA_HOST
+    if ($ollamaHostEnv) {
+        Write-Host "Found OLLAMA_HOST: $ollamaHostEnv"
+        if ($ollamaHostEnv -match '^(https?://)?([^:]+):?(\d+)?$') {
+            $baseURL = "http://$($Matches[2])"
+            if ($Matches[3]) { $port = [int]$Matches[3] }
+        }
+    }
+    
+    # Ports to check
+    $portsToCheck = @($port, 11434, 8080, 3000, 5000) | Select-Object -Unique
+    
+    foreach ($testPort in $portsToCheck) {
+        $testURL = "${baseURL}:${testPort}"
+        
+        try {
+            $response = Invoke-RestMethod -Uri "${testURL}/api/tags" -Method GET -TimeoutSec 3 -ErrorAction Stop
+            
+            $modelCount = 0
+            $modelNames = "none"
+            if ($response.models) {
+                $modelCount = $response.models.Count
+                $modelNames = ($response.models | ForEach-Object { $_.name }) -join ", "
+            }
+            
+            Write-Success "Found Ollama at ${testURL} ($modelCount models: $modelNames)"
+            
+            return @{
+                Host = $baseURL
+                Port = $testPort
+                URL = $testURL
+                Models = $modelCount
+                ModelNames = $modelNames
+            }
+        }
+        catch {
+            # Try version endpoint as backup
+            try {
+                $null = Invoke-WebRequest -Uri "${testURL}/api/version" -Method GET -TimeoutSec 2 -ErrorAction Stop
+                Write-Success "Found Ollama at ${testURL}"
+                return @{
+                    Host = $baseURL
+                    Port = $testPort
+                    URL = $testURL
+                    Models = 0
+                    ModelNames = "unknown"
+                }
+            }
+            catch {
+                # Continue to next port
+            }
+        }
+    }
+    
+    Write-Warn "Could not auto-detect Ollama runtime!"
+    Write-Host "Make sure Ollama is running."
+    return $null
+}
+
+# ============================================================================
+# REPOSITORY SETUP
+# ============================================================================
+
 function Clone-Repository {
     Write-Step "Cloning diiisco-node repository..."
     
     if (Test-Path $InstallPath) {
-        Write-Warning "Directory already exists: $InstallPath"
+        Write-Warn "Directory already exists: $InstallPath"
         $response = Read-Host "Do you want to delete and re-clone? (y/N)"
         if ($response -eq 'y' -or $response -eq 'Y') {
             Remove-Item -Recurse -Force $InstallPath
-        }
-        else {
+        } else {
             Write-Host "Using existing directory..."
             return
         }
@@ -183,297 +774,18 @@ function Install-Dependencies {
     }
 }
 
-function Test-OllamaInstalled {
-    # Check if ollama command exists
-    if (Test-CommandExists "ollama") {
-        return $true
-    }
-    
-    # Check common installation paths
-    $commonPaths = @(
-        "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe",
-        "$env:ProgramFiles\Ollama\ollama.exe",
-        "${env:ProgramFiles(x86)}\Ollama\ollama.exe"
-    )
-    
-    foreach ($path in $commonPaths) {
-        if (Test-Path $path) {
-            return $true
-        }
-    }
-    
-    return $false
-}
-
-function Test-OllamaRunning {
-    # Check if Ollama process is running
-    $ollamaProcess = Get-Process -Name "ollama*" -ErrorAction SilentlyContinue
-    if ($ollamaProcess) {
-        return $true
-    }
-    
-    # Also check if port 11434 is in use (Ollama's default port)
-    try {
-        $connection = Test-NetConnection -ComputerName localhost -Port 11434 -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-        if ($connection.TcpTestSucceeded) {
-            return $true
-        }
-    }
-    catch {
-        # Test-NetConnection might not be available, try alternative
-        try {
-            $tcpClient = New-Object System.Net.Sockets.TcpClient
-            $tcpClient.Connect("127.0.0.1", 11434)
-            $tcpClient.Close()
-            return $true
-        }
-        catch {
-            return $false
-        }
-    }
-    
-    return $false
-}
-
-function Install-Ollama {
-    Write-Step "Checking for Ollama..."
-    
-    if (Test-OllamaInstalled) {
-        $ollamaVersion = & ollama --version 2>$null
-        Write-Success "Ollama is already installed: $ollamaVersion"
-        return $true
-    }
-    
-    Write-Warning "Ollama not found. Installing..."
-    
-    if (Test-Administrator) {
-        Install-Winget
-        
-        Write-Host "Installing Ollama via winget..." -ForegroundColor Cyan
-        winget install --id Ollama.Ollama -e --silent --accept-package-agreements --accept-source-agreements
-        
-        if ($LASTEXITCODE -ne 0) {
-            Write-Err "winget installation failed. Trying direct download..."
-            
-            # Fallback to direct download
-            $ollamaInstaller = "$env:TEMP\OllamaSetup.exe"
-            Write-Host "Downloading Ollama installer..."
-            
-            try {
-                Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile $ollamaInstaller -UseBasicParsing
-                
-                Write-Host "Running Ollama installer (silent)..."
-                Start-Process -FilePath $ollamaInstaller -ArgumentList "/S" -Wait -NoNewWindow
-                
-                Remove-Item $ollamaInstaller -Force -ErrorAction SilentlyContinue
-            }
-            catch {
-                Write-Err "Failed to download/install Ollama: $_"
-                Write-Host "Please install Ollama manually from: https://ollama.com/download"
-                return $false
-            }
-        }
-        
-        # Refresh PATH
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-        
-        # Wait a moment for installation to complete
-        Start-Sleep -Seconds 2
-        
-        if (Test-OllamaInstalled) {
-            Write-Success "Ollama installed successfully"
-            return $true
-        }
-        else {
-            Write-Warning "Ollama installed but command not found in PATH."
-            Write-Host "You may need to restart your terminal or log out and back in."
-            return $true  # Installation likely succeeded
-        }
-    }
-    else {
-        Write-Err "Ollama is not installed and admin rights are required for automatic installation."
-        Write-Host "Please either:"
-        Write-Host "  1. Run this script as Administrator"
-        Write-Host "  2. Install Ollama manually from: https://ollama.com/download"
-        return $false
-    }
-}
-
-function Start-OllamaService {
-    Write-Step "Ensuring Ollama is running..."
-    
-    if (Test-OllamaRunning) {
-        Write-Success "Ollama is already running"
-        return $true
-    }
-    
-    Write-Host "Starting Ollama service..."
-    
-    # On Windows, Ollama typically runs as a background app
-    # Try to start it via the ollama app or command
-    
-    # Method 1: Try starting via ollama app (background process)
-    $ollamaExePaths = @(
-        "$env:LOCALAPPDATA\Programs\Ollama\ollama app.exe",
-        "$env:LOCALAPPDATA\Programs\Ollama\Ollama.exe",
-        "$env:ProgramFiles\Ollama\ollama app.exe"
-    )
-    
-    foreach ($exePath in $ollamaExePaths) {
-        if (Test-Path $exePath) {
-            Write-Host "Starting Ollama from: $exePath"
-            Start-Process -FilePath $exePath -WindowStyle Hidden
-            
-            # Wait for it to start
-            $maxWait = 15
-            $waited = 0
-            while (-not (Test-OllamaRunning) -and $waited -lt $maxWait) {
-                Start-Sleep -Seconds 1
-                $waited++
-                Write-Host "." -NoNewline
-            }
-            Write-Host ""
-            
-            if (Test-OllamaRunning) {
-                Write-Success "Ollama started successfully"
-                return $true
-            }
-        }
-    }
-    
-    # Method 2: Try 'ollama serve' in background
-    if (Test-CommandExists "ollama") {
-        Write-Host "Starting Ollama via 'ollama serve'..."
-        
-        # Start ollama serve as a background job
-        $job = Start-Job -ScriptBlock { ollama serve 2>&1 }
-        
-        # Wait for it to start
-        $maxWait = 10
-        $waited = 0
-        while (-not (Test-OllamaRunning) -and $waited -lt $maxWait) {
-            Start-Sleep -Seconds 1
-            $waited++
-            Write-Host "." -NoNewline
-        }
-        Write-Host ""
-        
-        if (Test-OllamaRunning) {
-            Write-Success "Ollama started successfully"
-            return $true
-        }
-        else {
-            # Check if job had an error (like port already in use)
-            $jobOutput = Receive-Job -Job $job -ErrorAction SilentlyContinue
-            if ($jobOutput -match "bind:|address already in use") {
-                Write-Success "Ollama appears to already be running on another process"
-                return $true
-            }
-        }
-    }
-    
-    Write-Warning "Could not start Ollama automatically."
-    Write-Host "Please start Ollama manually by:"
-    Write-Host "  - Opening the Ollama app from your Start menu, OR"
-    Write-Host "  - Running 'ollama serve' in a separate terminal"
-    
-    return $false
-}
-
-function Detect-OllamaRuntime {
-    Write-Step "Auto-detecting Ollama runtime..."
-    
-    # Check OLLAMA_HOST environment variable first
-    $ollamaHostEnv = $env:OLLAMA_HOST
-    if ($ollamaHostEnv) {
-        Write-Host "Found OLLAMA_HOST environment variable: $ollamaHostEnv"
-        
-        # Parse the environment variable (could be host:port or just host)
-        if ($ollamaHostEnv -match '^(https?://)?([^:]+):?(\d+)?$') {
-            $scheme = if ($Matches[1]) { $Matches[1].TrimEnd('://') } else { "http" }
-            $detectedHost = $Matches[2]
-            $port = if ($Matches[3]) { [int]$Matches[3] } else { 11434 }
-            $baseURL = "${scheme}://${detectedHost}"
-        }
-        else {
-            $baseURL = "http://localhost"
-            $port = 11434
-        }
-    }
-    else {
-        $baseURL = "http://localhost"
-        $port = 11434
-    }
-    
-    # Common ports to check
-    $portsToCheck = @($port, 11434, 8080, 3000, 5000) | Select-Object -Unique
-    
-    # Hosts to check
-    $hostsToCheck = @($baseURL, "http://localhost", "http://127.0.0.1") | Select-Object -Unique
-    
-    $detectedEndpoints = @()
-    
-    foreach ($hostURL in $hostsToCheck) {
-        foreach ($testPort in $portsToCheck) {
-            $testURL = "${hostURL}:${testPort}"
-            
-            try {
-                # Test Ollama API endpoint
-                $response = Invoke-RestMethod -Uri "${testURL}/api/tags" -Method GET -TimeoutSec 3 -ErrorAction Stop
-                
-                # If we get here, Ollama is responding
-                $modelCount = if ($response.models) { $response.models.Count } else { 0 }
-                $modelNames = if ($response.models) { ($response.models | ForEach-Object { $_.name }) -join ", " } else { "none" }
-                
-                $detectedEndpoints += @{
-                    Host = $hostURL
-                    Port = $testPort
-                    URL = $testURL
-                    Models = $modelCount
-                    ModelNames = $modelNames
-                }
-                
-                Write-Success "Found Ollama at ${testURL} ($modelCount models: $modelNames)"
-            }
-            catch {
-                # Try alternative health check endpoint
-                try {
-                    $null = Invoke-WebRequest -Uri "${testURL}/api/version" -Method GET -TimeoutSec 2 -ErrorAction Stop
-                    $detectedEndpoints += @{
-                        Host = $hostURL
-                        Port = $testPort
-                        URL = $testURL
-                        Models = 0
-                        ModelNames = "unknown"
-                    }
-                    Write-Success "Found Ollama at ${testURL} (version endpoint responded)"
-                }
-                catch {
-                    # Silently continue - endpoint not available
-                }
-            }
-        }
-    }
-    
-    if ($detectedEndpoints.Count -eq 0) {
-        Write-Warning "Could not auto-detect Ollama runtime!"
-        Write-Host "Make sure Ollama is running."
-        return $null
-    }
-    
-    # Return the first (best) detected endpoint
-    return $detectedEndpoints[0]
-}
+# ============================================================================
+# ENVIRONMENT CONFIGURATION
+# ============================================================================
 
 function Create-EnvironmentConfig {
     Write-Step "Creating environment configuration..."
     
     $envDir = Join-Path $InstallPath "src\environment"
     $envFile = Join-Path $envDir "environment.ts"
-    $exampleFile = Join-Path $envDir "example.environment.ts"
     
     if (Test-Path $envFile) {
-        Write-Warning "environment.ts already exists"
+        Write-Warn "environment.ts already exists"
         $response = Read-Host "Do you want to reconfigure? (y/N)"
         if ($response -ne 'y' -and $response -ne 'Y') {
             return
@@ -484,7 +796,7 @@ function Create-EnvironmentConfig {
     Write-Host "  DIIISCO NODE CONFIGURATION" -ForegroundColor Magenta
     Write-Host "========================================`n" -ForegroundColor Magenta
     
-    # LLM Configuration - Auto-detect first
+    # --- LLM Configuration ---
     Write-Host "--- Local LLM Settings ---" -ForegroundColor Yellow
     
     $ollamaDetected = Detect-OllamaRuntime
@@ -502,13 +814,11 @@ function Create-EnvironmentConfig {
             
             $llmPort = Read-Host "LLM Port [11434]"
             if ([string]::IsNullOrWhiteSpace($llmPort)) { $llmPort = "11434" }
-        }
-        else {
+        } else {
             $llmBaseURL = $ollamaDetected.Host
             $llmPort = $ollamaDetected.Port
         }
-    }
-    else {
+    } else {
         Write-Host "`nNo Ollama runtime detected. Please enter manually:" -ForegroundColor Yellow
         
         $llmBaseURL = Read-Host "LLM Base URL [http://localhost]"
@@ -524,14 +834,14 @@ function Create-EnvironmentConfig {
     $chargePer1K = Read-Host "Charge per 1K tokens (default) [0.000001]"
     if ([string]::IsNullOrWhiteSpace($chargePer1K)) { $chargePer1K = "0.000001" }
     
-    # Algorand Configuration
+    # --- Algorand Configuration ---
     Write-Host "`n--- Algorand Wallet Settings ---" -ForegroundColor Yellow
     Write-Host "You need an Algorand wallet to receive payments."
     Write-Host "Get one at: https://perawallet.app/`n"
     
     $algoAddr = Read-Host "Algorand Wallet Address"
     while ([string]::IsNullOrWhiteSpace($algoAddr)) {
-        Write-Warning "Algorand address is required!"
+        Write-Warn "Algorand address is required!"
         $algoAddr = Read-Host "Algorand Wallet Address"
     }
     
@@ -543,63 +853,37 @@ function Create-EnvironmentConfig {
         $algoMnemonic = Read-Host "Algorand Mnemonic (25 words, space-separated)"
         
         if ([string]::IsNullOrWhiteSpace($algoMnemonic)) {
-            Write-Warning "Algorand mnemonic is required!"
+            Write-Warn "Algorand mnemonic is required!"
             continue
         }
         
-        # Clean up the mnemonic - normalize whitespace
-        $algoMnemonic = ($algoMnemonic.Trim() -replace '\s+', ' ')
-        
-        # Count words
+        # Clean up the mnemonic
+        $algoMnemonic = ($algoMnemonic.Trim() -replace '\s+', ' ').ToLower()
         $wordCount = ($algoMnemonic -split ' ').Count
         
         if ($wordCount -ne 25) {
-            Write-Warning "Invalid mnemonic! Expected 25 words, got $wordCount words."
+            Write-Warn "Invalid mnemonic! Expected 25 words, got $wordCount words."
             Write-Host "Please enter all 25 words separated by single spaces."
             continue
         }
         
-        # Basic validation - check all words are lowercase letters only
-        $words = $algoMnemonic -split ' '
-        $invalidWords = $words | Where-Object { $_ -notmatch '^[a-z]+$' }
-        
-        if ($invalidWords.Count -gt 0) {
-            Write-Warning "Invalid words detected: $($invalidWords -join ', ')"
-            Write-Host "Mnemonic words should be lowercase letters only (no numbers or special characters)."
-            
-            # Auto-fix: convert to lowercase
-            $algoMnemonic = $algoMnemonic.ToLower()
-            $words = $algoMnemonic -split ' '
-            $invalidWords = $words | Where-Object { $_ -notmatch '^[a-z]+$' }
-            
-            if ($invalidWords.Count -eq 0) {
-                Write-Host "Auto-corrected to lowercase. Proceeding..." -ForegroundColor Green
-                $validMnemonic = $true
-            }
-            else {
-                continue
-            }
-        }
-        else {
-            $validMnemonic = $true
-        }
+        $validMnemonic = $true
     }
-    
     Write-Success "Mnemonic accepted (25 words)"
     
-    $algoNetwork = Read-Host "Algorand Network [mainnet/testnet] (mainnet)"
+    $algoNetwork = Read-Host "`nAlgorand Network [mainnet/testnet] (mainnet)"
     if ($algoNetwork -eq "testnet") {
         $algoNodeURL = "https://testnet-api.algonode.cloud/"
-    }
-    else {
+    } else {
         $algoNodeURL = "https://mainnet-api.algonode.cloud/"
+        $algoNetwork = "mainnet"
     }
     
-    # API Configuration
+    # --- API Configuration ---
     Write-Host "`n--- API Settings ---" -ForegroundColor Yellow
     
-    $apiPort = Read-Host "API Port [8181]"
-    if ([string]::IsNullOrWhiteSpace($apiPort)) { $apiPort = "8181" }
+    $apiPort = Read-Host "API Port [4200]"
+    if ([string]::IsNullOrWhiteSpace($apiPort)) { $apiPort = "4200" }
     
     $enableAuth = Read-Host "Enable Bearer Authentication? (Y/n)"
     $bearerAuth = if ($enableAuth -eq 'n' -or $enableAuth -eq 'N') { "false" } else { "true" }
@@ -612,17 +896,16 @@ function Create-EnvironmentConfig {
     Write-Host "  Key 1: $apiKey1"
     Write-Host "  Key 2: $apiKey2"
     
-    # Node configuration
+    # --- Node Configuration ---
     Write-Host "`n--- Node Settings ---" -ForegroundColor Yellow
     
     $nodePort = Read-Host "Node P2P Port [4242]"
     if ([string]::IsNullOrWhiteSpace($nodePort)) { $nodePort = "4242" }
     
-    # PeerId storage path - use a folder in the install directory
-    $peerIdPath = Join-Path $InstallPath "peerid"
-    $peerIdPath = $peerIdPath -replace '\\', '/'
+    # PeerId storage path
+    $peerIdPath = (Join-Path $InstallPath "peerid") -replace '\\', '/'
     
-    # Create the environment file
+    # Create the environment file content
     $envContent = @"
 import { Environment } from "./environment.types";
 import { selectHighestStakeQuote } from "../utils/quoteSelectionMethods";
@@ -643,7 +926,7 @@ const environment: Environment = {
   algorand: {
     addr: "$algoAddr",
     mnemonic: "$algoMnemonic",
-    network: "$( if ($algoNetwork -eq 'testnet') { 'testnet' } else { 'mainnet' } )",
+    network: "$algoNetwork",
     client: {
       address: "$algoNodeURL",
       port: 443,
@@ -676,6 +959,14 @@ const environment: Environment = {
 export default environment;
 "@
     
+    # Ensure directory exists
+    if (-not (Test-Path $envDir)) {
+        New-Item -ItemType Directory -Path $envDir -Force | Out-Null
+    }
+    
+    Set-Content -Path $envFile -Value $envContent -Encoding UTF8
+    Write-Success "Environment configuration saved to: $envFile"
+    
     # Create peerid storage directory
     $peerIdDir = Join-Path $InstallPath "peerid"
     if (-not (Test-Path $peerIdDir)) {
@@ -683,29 +974,144 @@ export default environment;
         Write-Host "Created PeerId storage directory: $peerIdDir"
     }
     
-    # Ensure directory exists
-    if (-not (Test-Path $envDir)) {
-        New-Item -ItemType Directory -Path $envDir -Force | Out-Null
+    # Save API keys and info to reference file
+    $keysFile = Join-Path $InstallPath "API_KEYS.txt"
+    
+    $keysContent = "DIIISCO NODE - CONFIGURATION REFERENCE`r`n"
+    $keysContent += "======================================`r`n"
+    $keysContent += "Generated: $(Get-Date)`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "API KEYS`r`n"
+    $keysContent += "--------`r`n"
+    $keysContent += "Key 1: $apiKey1`r`n"
+    $keysContent += "Key 2: $apiKey2`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "Keep these keys secure! They are required to authenticate with your node.`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "ENDPOINTS`r`n"
+    $keysContent += "---------`r`n"
+    $keysContent += "API Base URL: http://localhost:$apiPort`r`n"
+    $keysContent += "Health Check: http://localhost:$apiPort/health`r`n"
+    $keysContent += "Peers:        http://localhost:$apiPort/peers`r`n"
+    $keysContent += "Chat:         http://localhost:$apiPort/v1/chat/completions`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "TEST COMMANDS (PowerShell)`r`n"
+    $keysContent += "--------------------------`r`n"
+    $keysContent += "# Check node health`r`n"
+    $keysContent += "Invoke-RestMethod -Uri `"http://localhost:$apiPort/health`" -Headers @{Authorization=`"Bearer $apiKey1`"}`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "# List connected peers`r`n"
+    $keysContent += "Invoke-RestMethod -Uri `"http://localhost:$apiPort/peers`" -Headers @{Authorization=`"Bearer $apiKey1`"}`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "CURL COMMANDS`r`n"
+    $keysContent += "-------------`r`n"
+    $keysContent += "# Check node health`r`n"
+    $keysContent += "curl -H `"Authorization: Bearer $apiKey1`" http://localhost:$apiPort/health`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "# List connected peers`r`n"
+    $keysContent += "curl -H `"Authorization: Bearer $apiKey1`" http://localhost:$apiPort/peers`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "OPENAI SDK CONFIGURATION`r`n"
+    $keysContent += "------------------------`r`n"
+    $keysContent += "Base URL: http://localhost:$apiPort/v1`r`n"
+    $keysContent += "API Key:  $apiKey1`r`n"
+    $keysContent += "`r`n"
+    $keysContent += "DOCUMENTATION`r`n"
+    $keysContent += "-------------`r`n"
+    $keysContent += "https://diiisco.com/docs/api-reference`r`n"
+    $keysContent += "https://github.com/Diiisco-Inc/diiisco-node`r`n"
+    
+    Set-Content -Path $keysFile -Value $keysContent -Encoding UTF8
+    Write-Success "API keys and reference saved to: $keysFile"
+}
+
+# ============================================================================
+# NODE OPERATIONS
+# ============================================================================
+
+function Show-NodeStatus {
+    param(
+        [string]$ApiKey,
+        [int]$Port = 4200
+    )
+    
+    $baseUrl = "http://localhost:$Port"
+    $headers = @{}
+    if ($ApiKey) { $headers["Authorization"] = "Bearer $ApiKey" }
+    
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "         DIIISCO NODE STATUS" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host ""
+    
+    # Health Check
+    Write-Host "[Health]" -ForegroundColor Yellow
+    try {
+        $null = Invoke-RestMethod -Uri "$baseUrl/health" -Headers $headers -TimeoutSec 5 -ErrorAction Stop
+        Write-Host "  Status: ONLINE" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  Status: OFFLINE" -ForegroundColor Red
+        Write-Host "  Make sure the node is running (npm run serve)" -ForegroundColor DarkGray
+        return
     }
     
-    Set-Content -Path $envFile -Value $envContent -Encoding UTF8
+    # Peers
+    Write-Host ""
+    Write-Host "[Peers]" -ForegroundColor Yellow
+    try {
+        $peersResponse = Invoke-RestMethod -Uri "$baseUrl/peers" -Headers $headers -TimeoutSec 5 -ErrorAction Stop
+        
+        $peers = @()
+        if ($peersResponse.peers) { $peers = $peersResponse.peers } elseif ($peersResponse -is [array]) { $peers = $peersResponse }
+        
+        if ($peers.Count -gt 0) {
+            Write-Host "  Connected: $($peers.Count) peer(s)" -ForegroundColor Green
+            $i = 1
+            foreach ($peer in $peers) {
+                $peerId = ""
+                if ($peer.peerId) { $peerId = $peer.peerId } elseif ($peer.id) { $peerId = $peer.id } else { $peerId = $peer.ToString() }
+                
+                if ($peerId.Length -gt 52) {
+                    $peerId = $peerId.Substring(0, 24) + "..." + $peerId.Substring($peerId.Length - 24)
+                }
+                Write-Host "    [$i] $peerId" -ForegroundColor Gray
+                $i++
+            }
+        } else {
+            Write-Host "  Connected: 0 peers (bootstrapping...)" -ForegroundColor Yellow
+        }
+    }
+    catch {
+        Write-Host "  Error fetching peers" -ForegroundColor Red
+    }
     
-    Write-Success "Environment configuration saved to: $envFile"
+    # Models
+    Write-Host ""
+    Write-Host "[Models]" -ForegroundColor Yellow
+    try {
+        $models = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -TimeoutSec 5 -ErrorAction Stop
+        if ($models.models -and $models.models.Count -gt 0) {
+            Write-Host "  Available: $($models.models.Count) model(s)" -ForegroundColor Green
+            foreach ($model in $models.models) {
+                $size = ""
+                if ($model.size) { $size = " (" + [math]::Round($model.size / 1GB, 1).ToString() + " GB)" }
+                Write-Host "    - $($model.name)$size" -ForegroundColor Gray
+            }
+        } else {
+            Write-Host "  Available: 0 models" -ForegroundColor Yellow
+            Write-Host "    Run: ollama pull llama3.2" -ForegroundColor DarkGray
+        }
+    }
+    catch {
+        Write-Host "  Ollama not running" -ForegroundColor Red
+    }
     
-    # Save API keys to a separate reference file
-    $keysFile = Join-Path $InstallPath "API_KEYS.txt"
-    @"
-DIIISCO NODE API KEYS
-=====================
-Generated: $(Get-Date)
-
-API Key 1: $apiKey1
-API Key 2: $apiKey2
-
-Keep these keys secure! They are required to authenticate with your node.
-"@ | Set-Content -Path $keysFile -Encoding UTF8
-    
-    Write-Success "API keys also saved to: $keysFile"
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "Endpoint: $baseUrl" -ForegroundColor Gray
+    Write-Host ""
 }
 
 function Start-DiiiscoNode {
@@ -723,39 +1129,86 @@ function Start-DiiiscoNode {
     }
 }
 
+# ============================================================================
+# INSTALLATION SUMMARY
+# ============================================================================
+
 function Show-Summary {
+    # Try to read config for port/key info
+    $apiPort = "4200"
+    $apiKey = "<your-api-key>"
+    
+    $envFile = Join-Path $InstallPath "src\environment\environment.ts"
+    if (Test-Path $envFile) {
+        $content = Get-Content $envFile -Raw
+        if ($content -match 'port:\s*(\d+)') { $apiPort = $Matches[1] }
+        if ($content -match '"(sk-[^"]+)"') { $apiKey = $Matches[1] }
+    }
+    
     Write-Host "`n========================================" -ForegroundColor Green
     Write-Host "  INSTALLATION COMPLETE!" -ForegroundColor Green
     Write-Host "========================================`n" -ForegroundColor Green
     
     Write-Host "Installation Path: $InstallPath"
     Write-Host ""
+    
     Write-Host "To start the node:" -ForegroundColor Yellow
     Write-Host "  cd `"$InstallPath`""
     Write-Host "  npm run serve"
     Write-Host ""
+    
     Write-Host "Ollama Status:" -ForegroundColor Yellow
     if (Test-OllamaRunning) {
-        Write-Host "  Ollama is running" -ForegroundColor Green
-        Write-Host "  Pull models with: ollama pull llama3.2"
+        Write-Host "  Running" -ForegroundColor Green
+        
+        # Show installed models
+        try {
+            $models = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -TimeoutSec 5 -ErrorAction Stop
+            if ($models.models -and $models.models.Count -gt 0) {
+                Write-Host "  Installed Models: $($models.models.Count)" -ForegroundColor Green
+                foreach ($model in $models.models) {
+                    $size = ""
+                    if ($model.size) { $size = " (" + [math]::Round($model.size / 1GB, 1).ToString() + " GB)" }
+                    Write-Host "    - $($model.name)$size" -ForegroundColor Gray
+                }
+            } else {
+                Write-Host "  No models installed yet" -ForegroundColor Yellow
+                Write-Host "  Pull models with: ollama pull llama3.2"
+            }
+        }
+        catch {
+            Write-Host "  Pull models with: ollama pull llama3.2"
+        }
+    } else {
+        Write-Host "  NOT running - start Ollama before running the node" -ForegroundColor Red
     }
-    else {
-        Write-Host "  Ollama is NOT running - start it before running the node" -ForegroundColor Red
-        Write-Host "  Open the Ollama app from your Start menu"
-    }
     Write-Host ""
-    Write-Host "API Endpoint (when running):" -ForegroundColor Yellow
-    Write-Host "  http://localhost:8181"
+    
+    Write-Host "API Endpoint: http://localhost:$apiPort" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "Configuration file:" -ForegroundColor Yellow
-    Write-Host "  $InstallPath\src\environment\environment.ts"
+    
+    Write-Host "Quick Test:" -ForegroundColor Yellow
+    Write-Host "  Invoke-RestMethod -Uri `"http://localhost:$apiPort/health`" -Headers @{Authorization=`"Bearer $apiKey`"}"
     Write-Host ""
-    Write-Host "For more info, visit:" -ForegroundColor Cyan
+    
+    Write-Host "Reference File: $InstallPath\API_KEYS.txt" -ForegroundColor Yellow
+    Write-Host "  Contains API keys, test commands, and SDK examples"
+    Write-Host ""
+    
+    Write-Host "Algorand Wallet:" -ForegroundColor Yellow
+    Write-Host "  Make sure your wallet has ALGO to register on the network"
+    Write-Host ""
+    
+    Write-Host "Documentation:" -ForegroundColor Cyan
+    Write-Host "  https://diiisco.com/docs/api-reference"
     Write-Host "  https://github.com/Diiisco-Inc/diiisco-node"
     Write-Host ""
 }
 
-# Main execution
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
 Write-Host @"
 
   ____  _ _ _                 _   _           _      
@@ -764,7 +1217,7 @@ Write-Host @"
  | |_| | | | \__ \ (_| (_) | | |\  | (_) | (_| |  __/
  |____/|_|_|_|___/\___\___/  |_| \_|\___/ \__,_|\___|
                                                      
-         Windows Installation Script v1.0
+         Windows Installation Script v2.0
 
 "@ -ForegroundColor Cyan
 
@@ -777,13 +1230,15 @@ if (-not $SkipPrerequisites) {
     Install-Git
     Install-NodeJS
     
-    # Install and start Ollama
     $ollamaInstalled = Install-Ollama
     if ($ollamaInstalled) {
         Start-OllamaService
-        # Give Ollama a moment to fully initialize
         Start-Sleep -Seconds 2
     }
+    
+    # Detect hardware and recommend models
+    $systemSpecs = Get-SystemSpecs
+    Install-RecommendedModels -Specs $systemSpecs
 }
 
 # Clone repository
@@ -801,8 +1256,7 @@ Show-Summary
 # Optionally start the node
 if ($AutoStart) {
     Start-DiiiscoNode
-}
-else {
+} else {
     $startNow = Read-Host "Start the node now? (y/N)"
     if ($startNow -eq 'y' -or $startNow -eq 'Y') {
         Start-DiiiscoNode
