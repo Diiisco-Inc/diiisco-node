@@ -48,6 +48,12 @@ function Write-Success { param($msg) Write-Host "[+] $msg" -ForegroundColor Gree
 function Write-Warn { param($msg) Write-Host "[!] $msg" -ForegroundColor Yellow }
 function Write-Err { param($msg) Write-Host "[-] $msg" -ForegroundColor Red }
 
+function Refresh-Path {
+    $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$machinePath;$userPath"
+}
+
 function Test-Administrator {
     $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
@@ -97,8 +103,7 @@ function Get-SystemSpecs {
         $specs.CPU.Speed = [math]::Round($cpu.MaxClockSpeed / 1000, 2)
         Write-Host "  CPU: $($specs.CPU.Name)" -ForegroundColor Gray
         Write-Host "       $($specs.CPU.Cores) cores / $($specs.CPU.Threads) threads @ $($specs.CPU.Speed) GHz" -ForegroundColor DarkGray
-    }
-    catch {
+    } catch {
         Write-Warn "Could not detect CPU"
     }
     
@@ -108,8 +113,7 @@ function Get-SystemSpecs {
         $specs.RAM.TotalGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
         $specs.RAM.AvailableGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
         Write-Host "  RAM: $($specs.RAM.TotalGB) GB total ($($specs.RAM.AvailableGB) GB available)" -ForegroundColor Gray
-    }
-    catch {
+    } catch {
         Write-Warn "Could not detect RAM"
     }
     
@@ -162,16 +166,14 @@ function Get-SystemSpecs {
                     if ($nvidiaSmi) {
                         $specs.GPU.VRAM_GB = [math]::Round([int]$nvidiaSmi.Trim() / 1024, 0)
                     }
-                }
-                catch {}
+                } catch {}
             }
             
             if ($specs.GPU.VRAM_GB -gt 0) {
                 Write-Host "       $($specs.GPU.VRAM_GB) GB VRAM" -ForegroundColor DarkGray
             }
         }
-    }
-    catch {
+    } catch {
         Write-Warn "Could not detect GPU"
     }
     
@@ -349,6 +351,24 @@ function Install-RecommendedModels {
     
     $recommendations = Show-ModelRecommendations -Specs $Specs
     
+    # Get the Ollama port to use
+    $ollamaPort = $script:OllamaPort
+    if ($ollamaPort -eq 0) { $ollamaPort = 11434 }
+    
+    # Check if any models already installed
+    $existingModels = @()
+    try {
+        $response = Invoke-RestMethod -Uri "http://localhost:$ollamaPort/api/tags" -TimeoutSec 5 -ErrorAction Stop
+        if ($response.models) { $existingModels = $response.models }
+    } catch {}
+    
+    if ($existingModels.Count -gt 0) {
+        Write-Host "`n  You already have $($existingModels.Count) model(s) installed:" -ForegroundColor Green
+        foreach ($m in $existingModels) {
+            Write-Host "    - $($m.name)" -ForegroundColor Gray
+        }
+    }
+    
     # Combine must-have and recommended for install prompt
     $allModels = @()
     $allModels += $recommendations.MustHave
@@ -364,19 +384,24 @@ function Install-RecommendedModels {
     Write-Host "`n----------------------------------------" -ForegroundColor DarkGray
     Write-Host "Diiisco works best with multiple models to serve diverse requests." -ForegroundColor Gray
     Write-Host "More models = more earning potential on the network!" -ForegroundColor Gray
+    Write-Host "Models are shared across all Ollama instances." -ForegroundColor Gray
     Write-Host "----------------------------------------" -ForegroundColor DarkGray
     
     Write-Host "`nWould you like to install models now?" -ForegroundColor Yellow
     Write-Host "  [1] Install top recommended models ($(($recommendations.MustHave | Measure-Object).Count) models)" -ForegroundColor White
     Write-Host "  [2] Choose which models to install" -ForegroundColor White
-    Write-Host "  [3] Skip - I'll install models later" -ForegroundColor White
+    if ($existingModels.Count -gt 0) {
+        Write-Host "  [3] Skip - I already have models installed" -ForegroundColor White
+    } else {
+        Write-Host "  [3] Skip - I'll install models later " -NoNewline -ForegroundColor White
+        Write-Host "(NOT RECOMMENDED)" -ForegroundColor Red
+    }
     Write-Host ""
     
     $choice = Read-Host "Select option (1/2/3)"
     
     switch ($choice) {
         "1" {
-            # Install must-have models
             $modelsToInstall = $recommendations.MustHave
             if ($modelsToInstall.Count -eq 0) {
                 $modelsToInstall = $recommendations.Recommended | Select-Object -First 2
@@ -394,7 +419,6 @@ function Install-RecommendedModels {
             }
         }
         "2" {
-            # Interactive selection
             Write-Host "`nEnter model numbers to install (comma-separated), or 'all':" -ForegroundColor Yellow
             Write-Host ""
             
@@ -431,8 +455,21 @@ function Install-RecommendedModels {
             }
         }
         default {
-            Write-Host "`nSkipping model installation." -ForegroundColor Gray
-            Write-Host "Install models later with: ollama pull <model-name>" -ForegroundColor Gray
+            if ($existingModels.Count -eq 0) {
+                Write-Host ""
+                Write-Host "  +==============================================================+" -ForegroundColor Yellow
+                Write-Host "  |                        WARNING                               |" -ForegroundColor Yellow
+                Write-Host "  +==============================================================+" -ForegroundColor Yellow
+                Write-Host "  |  You have NO models installed!                              |" -ForegroundColor Yellow
+                Write-Host "  |  Your Diiisco node will NOT work without at least 1 model. |" -ForegroundColor Yellow
+                Write-Host "  |                                                              |" -ForegroundColor Yellow
+                Write-Host "  |  Install a model before starting the node:                  |" -ForegroundColor Yellow
+                Write-Host "  |    ollama pull llama3.2                                     |" -ForegroundColor Yellow
+                Write-Host "  +==============================================================+" -ForegroundColor Yellow
+                Write-Host ""
+            } else {
+                Write-Host "`nSkipping - using existing models." -ForegroundColor Gray
+            }
         }
     }
 }
@@ -447,8 +484,7 @@ function Install-Winget {
         try {
             Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe -ErrorAction Stop
             Write-Success "winget installed successfully"
-        }
-        catch {
+        } catch {
             Write-Err "Could not install winget automatically."
             Write-Host "Please install 'App Installer' from the Microsoft Store manually."
             Write-Host "URL: https://apps.microsoft.com/store/detail/app-installer/9NBLGGH4NNS1"
@@ -473,7 +509,7 @@ function Install-Git {
         winget install --id Git.Git -e --silent --accept-package-agreements --accept-source-agreements
         
         # Refresh PATH
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        Refresh-Path
         
         if (Test-CommandExists "git") {
             Write-Success "Git installed successfully"
@@ -512,7 +548,7 @@ function Install-NodeJS {
         winget install --id OpenJS.NodeJS.LTS -e --silent --accept-package-agreements --accept-source-agreements
         
         # Refresh PATH
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        Refresh-Path
         
         if (Test-CommandExists "node") {
             $nodeVersion = node --version
@@ -548,13 +584,263 @@ function Test-OllamaInstalled {
 }
 
 function Test-OllamaRunning {
+    param([int]$Port = 11434)
     try {
         $tcpClient = New-Object System.Net.Sockets.TcpClient
-        $tcpClient.Connect("127.0.0.1", 11434)
+        $tcpClient.Connect("127.0.0.1", $Port)
         $tcpClient.Close()
         return $true
+    } catch {
+        return $false
+    }
+}
+
+function Find-AvailablePort {
+    param([int]$StartPort = 11435)
+    
+    $port = $StartPort
+    $maxPort = $StartPort + 100
+    
+    while ($port -lt $maxPort) {
+        try {
+            $tcpClient = New-Object System.Net.Sockets.TcpClient
+            $tcpClient.Connect("127.0.0.1", $port)
+            $tcpClient.Close()
+            $port++
+        } catch {
+            return $port
+        }
+    }
+    
+    return $null
+}
+
+function Get-OllamaInstanceInfo {
+    param([int]$Port = 11434)
+    
+    try {
+        $response = Invoke-RestMethod -Uri "http://localhost:$Port/api/tags" -TimeoutSec 3 -ErrorAction Stop
+        $modelCount = 0
+        $modelNames = ""
+        if ($response.models) {
+            $modelCount = $response.models.Count
+            $modelNames = ($response.models | ForEach-Object { $_.name }) -join ", "
+        }
+        $result = @{
+            Running = $true
+            Port = $Port
+            Models = $modelCount
+            ModelNames = $modelNames
+        }
+        return $result
     }
     catch {
+        $result = @{
+            Running = $false
+            Port = $Port
+            Models = 0
+            ModelNames = ""
+        }
+        return $result
+    }
+}
+
+function Start-DedicatedOllamaInstance {
+    Write-Step "Checking for existing Ollama instances..."
+    
+    $defaultPort = 11434
+    $existingInstance = Get-OllamaInstanceInfo -Port $defaultPort
+    
+    if ($existingInstance.Running) {
+        Write-Host "  Found existing Ollama instance on port $defaultPort" -ForegroundColor Yellow
+        if ($existingInstance.Models -gt 0) {
+            Write-Host "  Models: $($existingInstance.ModelNames)" -ForegroundColor Gray
+        }
+        
+        Write-Host ""
+        Write-Host "  An Ollama instance is already running." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  To avoid conflicts between Diiisco and other apps using Ollama," -ForegroundColor Gray
+        Write-Host "  you can create a dedicated instance for Diiisco." -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "  OPTIONS:" -ForegroundColor Cyan
+        Write-Host "    [1] Use existing instance (port $defaultPort)" -ForegroundColor White
+        Write-Host "        - Diiisco will share Ollama with other apps" -ForegroundColor DarkGray
+        Write-Host "        - May cause conflicts if other apps are using Ollama" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "    [2] Create dedicated Diiisco instance (RECOMMENDED)" -ForegroundColor White
+        Write-Host "        - Runs on a separate port (no conflicts)" -ForegroundColor DarkGray
+        Write-Host "        - All $($existingInstance.Models) models instantly available" -ForegroundColor DarkGray
+        Write-Host "        - NO extra disk space (models are shared)" -ForegroundColor DarkGray
+        Write-Host "        - Diiisco gets its own isolated Ollama process" -ForegroundColor DarkGray
+        Write-Host ""
+        
+        $choice = Read-Host "  Select option (1/2)"
+        
+        if ($choice -eq "2") {
+            $newPort = Find-AvailablePort -StartPort 11435
+            
+            if (-not $newPort) {
+                Write-Err "Could not find an available port for Ollama"
+                return @{ Port = $defaultPort; Dedicated = $false }
+            }
+            
+            Write-Host ""
+            Write-Step "Creating dedicated Diiisco Ollama instance on port $newPort..."
+            Write-Host "  (Models are shared - no extra disk space used)" -ForegroundColor Gray
+            
+            $ollamaExe = $null
+            $searchPaths = @(
+                "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe",
+                "$env:ProgramFiles\Ollama\ollama.exe"
+            )
+            
+            $ollamaCmd = Get-Command "ollama" -ErrorAction SilentlyContinue
+            if ($ollamaCmd) { $searchPaths += $ollamaCmd.Source }
+            
+            foreach ($path in $searchPaths) {
+                if ($path -and (Test-Path $path)) {
+                    $ollamaExe = $path
+                    break
+                }
+            }
+            
+            if (-not $ollamaExe) {
+                Write-Warn "Could not find Ollama executable"
+                Write-Host "  Using existing instance on port $defaultPort" -ForegroundColor Gray
+                return @{ Port = $defaultPort; Dedicated = $false }
+            }
+            
+            try {
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = $ollamaExe
+                $psi.Arguments = "serve"
+                $psi.UseShellExecute = $false
+                $psi.CreateNoWindow = $true
+                $psi.EnvironmentVariables["OLLAMA_HOST"] = "127.0.0.1:$newPort"
+                
+                $process = [System.Diagnostics.Process]::Start($psi)
+                
+                $maxWait = 15
+                $waited = 0
+                Write-Host "  Waiting for Ollama to start" -NoNewline -ForegroundColor Gray
+                while (-not (Test-OllamaRunning -Port $newPort) -and $waited -lt $maxWait) {
+                    Start-Sleep -Seconds 1
+                    $waited++
+                    Write-Host "." -NoNewline
+                }
+                Write-Host ""
+                
+                if (Test-OllamaRunning -Port $newPort) {
+                    Write-Success "Dedicated Diiisco Ollama instance created!"
+                    
+                    $pidFile = Join-Path $InstallPath "ollama.pid"
+                    Set-Content -Path $pidFile -Value $process.Id -Force
+                    
+                    $portFile = Join-Path $InstallPath "ollama.port"
+                    Set-Content -Path $portFile -Value $newPort -Force
+                    
+                    Write-Host ""
+                    Write-Host "  +==============================================================+" -ForegroundColor Green
+                    Write-Host "  |           DEDICATED DIIISCO OLLAMA INSTANCE                 |" -ForegroundColor Green
+                    Write-Host "  +==============================================================+" -ForegroundColor Green
+                    Write-Host "  |  Port: $($newPort.ToString().PadRight(54))|" -ForegroundColor Green
+                    Write-Host "  |  PID:  $($process.Id.ToString().PadRight(54))|" -ForegroundColor Green
+                    Write-Host "  |                                                              |" -ForegroundColor Green
+                    Write-Host "  |  - Isolated from other Ollama applications                  |" -ForegroundColor Green
+                    Write-Host "  |  - All $($existingInstance.Models.ToString().PadRight(2)) models available (shared storage)            |" -ForegroundColor Green
+                    Write-Host "  |  - No extra disk space used                                 |" -ForegroundColor Green
+                    Write-Host "  |  - No conflicts with port $defaultPort                            |" -ForegroundColor Green
+                    Write-Host "  +==============================================================+" -ForegroundColor Green
+                    Write-Host ""
+                    
+                    $script:OllamaPort = $newPort
+                    return @{ Port = $newPort; Dedicated = $true; PID = $process.Id }
+                } else {
+                    Write-Warn "Dedicated instance failed to start"
+                    Write-Host "  Falling back to existing instance on port $defaultPort" -ForegroundColor Gray
+                    return @{ Port = $defaultPort; Dedicated = $false }
+                }
+            } catch {
+                Write-Warn "Failed to start dedicated instance: $_"
+                Write-Host "  Using existing instance on port $defaultPort" -ForegroundColor Gray
+                return @{ Port = $defaultPort; Dedicated = $false }
+            }
+        } else {
+            Write-Success "Using existing Ollama instance on port $defaultPort"
+            Write-Host "  Note: Other apps using Ollama may affect Diiisco performance" -ForegroundColor Yellow
+            return @{ Port = $defaultPort; Dedicated = $false }
+        }
+    } else {
+        Write-Host "  No existing Ollama instance found" -ForegroundColor Gray
+        $started = Start-OllamaService
+        if ($started) {
+            return @{ Port = $defaultPort; Dedicated = $false }
+        } else {
+            return @{ Port = $defaultPort; Dedicated = $false; Failed = $true }
+        }
+    }
+}
+
+# Global variable to track Ollama port for this session
+$script:OllamaPort = 11434
+
+function Test-OllamaModelsInstalled {
+    param([int]$Port = 0)
+    
+    # Use provided port, script-level port, or default
+    if ($Port -eq 0) { $Port = $script:OllamaPort }
+    if ($Port -eq 0) { $Port = 11434 }
+    
+    Write-Step "Checking for installed Ollama models (port $Port)..."
+    
+    if (-not (Test-OllamaRunning -Port $Port)) {
+        Write-Err "Ollama is not running on port $Port!"
+        Write-Host "  Please start Ollama first:" -ForegroundColor Yellow
+        Write-Host "    - Open the Ollama app from your Start menu, OR" -ForegroundColor Gray
+        Write-Host "    - Run 'ollama serve' in a separate terminal" -ForegroundColor Gray
+        return $false
+    }
+    
+    try {
+        $response = Invoke-RestMethod -Uri "http://localhost:$Port/api/tags" -TimeoutSec 10 -ErrorAction Stop
+        
+        if (-not $response.models -or $response.models.Count -eq 0) {
+            Write-Host ""
+            Write-Host "  +==============================================================+" -ForegroundColor Red
+            Write-Host "  |                    NO MODELS INSTALLED                       |" -ForegroundColor Red
+            Write-Host "  +==============================================================+" -ForegroundColor Red
+            Write-Host "  |  Diiisco requires at least one Ollama model to function.    |" -ForegroundColor Red
+            Write-Host "  |                                                              |" -ForegroundColor Red
+            Write-Host "  |  The whole point of Diiisco is to share LLM compute!        |" -ForegroundColor Red
+            Write-Host "  |  Without models, your node has nothing to offer.            |" -ForegroundColor Red
+            Write-Host "  +==============================================================+" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "  Install models with:" -ForegroundColor Yellow
+            Write-Host "    ollama pull llama3.2        # Small, fast model (2GB)" -ForegroundColor Gray
+            Write-Host "    ollama pull mistral:7b      # Great general-purpose (4GB)" -ForegroundColor Gray
+            Write-Host "    ollama pull qwen2.5:7b      # Strong multilingual (4GB)" -ForegroundColor Gray
+            Write-Host "    ollama pull codellama:7b    # Code-focused (4GB)" -ForegroundColor Gray
+            Write-Host ""
+            Write-Host "  Models are shared across all Ollama instances." -ForegroundColor Gray
+            Write-Host "  Or run this script again to get personalized recommendations" -ForegroundColor Yellow
+            Write-Host "  based on your hardware specs." -ForegroundColor Yellow
+            Write-Host ""
+            return $false
+        }
+        
+        $modelCount = $response.models.Count
+        Write-Success "Found $modelCount installed model(s):"
+        foreach ($model in $response.models) {
+            $size = ""
+            if ($model.size) { $size = " (" + [math]::Round($model.size / 1GB, 1).ToString() + " GB)" }
+            Write-Host "    - $($model.name)$size" -ForegroundColor Gray
+        }
+        
+        return $true
+    } catch {
+        Write-Err "Could not connect to Ollama API: $_"
+        Write-Host "  Make sure Ollama is running and accessible at http://localhost:$Port" -ForegroundColor Yellow
         return $false
     }
 }
@@ -586,8 +872,7 @@ function Install-Ollama {
                 Write-Host "Running Ollama installer (silent)..."
                 Start-Process -FilePath $ollamaInstaller -ArgumentList "/S" -Wait -NoNewWindow
                 Remove-Item $ollamaInstaller -Force -ErrorAction SilentlyContinue
-            }
-            catch {
+            } catch {
                 Write-Err "Failed to download/install Ollama: $_"
                 Write-Host "Please install Ollama manually from: https://ollama.com/download"
                 return $false
@@ -595,7 +880,7 @@ function Install-Ollama {
         }
         
         # Refresh PATH
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        Refresh-Path
         
         Start-Sleep -Seconds 2
         
@@ -702,8 +987,7 @@ function Detect-OllamaRuntime {
                 Models = $modelCount
                 ModelNames = $modelNames
             }
-        }
-        catch {
+        } catch {
             # Try version endpoint as backup
             try {
                 $null = Invoke-WebRequest -Uri "${testURL}/api/version" -Method GET -TimeoutSec 2 -ErrorAction Stop
@@ -715,8 +999,7 @@ function Detect-OllamaRuntime {
                     Models = 0
                     ModelNames = "unknown"
                 }
-            }
-            catch {
+            } catch {
                 # Continue to next port
             }
         }
@@ -745,7 +1028,7 @@ function Clone-Repository {
         }
     }
     
-    git clone https://github.com/Diiisco-Inc/diiisco-node.git $InstallPath
+    git clone https://github.com/FrysCrypto/diiisco-node.git $InstallPath
     
     if ($LASTEXITCODE -ne 0) {
         Write-Err "Failed to clone repository"
@@ -768,8 +1051,7 @@ function Install-Dependencies {
         }
         
         Write-Success "Dependencies installed successfully"
-    }
-    finally {
+    } finally {
         Pop-Location
     }
 }
@@ -799,33 +1081,51 @@ function Create-EnvironmentConfig {
     # --- LLM Configuration ---
     Write-Host "--- Local LLM Settings ---" -ForegroundColor Yellow
     
-    $ollamaDetected = Detect-OllamaRuntime
-    
-    if ($ollamaDetected) {
-        Write-Host "`nUsing detected Ollama endpoint: $($ollamaDetected.URL)" -ForegroundColor Green
-        if ($ollamaDetected.Models -gt 0) {
-            Write-Host "Available models: $($ollamaDetected.ModelNames)" -ForegroundColor Green
-        }
+    # Check if we have a dedicated Ollama port already set
+    $ollamaPort = $script:OllamaPort
+    if ($ollamaPort -and $ollamaPort -ne 0 -and $ollamaPort -ne 11434) {
+        Write-Host "`nUsing dedicated Ollama instance on port $ollamaPort" -ForegroundColor Cyan
+        $llmBaseURL = "http://localhost"
+        $llmPort = $ollamaPort
         
-        $useDetected = Read-Host "`nUse this endpoint? (Y/n)"
-        if ($useDetected -eq 'n' -or $useDetected -eq 'N') {
+        # Check for models on dedicated instance
+        try {
+            $response = Invoke-RestMethod -Uri "http://localhost:$ollamaPort/api/tags" -TimeoutSec 3 -ErrorAction Stop
+            if ($response.models -and $response.models.Count -gt 0) {
+                Write-Host "Available models: $(($response.models | ForEach-Object { $_.name }) -join ', ')" -ForegroundColor Green
+            }
+        } catch {}
+    } else {
+        $ollamaDetected = Detect-OllamaRuntime
+        
+        if ($ollamaDetected) {
+            Write-Host "`nUsing detected Ollama endpoint: $($ollamaDetected.URL)" -ForegroundColor Green
+            if ($ollamaDetected.Models -gt 0) {
+                Write-Host "Available models: $($ollamaDetected.ModelNames)" -ForegroundColor Green
+            }
+            
+            $useDetected = Read-Host "`nUse this endpoint? (Y/n)"
+            if ($useDetected -eq 'n' -or $useDetected -eq 'N') {
+                $llmBaseURL = Read-Host "LLM Base URL [http://localhost]"
+                if ([string]::IsNullOrWhiteSpace($llmBaseURL)) { $llmBaseURL = "http://localhost" }
+                
+                $llmPort = Read-Host "LLM Port [$($script:OllamaPort)]"
+                if ([string]::IsNullOrWhiteSpace($llmPort)) { $llmPort = $script:OllamaPort }
+                if ([string]::IsNullOrWhiteSpace($llmPort) -or $llmPort -eq 0) { $llmPort = "11434" }
+            } else {
+                $llmBaseURL = $ollamaDetected.Host
+                $llmPort = $ollamaDetected.Port
+            }
+        } else {
+            Write-Host "`nNo Ollama runtime detected. Please enter manually:" -ForegroundColor Yellow
+            
             $llmBaseURL = Read-Host "LLM Base URL [http://localhost]"
             if ([string]::IsNullOrWhiteSpace($llmBaseURL)) { $llmBaseURL = "http://localhost" }
             
-            $llmPort = Read-Host "LLM Port [11434]"
-            if ([string]::IsNullOrWhiteSpace($llmPort)) { $llmPort = "11434" }
-        } else {
-            $llmBaseURL = $ollamaDetected.Host
-            $llmPort = $ollamaDetected.Port
+            $defaultPort = if ($script:OllamaPort -and $script:OllamaPort -ne 0) { $script:OllamaPort } else { "11434" }
+            $llmPort = Read-Host "LLM Port [$defaultPort]"
+            if ([string]::IsNullOrWhiteSpace($llmPort)) { $llmPort = $defaultPort }
         }
-    } else {
-        Write-Host "`nNo Ollama runtime detected. Please enter manually:" -ForegroundColor Yellow
-        
-        $llmBaseURL = Read-Host "LLM Base URL [http://localhost]"
-        if ([string]::IsNullOrWhiteSpace($llmBaseURL)) { $llmBaseURL = "http://localhost" }
-        
-        $llmPort = Read-Host "LLM Port [11434]"
-        if ([string]::IsNullOrWhiteSpace($llmPort)) { $llmPort = "11434" }
     }
     
     $llmApiKey = Read-Host "`nLLM API Key (leave blank if not needed - Ollama doesn't require one)"
@@ -1019,7 +1319,7 @@ export default environment;
     $keysContent += "DOCUMENTATION`r`n"
     $keysContent += "-------------`r`n"
     $keysContent += "https://diiisco.com/docs/api-reference`r`n"
-    $keysContent += "https://github.com/Diiisco-Inc/diiisco-node`r`n"
+    $keysContent += "https://github.com/FrysCrypto/diiisco-node`r`n"
     
     Set-Content -Path $keysFile -Value $keysContent -Encoding UTF8
     Write-Success "API keys and reference saved to: $keysFile"
@@ -1032,8 +1332,13 @@ export default environment;
 function Show-NodeStatus {
     param(
         [string]$ApiKey,
-        [int]$Port = 4200
+        [int]$Port = 4200,
+        [int]$OllamaPort = 0
     )
+    
+    # Use script-level port if not specified
+    if ($OllamaPort -eq 0) { $OllamaPort = $script:OllamaPort }
+    if ($OllamaPort -eq 0) { $OllamaPort = 11434 }
     
     $baseUrl = "http://localhost:$Port"
     $headers = @{}
@@ -1050,8 +1355,7 @@ function Show-NodeStatus {
     try {
         $null = Invoke-RestMethod -Uri "$baseUrl/health" -Headers $headers -TimeoutSec 5 -ErrorAction Stop
         Write-Host "  Status: ONLINE" -ForegroundColor Green
-    }
-    catch {
+    } catch {
         Write-Host "  Status: OFFLINE" -ForegroundColor Red
         Write-Host "  Make sure the node is running (npm run serve)" -ForegroundColor DarkGray
         return
@@ -1082,8 +1386,7 @@ function Show-NodeStatus {
         } else {
             Write-Host "  Connected: 0 peers (bootstrapping...)" -ForegroundColor Yellow
         }
-    }
-    catch {
+    } catch {
         Write-Host "  Error fetching peers" -ForegroundColor Red
     }
     
@@ -1091,9 +1394,9 @@ function Show-NodeStatus {
     Write-Host ""
     Write-Host "[Models]" -ForegroundColor Yellow
     try {
-        $models = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -TimeoutSec 5 -ErrorAction Stop
+        $models = Invoke-RestMethod -Uri "http://localhost:$OllamaPort/api/tags" -TimeoutSec 5 -ErrorAction Stop
         if ($models.models -and $models.models.Count -gt 0) {
-            Write-Host "  Available: $($models.models.Count) model(s)" -ForegroundColor Green
+            Write-Host "  Available: $($models.models.Count) model(s) (Ollama port $OllamaPort)" -ForegroundColor Green
             foreach ($model in $models.models) {
                 $size = ""
                 if ($model.size) { $size = " (" + [math]::Round($model.size / 1GB, 1).ToString() + " GB)" }
@@ -1103,9 +1406,8 @@ function Show-NodeStatus {
             Write-Host "  Available: 0 models" -ForegroundColor Yellow
             Write-Host "    Run: ollama pull llama3.2" -ForegroundColor DarkGray
         }
-    }
-    catch {
-        Write-Host "  Ollama not running" -ForegroundColor Red
+    } catch {
+        Write-Host "  Ollama not running on port $OllamaPort" -ForegroundColor Red
     }
     
     Write-Host ""
@@ -1117,14 +1419,24 @@ function Show-NodeStatus {
 function Start-DiiiscoNode {
     Write-Step "Starting Diiisco Node..."
     
+    # Check for installed models before starting
+    $hasModels = Test-OllamaModelsInstalled
+    if (-not $hasModels) {
+        Write-Err "Cannot start Diiisco Node without installed models!"
+        Write-Host ""
+        Write-Host "Please install at least one model and try again." -ForegroundColor Yellow
+        Write-Host "Run: ollama pull llama3.2" -ForegroundColor Cyan
+        Write-Host ""
+        return
+    }
+    
     Push-Location $InstallPath
     try {
         Write-Host "`nStarting with 'npm run serve'..." -ForegroundColor Cyan
         Write-Host "Press Ctrl+C to stop the node.`n"
         
         npm run serve
-    }
-    finally {
+    } finally {
         Pop-Location
     }
 }
@@ -1137,6 +1449,8 @@ function Show-Summary {
     # Try to read config for port/key info
     $apiPort = "4200"
     $apiKey = "<your-api-key>"
+    $ollamaPort = $script:OllamaPort
+    if ($ollamaPort -eq 0) { $ollamaPort = 11434 }
     
     $envFile = Join-Path $InstallPath "src\environment\environment.ts"
     if (Test-Path $envFile) {
@@ -1158,12 +1472,12 @@ function Show-Summary {
     Write-Host ""
     
     Write-Host "Ollama Status:" -ForegroundColor Yellow
-    if (Test-OllamaRunning) {
-        Write-Host "  Running" -ForegroundColor Green
+    if (Test-OllamaRunning -Port $ollamaPort) {
+        Write-Host "  Running on port $ollamaPort" -ForegroundColor Green
         
         # Show installed models
         try {
-            $models = Invoke-RestMethod -Uri "http://localhost:11434/api/tags" -TimeoutSec 5 -ErrorAction Stop
+            $models = Invoke-RestMethod -Uri "http://localhost:$ollamaPort/api/tags" -TimeoutSec 5 -ErrorAction Stop
             if ($models.models -and $models.models.Count -gt 0) {
                 Write-Host "  Installed Models: $($models.models.Count)" -ForegroundColor Green
                 foreach ($model in $models.models) {
@@ -1175,14 +1489,20 @@ function Show-Summary {
                 Write-Host "  No models installed yet" -ForegroundColor Yellow
                 Write-Host "  Pull models with: ollama pull llama3.2"
             }
-        }
-        catch {
+        } catch {
             Write-Host "  Pull models with: ollama pull llama3.2"
         }
     } else {
         Write-Host "  NOT running - start Ollama before running the node" -ForegroundColor Red
     }
     Write-Host ""
+    
+    if ($ollamaPort -ne 11434) {
+        Write-Host "Dedicated Ollama Instance:" -ForegroundColor Cyan
+        Write-Host "  Port: $ollamaPort (avoids conflicts with your main Ollama)"
+        Write-Host "  All models are shared - pull once, use anywhere"
+        Write-Host ""
+    }
     
     Write-Host "API Endpoint: http://localhost:$apiPort" -ForegroundColor Yellow
     Write-Host ""
@@ -1201,7 +1521,7 @@ function Show-Summary {
     
     Write-Host "Documentation:" -ForegroundColor Cyan
     Write-Host "  https://diiisco.com/docs/api-reference"
-    Write-Host "  https://github.com/Diiisco-Inc/diiisco-node"
+    Write-Host "  https://github.com/FrysCrypto/diiisco-node"
     Write-Host ""
 }
 
@@ -1217,7 +1537,9 @@ Write-Host @"
  | |_| | | | \__ \ (_| (_) | | |\  | (_) | (_| |  __/
  |____/|_|_|_|___/\___\___/  |_| \_|\___/ \__,_|\___|
                                                      
-         Windows Installation Script v2.0
+         Windows Installation Script v2.1
+              Fry Networks Edition
+    github.com/FrysCrypto/diiisco-node
 
 "@ -ForegroundColor Cyan
 
@@ -1232,7 +1554,9 @@ if (-not $SkipPrerequisites) {
     
     $ollamaInstalled = Install-Ollama
     if ($ollamaInstalled) {
-        Start-OllamaService
+        # Check for existing instances and handle accordingly
+        $ollamaInstance = Start-DedicatedOllamaInstance
+        $script:OllamaPort = $ollamaInstance.Port
         Start-Sleep -Seconds 2
     }
     
@@ -1253,6 +1577,28 @@ Create-EnvironmentConfig
 # Show summary
 Show-Summary
 
+# Final model check before offering to start
+Write-Step "Final pre-flight check..."
+$hasModels = Test-OllamaModelsInstalled
+
+if (-not $hasModels) {
+    Write-Host ""
+    Write-Err "Installation incomplete - no Ollama models found!"
+    Write-Host ""
+    Write-Host "Your node is installed but CANNOT RUN without models." -ForegroundColor Yellow
+    Write-Host "Diiisco nodes share LLM compute - without models, there's nothing to share." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "To complete setup:" -ForegroundColor Cyan
+    Write-Host "  1. Install at least one model:" -ForegroundColor White
+    Write-Host "     ollama pull llama3.2" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  2. Then start the node:" -ForegroundColor White
+    Write-Host "     cd `"$InstallPath`"" -ForegroundColor Gray
+    Write-Host "     npm run serve" -ForegroundColor Gray
+    Write-Host ""
+    exit 1
+}
+
 # Optionally start the node
 if ($AutoStart) {
     Start-DiiiscoNode
@@ -1262,3 +1608,4 @@ if ($AutoStart) {
         Start-DiiiscoNode
     }
 }
+
