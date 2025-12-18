@@ -1,4 +1,4 @@
-import { createLibp2pNode } from './libp2p/node';
+import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
 import { createApiServer } from './api/server';
 import { handlePubSubMessage } from './pubsub/handler';
 import { EventEmitter } from 'events';
@@ -9,6 +9,8 @@ import { OpenAIInferenceModel } from "./utils/models";
 import quoteEngine from "./utils/quoteEngine";
 import OpenAI from "openai";
 import { logger } from './utils/logger';
+import { multiaddr } from '@multiformats/multiaddr';
+import { peerIdFromString } from '@libp2p/peer-id';
 
 class Application extends EventEmitter {
   private node: any; // TODO: Replace 'any' with a specific Libp2p node type
@@ -24,6 +26,9 @@ class Application extends EventEmitter {
   private reconnectAttempts: Map<string, number> = new Map();
   private readonly MAX_RECONNECT_ATTEMPTS = 5;
   private readonly RECONNECT_DELAY = 5000; // 5 seconds between reconnect attempts
+  
+  // Cache bootstrap servers for reconnection
+  private bootstrapServers: string[] = [];
 
   constructor() {
     super();
@@ -37,6 +42,10 @@ class Application extends EventEmitter {
     
     // Create and Start the Libp2p Node
     this.node = await createLibp2pNode();
+    
+    // Cache bootstrap servers for reconnection fallback
+    this.bootstrapServers = await lookupBootstrapServers();
+    logger.info(`📋 Cached ${this.bootstrapServers.length} bootstrap server(s) for reconnection fallback`);
     
     // Initialize Algorand for DSCO Payments
     await this.algo.initialize(this.node.peerId.toString());
@@ -69,8 +78,15 @@ class Application extends EventEmitter {
       const id = e.detail.id;
       logger.info('👋 Discovered Peer:', id.toString());
       
-      // Store peer info for potential reconnection
-      const multiaddrs = e.detail.multiaddrs?.map((ma: any) => ma.toString()) || [];
+      // Store peer info for potential reconnection - convert multiaddrs to strings
+      const multiaddrs = e.detail.multiaddrs?.map((ma: any) => {
+        try {
+          return ma.toString();
+        } catch {
+          return String(ma);
+        }
+      }) || [];
+      
       this.knownPeers.set(id.toString(), {
         lastSeen: Date.now(),
         multiaddrs
@@ -84,17 +100,36 @@ class Application extends EventEmitter {
     });
 
     // Listen for Connection Events
-    this.node.addEventListener('peer:connect', (evt: any) => {
+    this.node.addEventListener('peer:connect', async (evt: any) => {
       const peerId = evt.detail.toString();
       logger.info(`💚 Connected to peer: ${peerId}`);
       
       // Reset reconnect attempts on successful connection
       this.reconnectAttempts.delete(peerId);
       
-      // Update last seen time
+      // Update last seen time and try to get current multiaddrs
       const peerInfo = this.knownPeers.get(peerId);
       if (peerInfo) {
         peerInfo.lastSeen = Date.now();
+      }
+      
+      // Try to update multiaddrs from the active connection
+      try {
+        const connections = this.node.getConnections(evt.detail);
+        if (connections.length > 0) {
+          const addrs = connections.map((c: any) => c.remoteAddr?.toString()).filter(Boolean);
+          if (addrs.length > 0) {
+            const existing = this.knownPeers.get(peerId) || { lastSeen: Date.now(), multiaddrs: [] };
+            // Merge new addresses with existing ones
+            const allAddrs = [...new Set([...existing.multiaddrs, ...addrs])];
+            this.knownPeers.set(peerId, {
+              lastSeen: Date.now(),
+              multiaddrs: allAddrs
+            });
+          }
+        }
+      } catch (err) {
+        // Ignore errors when trying to get connection info
       }
     });
 
@@ -146,11 +181,40 @@ class Application extends EventEmitter {
       try {
         logger.info(`🔄 Attempting reconnect to ${peerId.slice(0, 16)}...`);
         
-        // Try to dial the peer by ID (libp2p may have cached addresses)
-        await this.node.dial(peerId);
+        // First, try using stored multiaddrs
+        const peerInfo = this.knownPeers.get(peerId);
         
-        logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}...`);
-        this.reconnectAttempts.delete(peerId);
+        if (peerInfo && peerInfo.multiaddrs.length > 0) {
+          // Try each stored multiaddr
+          for (const addrStr of peerInfo.multiaddrs) {
+            try {
+              const ma = multiaddr(addrStr);
+              logger.debug(`🔄 Trying multiaddr: ${addrStr.slice(0, 50)}...`);
+              await this.node.dial(ma);
+              logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}... via stored multiaddr`);
+              this.reconnectAttempts.delete(peerId);
+              return;
+            } catch (err) {
+              // Try next address
+              continue;
+            }
+          }
+        }
+        
+        // Fallback: Try to dial by PeerId (libp2p may have cached addresses in peerStore)
+        try {
+          const peerIdObj = peerIdFromString(peerId);
+          await this.node.dial(peerIdObj);
+          logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}... via peerStore`);
+          this.reconnectAttempts.delete(peerId);
+          return;
+        } catch (err: any) {
+          logger.debug(`Could not dial by peerId: ${err.message}`);
+        }
+        
+        // If we get here, all attempts failed
+        throw new Error('All dial attempts failed');
+        
       } catch (err: any) {
         logger.warn(`❌ Reconnect failed for ${peerId.slice(0, 16)}...: ${err.message}`);
         
@@ -161,6 +225,33 @@ class Application extends EventEmitter {
         }
       }
     }, delay);
+  }
+
+  /**
+   * Reconnect to bootstrap servers when we have zero connections
+   */
+  private async reconnectToBootstrap() {
+    if (this.bootstrapServers.length === 0) {
+      logger.warn('⚠️ No bootstrap servers configured for reconnection');
+      return;
+    }
+
+    logger.info(`🔄 Attempting to reconnect to ${this.bootstrapServers.length} bootstrap server(s)...`);
+
+    for (const addrStr of this.bootstrapServers) {
+      try {
+        const ma = multiaddr(addrStr);
+        logger.info(`🔄 Dialing bootstrap: ${addrStr.slice(0, 60)}...`);
+        await this.node.dial(ma);
+        logger.info(`✅ Connected to bootstrap server`);
+        // Successfully connected to at least one, that's enough to bootstrap
+        return;
+      } catch (err: any) {
+        logger.debug(`❌ Failed to connect to bootstrap ${addrStr.slice(0, 40)}...: ${err.message}`);
+      }
+    }
+
+    logger.warn('⚠️ Failed to connect to any bootstrap servers');
   }
 
   /**
@@ -179,6 +270,21 @@ class Application extends EventEmitter {
       if (uniquePeers.size < MIN_CONNECTIONS) {
         logger.warn(`⚠️ Below minimum connections (${MIN_CONNECTIONS}). Attempting to discover more peers...`);
         
+        // If we have ZERO connections, prioritize bootstrap servers
+        if (uniquePeers.size === 0) {
+          logger.warn('🚨 Zero connections! Reconnecting to bootstrap servers...');
+          await this.reconnectToBootstrap();
+          
+          // Give it a moment to connect, then check again
+          await new Promise(r => setTimeout(r, 5000));
+          
+          const newConnections = this.node.getConnections();
+          if (newConnections.length > 0) {
+            logger.info(`✅ Bootstrap reconnection successful: ${newConnections.length} connection(s)`);
+            return; // Don't try known peers if bootstrap worked
+          }
+        }
+        
         // Try to reconnect to known peers
         for (const [peerId, peerInfo] of this.knownPeers) {
           if (!uniquePeers.has(peerId)) {
@@ -188,7 +294,24 @@ class Application extends EventEmitter {
             if (timeSinceLastSeen < 3600000) {
               try {
                 logger.info(`🔄 Trying to reconnect to known peer ${peerId.slice(0, 16)}...`);
-                await this.node.dial(peerId);
+                
+                // Use stored multiaddrs if available
+                if (peerInfo.multiaddrs.length > 0) {
+                  for (const addrStr of peerInfo.multiaddrs) {
+                    try {
+                      const ma = multiaddr(addrStr);
+                      await this.node.dial(ma);
+                      logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}...`);
+                      break;
+                    } catch {
+                      continue;
+                    }
+                  }
+                } else {
+                  // Fallback to peerId
+                  const peerIdObj = peerIdFromString(peerId);
+                  await this.node.dial(peerIdObj);
+                }
               } catch (err) {
                 // Silently fail, will try again next interval
               }
