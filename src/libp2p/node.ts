@@ -75,9 +75,8 @@ export const createLibp2pNode = async () => {
       identify: identify(),
       identifyPush: identifyPush(),
       
-      // Ping service for keep-alive
+      // Ping service for keep-alive (using standard libp2p protocol)
       ping: ping({
-        protocolPrefix: 'diiisco',
         maxInboundStreams: 32,
         maxOutboundStreams: 32,
         timeout: 10000, // 10 second timeout for pings
