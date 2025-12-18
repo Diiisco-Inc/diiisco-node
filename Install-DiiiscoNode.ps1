@@ -1014,7 +1014,42 @@ function Detect-OllamaRuntime {
 # REPOSITORY SETUP
 # ============================================================================
 
+# Global variable to track which repo was used
+$script:RepoSource = "official"
+
 function Clone-Repository {
+    Write-Step "Selecting diiisco-node repository..."
+    
+    Write-Host ""
+    Write-Host "  Choose which repository to install from:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  [1] Official Repository (RECOMMENDED)" -ForegroundColor White
+    Write-Host "      github.com/Diiisco-Inc/diiisco-node" -ForegroundColor DarkGray
+    Write-Host "      - Stable, tested releases" -ForegroundColor DarkGray
+    Write-Host "      - Official support from Diiisco team" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "  [2] Fry Networks Fork (EXPERIMENTAL)" -ForegroundColor White
+    Write-Host "      github.com/FrysCrypto/diiisco-node" -ForegroundColor DarkGray
+    Write-Host "      - May include experimental features" -ForegroundColor DarkGray
+    Write-Host "      - Keep-alive pings & auto-reconnection" -ForegroundColor DarkGray
+    Write-Host "      - Community maintained" -ForegroundColor DarkGray
+    Write-Host ""
+    
+    $repoChoice = Read-Host "  Select repository (1/2)"
+    
+    $repoUrl = ""
+    if ($repoChoice -eq "2") {
+        $repoUrl = "https://github.com/FrysCrypto/diiisco-node.git"
+        $script:RepoSource = "frynetworks"
+        Write-Host ""
+        Write-Host "  Using Fry Networks fork (experimental)" -ForegroundColor Cyan
+    } else {
+        $repoUrl = "https://github.com/Diiisco-Inc/diiisco-node.git"
+        $script:RepoSource = "official"
+        Write-Host ""
+        Write-Host "  Using official Diiisco repository" -ForegroundColor Green
+    }
+    
     Write-Step "Cloning diiisco-node repository..."
     
     if (Test-Path $InstallPath) {
@@ -1028,7 +1063,7 @@ function Clone-Repository {
         }
     }
     
-    git clone https://github.com/FrysCrypto/diiisco-node.git $InstallPath
+    git clone $repoUrl $InstallPath
     
     if ($LASTEXITCODE -ne 0) {
         Write-Err "Failed to clone repository"
@@ -1319,7 +1354,12 @@ export default environment;
     $keysContent += "DOCUMENTATION`r`n"
     $keysContent += "-------------`r`n"
     $keysContent += "https://diiisco.com/docs/api-reference`r`n"
-    $keysContent += "https://github.com/FrysCrypto/diiisco-node`r`n"
+    if ($script:RepoSource -eq "frynetworks") {
+        $keysContent += "https://github.com/FrysCrypto/diiisco-node`r`n"
+        $keysContent += "(Fry Networks fork - experimental)`r`n"
+    } else {
+        $keysContent += "https://github.com/Diiisco-Inc/diiisco-node`r`n"
+    }
     
     Set-Content -Path $keysFile -Value $keysContent -Encoding UTF8
     Write-Success "API keys and reference saved to: $keysFile"
@@ -1521,7 +1561,12 @@ function Show-Summary {
     
     Write-Host "Documentation:" -ForegroundColor Cyan
     Write-Host "  https://diiisco.com/docs/api-reference"
-    Write-Host "  https://github.com/FrysCrypto/diiisco-node"
+    if ($script:RepoSource -eq "frynetworks") {
+        Write-Host "  https://github.com/FrysCrypto/diiisco-node" -ForegroundColor Gray
+        Write-Host "  (Fry Networks fork - experimental features)" -ForegroundColor DarkGray
+    } else {
+        Write-Host "  https://github.com/Diiisco-Inc/diiisco-node"
+    }
     Write-Host ""
 }
 
@@ -1538,8 +1583,6 @@ Write-Host @"
  |____/|_|_|_|___/\___\___/  |_| \_|\___/ \__,_|\___|
                                                      
          Windows Installation Script v2.1
-              Fry Networks Edition
-    github.com/FrysCrypto/diiisco-node
 
 "@ -ForegroundColor Cyan
 
