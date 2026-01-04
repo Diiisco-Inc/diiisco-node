@@ -69,7 +69,7 @@ export const createLibp2pNode = async () => {
       autoDialInterval: 10000,
       // Inbound connection threshold before pruning
       inboundConnectionThreshold: 20,
-    },
+    } as any,
     
     services: {
       identify: identify(),
