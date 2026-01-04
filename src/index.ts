@@ -1,4 +1,5 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
+import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck } from './libp2p/reconnection';
 import { createApiServer } from './api/server';
 import { handlePubSubMessage } from './pubsub/handler';
 import { EventEmitter } from 'events';
@@ -31,8 +32,8 @@ class Application extends EventEmitter {
   private readonly MIN_CONNECTIONS = 2;
   
   // Track last health check state to reduce log spam
-  private lastConnectionCount = -1;
-  private lastBootstrapAttempt = 0;
+  public lastConnectionCount = -1;
+  public lastBootstrapAttempt = 0;
   private readonly BOOTSTRAP_RETRY_INTERVAL = 120000; // Retry bootstrap every 2 minutes when disconnected
 
   constructor() {
@@ -41,6 +42,23 @@ class Application extends EventEmitter {
     this.algo = new algorand();
     this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`);
     this.quoteMgr = new quoteEngine(this);
+  }
+  
+  private createReconnectionDependencies(): ReconnectionDependencies {
+    return {
+      reconnectAttempts: this.reconnectAttempts,
+      RECONNECT_COOLDOWN: this.RECONNECT_COOLDOWN,
+      MAX_RECONNECT_ATTEMPTS: this.MAX_RECONNECT_ATTEMPTS,
+      RECONNECT_DELAY: this.RECONNECT_DELAY,
+      attemptReconnect: async (peerId: string) => await attemptReconnect(peerId, this.createReconnectionDependencies()),
+      node: this.node,
+      knownPeers: this.knownPeers,
+      MIN_CONNECTIONS: this.MIN_CONNECTIONS,
+      BOOTSTRAP_RETRY_INTERVAL: this.BOOTSTRAP_RETRY_INTERVAL,
+      lastBootstrapAttempt: this.lastBootstrapAttempt,
+      bootstrapAddresses: this.bootstrapAddresses,
+      lastConnectionCount: this.lastConnectionCount,
+    };
   }
 
   async start() {
@@ -123,231 +141,13 @@ class Application extends EventEmitter {
       logger.info(`💔 Disconnected from peer: ${peerId}`);
       
       // Attempt to reconnect
-      await this.scheduleReconnect(peerId);
+      await scheduleReconnect(peerId, this.createReconnectionDependencies());
     });
 
     // Start periodic connection health check
-    this.startConnectionHealthCheck();
+    startConnectionHealthCheck(this.createReconnectionDependencies());
     
     logger.info('🚀 Diiisco Node fully initialized');
-  }
-
-  /**
-   * Schedule a reconnection attempt with exponential backoff
-   */
-  private async scheduleReconnect(peerId: string) {
-    const attemptInfo = this.reconnectAttempts.get(peerId);
-    const now = Date.now();
-    
-    // Check if we should reset attempts (cooldown expired)
-    if (attemptInfo && (now - attemptInfo.lastAttempt) > this.RECONNECT_COOLDOWN) {
-      this.reconnectAttempts.delete(peerId);
-    }
-    
-    const currentInfo = this.reconnectAttempts.get(peerId) || { count: 0, lastAttempt: 0 };
-    
-    if (currentInfo.count >= this.MAX_RECONNECT_ATTEMPTS) {
-      // Don't log every time - just silently skip until cooldown
-      return;
-    }
-
-    // Exponential backoff: 5s, 10s, 20s, 40s, 80s
-    const delay = this.RECONNECT_DELAY * Math.pow(2, currentInfo.count);
-    
-    logger.info(`🔄 Scheduling reconnect attempt ${currentInfo.count + 1}/${this.MAX_RECONNECT_ATTEMPTS} for ${peerId.slice(0, 16)}... in ${delay/1000}s`);
-    
-    this.reconnectAttempts.set(peerId, { count: currentInfo.count + 1, lastAttempt: now });
-
-    setTimeout(async () => {
-      await this.attemptReconnect(peerId);
-    }, delay);
-  }
-
-  /**
-   * Attempt to reconnect to a specific peer
-   */
-  private async attemptReconnect(peerId: string) {
-    // Check if already connected
-    const connections = this.node.getConnections();
-    const isConnected = connections.some((conn: any) => conn.remotePeer.toString() === peerId);
-    
-    if (isConnected) {
-      logger.info(`✅ Already reconnected to ${peerId.slice(0, 16)}...`);
-      this.reconnectAttempts.delete(peerId);
-      return;
-    }
-
-    try {
-      logger.info(`🔄 Attempting reconnect to ${peerId.slice(0, 16)}...`);
-      
-      // Try to get stored multiaddrs for this peer
-      const peerInfo = this.knownPeers.get(peerId);
-      
-      if (peerInfo && peerInfo.multiaddrs.length > 0) {
-        // Try each multiaddr
-        for (const addr of peerInfo.multiaddrs) {
-          try {
-            await this.node.dial(addr);
-            logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}... via stored multiaddr`);
-            this.reconnectAttempts.delete(peerId);
-            return;
-          } catch (err) {
-            // Try next address
-          }
-        }
-      }
-      
-      // Fall back to dialing by peer ID
-      await this.node.dial(peerId);
-      logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}...`);
-      this.reconnectAttempts.delete(peerId);
-      
-    } catch (err: any) {
-      logger.warn(`❌ Reconnect failed for ${peerId.slice(0, 16)}...: ${err.message}`);
-      
-      // Schedule another attempt
-      await this.scheduleReconnect(peerId);
-    }
-  }
-
-  /**
-   * Attempt to reconnect to bootstrap servers
-   */
-  private async reconnectToBootstrap(): Promise<number> {
-    if (this.bootstrapAddresses.length === 0) {
-      return 0;
-    }
-
-    logger.info(`🔄 Attempting to reconnect to ${this.bootstrapAddresses.length} bootstrap server(s)...`);
-    
-    let successCount = 0;
-    
-    for (const addr of this.bootstrapAddresses) {
-      try {
-        logger.info(`🔄 Dialing bootstrap: ${addr.slice(0, 60)}...`);
-        await this.node.dial(addr);
-        logger.info(`✅ Connected to bootstrap server`);
-        successCount++;
-      } catch (err: any) {
-        // Log at debug level to reduce spam
-        logger.debug(`❌ Failed to connect to bootstrap ${addr.slice(0, 40)}...: ${err.message}`);
-      }
-    }
-    
-    if (successCount === 0) {
-      logger.warn(`⚠️ Failed to connect to any bootstrap servers`);
-    } else {
-      // Wait a moment for connections to stabilize
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      
-      const connections = this.node.getConnections();
-      const uniquePeers = new Set(connections.map((c: any) => c.remotePeer.toString()));
-      logger.info(`✅ Bootstrap reconnection successful: ${uniquePeers.size} connection(s)`);
-    }
-    
-    return successCount;
-  }
-
-  /**
-   * Periodic check to ensure we maintain minimum connections
-   */
-  private startConnectionHealthCheck() {
-    const CHECK_INTERVAL = 60000; // Check every 60 seconds
-
-    setInterval(async () => {
-      const connections = this.node.getConnections();
-      const uniquePeers = new Set(connections.map((c: any) => c.remotePeer.toString()));
-      const connectionCount = uniquePeers.size;
-      const now = Date.now();
-      
-      // Only log if connection count changed
-      if (connectionCount !== this.lastConnectionCount) {
-        logger.info(`📊 Connection health: ${connectionCount} unique peer(s) connected`);
-        this.lastConnectionCount = connectionCount;
-      }
-
-      if (connectionCount < this.MIN_CONNECTIONS) {
-        // Only warn if this is a new problem
-        if (connectionCount !== this.lastConnectionCount || connectionCount === 0) {
-          logger.warn(`⚠️ Below minimum connections (${this.MIN_CONNECTIONS}). Attempting to discover more peers...`);
-        }
-        
-        // If we have zero connections, immediately try bootstrap
-        if (connectionCount === 0) {
-          logger.warn(`🚨 Zero connections! Reconnecting to bootstrap servers...`);
-          await this.reconnectToBootstrap();
-          this.lastBootstrapAttempt = now;
-        } 
-        // If below minimum but > 0, try bootstrap periodically
-        else if ((now - this.lastBootstrapAttempt) > this.BOOTSTRAP_RETRY_INTERVAL) {
-          logger.info(`🔄 Attempting to connect to additional bootstrap servers...`);
-          await this.reconnectToBootstrap();
-          this.lastBootstrapAttempt = now;
-        }
-        
-        // Also try reconnecting to known peers
-        for (const [peerId, peerInfo] of this.knownPeers) {
-          if (!uniquePeers.has(peerId)) {
-            const timeSinceLastSeen = now - peerInfo.lastSeen;
-            const attemptInfo = this.reconnectAttempts.get(peerId);
-            
-            // Only try peers we've seen recently and haven't exhausted attempts on
-            if (timeSinceLastSeen < 3600000) { // 1 hour
-              // Check if attempts have cooled down
-              if (attemptInfo && attemptInfo.count >= this.MAX_RECONNECT_ATTEMPTS) {
-                if ((now - attemptInfo.lastAttempt) > this.RECONNECT_COOLDOWN) {
-                  // Reset attempts after cooldown
-                  this.reconnectAttempts.delete(peerId);
-                } else {
-                  continue; // Skip this peer, still in cooldown
-                }
-              }
-              
-              try {
-                logger.info(`🔄 Trying to reconnect to known peer ${peerId.slice(0, 16)}...`);
-                
-                if (peerInfo.multiaddrs.length > 0) {
-                  for (const addr of peerInfo.multiaddrs) {
-                    try {
-                      await this.node.dial(addr);
-                      logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}...`);
-                      break;
-                    } catch {
-                      // Try next address
-                    }
-                  }
-                } else {
-                  await this.node.dial(peerId);
-                }
-              } catch (err) {
-                // Track failed attempt
-                const current = this.reconnectAttempts.get(peerId) || { count: 0, lastAttempt: 0 };
-                this.reconnectAttempts.set(peerId, { count: current.count + 1, lastAttempt: now });
-              }
-            }
-          }
-        }
-      }
-
-      // Clean up old known peers (older than 24 hours)
-      const ONE_DAY = 24 * 60 * 60 * 1000;
-      for (const [peerId, peerInfo] of this.knownPeers) {
-        if (now - peerInfo.lastSeen > ONE_DAY) {
-          this.knownPeers.delete(peerId);
-          this.reconnectAttempts.delete(peerId);
-        }
-      }
-
-      // Also clean up old reconnect attempts that have cooled down
-      for (const [peerId, attemptInfo] of this.reconnectAttempts) {
-        if ((now - attemptInfo.lastAttempt) > this.RECONNECT_COOLDOWN * 2) {
-          this.reconnectAttempts.delete(peerId);
-        }
-      }
-
-    }, CHECK_INTERVAL);
-
-    logger.info('📊 Connection health monitor started (interval: 60s)');
   }
 }
 
