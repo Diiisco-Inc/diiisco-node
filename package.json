@@ -40,6 +40,7 @@
     "llama-tokenizer-js": "^1.2.2",
     "msgpack-lite": "^0.1.26",
     "msgpackr": "^1.11.5",
+    "node-schedule": "^2.1.1",
     "openai": "^6.5.0",
     "peer-id": "^0.16.0"
   },
@@ -47,6 +48,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^24.8.1",
+    "@types/node-schedule": "^2.1.8",
     "tsup": "^8.5.0",
     "typescript": "^5.9.3"
   }
