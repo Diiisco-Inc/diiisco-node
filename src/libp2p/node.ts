@@ -46,7 +46,7 @@ export const createLibp2pNode = async () => {
     }));
   }
 
-  // Create the Libp2p Node
+  // Create the Libp2p Node with connection management and keep-alive
   const node = await createLibp2p({
     privateKey: peer.privateKey,
     addresses: {
@@ -58,14 +58,43 @@ export const createLibp2pNode = async () => {
     connectionEncrypters: [noise()],
     peerDiscovery,
     streamMuxers: [yamux()],
+    
+    // Connection Manager - prevents aggressive connection pruning
+    connectionManager: {
+      // Minimum number of connections to maintain
+      minConnections: 2,
+      // Maximum number of connections allowed
+      maxConnections: 100,
+      // Auto-dial interval to maintain connections (ms)
+      autoDialInterval: 10000,
+      // Inbound connection threshold before pruning
+      inboundConnectionThreshold: 20,
+    },
+    
     services: {
       identify: identify(),
       identifyPush: identifyPush(),
-      ping: ping(),
+      
+      // Ping service for keep-alive (using standard libp2p protocol)
+      ping: ping({
+        maxInboundStreams: 32,
+        maxOutboundStreams: 32,
+        timeout: 10000, // 10 second timeout for pings
+      }),
+      
+      // GossipSub with optimized settings
       pubsub: gossipsub({
         allowPublishToZeroTopicPeers: true,
-        emitSelf: true
+        emitSelf: true,
+        // Heartbeat interval - how often to check peer health (ms)
+        heartbeatInterval: 1000,
+        // Number of heartbeats without response before peer is considered dead
+        // mcacheLength: 6,
+        // mcacheGossip: 3,
+        // Time to wait for responses (ms)
+        // seenTTL: 120000,
       }),
+      
       dht: kadDHT()
     }
   });
@@ -85,8 +114,49 @@ export const createLibp2pNode = async () => {
   if (environment.node && environment.node.url && !environment.node.url.includes('localhost')) {
     logger.info(`📬 Other nodes can Connect at: "/dns4/${environment.node.url}/tcp/${environment.node?.port || 4242}/p2p/${node.peerId.toString()}"`);
   }
+
+  // Start keep-alive ping loop for connected peers
+  startKeepAlive(node);
+
   return node;
 };
+
+/**
+ * Periodically ping connected peers to keep connections alive
+ * This prevents NAT timeouts and detects dead peers early
+ */
+async function startKeepAlive(node: any) {
+  const PING_INTERVAL = 30000; // Ping every 30 seconds
+  const PING_TIMEOUT = 10000;  // 10 second timeout per ping
+
+  setInterval(async () => {
+    const connections = node.getConnections();
+    
+    if (connections.length === 0) {
+      logger.debug('🔄 Keep-alive: No connections to ping');
+      return;
+    }
+
+    logger.debug(`🔄 Keep-alive: Pinging ${connections.length} peer(s)...`);
+
+    for (const conn of connections) {
+      const peerId = conn.remotePeer;
+      
+      try {
+        const latency = await node.services.ping.ping(peerId, {
+          signal: AbortSignal.timeout(PING_TIMEOUT)
+        });
+        logger.debug(`📶 Ping to ${peerId.toString().slice(0, 16)}...: ${latency}ms`);
+      } catch (err: any) {
+        logger.warn(`⚠️ Ping failed for ${peerId.toString().slice(0, 16)}...: ${err.message}`);
+        // Optionally close dead connections
+        // try { await conn.close(); } catch {}
+      }
+    }
+  }, PING_INTERVAL);
+
+  logger.info('🔄 Keep-alive ping service started (interval: 30s)');
+}
 
 export async function waitForMesh(node: any, topic: string, { min = 1, timeoutMs = 10000 } = {}) {
   const start = Date.now()
