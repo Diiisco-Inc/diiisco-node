@@ -64,6 +64,8 @@ const DIIISCO_CONTRACT: DiiiscoSmartContractConfig = {
   tinymanPoolAddress: "4XIH23PHRS6KCB6EDOZAFMNGE4LWZN7DGDWAY4YLHENUMJYHI6QFH56STI",
   tinymanApp: 1002541853,
   defaultMinDscoOut: 1,
+  rewardAsset: 3355017892,
+  rewardWallets: []
 };
 
 // Prepare Smart Contract Object

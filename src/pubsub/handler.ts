@@ -46,6 +46,14 @@ export const handlePubSubMessage = async (
     }
     logger.info("🔐 Signature of incoming message has been successfully verified.");
 
+    // Handle Messages in rewards Role
+    if (msg.role === 'rewards-pulse' && diiiscoContract.rewardWallets && diiiscoContract.rewardWallets.includes(msg.fromWalletAddr)) {
+      logger.info(`💰 Rewards message received from ${msg.fromWalletAddr}`);
+      return;
+    }
+
+
+    // Handle Different Message Roles in Quote and Inference Flow
     const quoteRequestMsg = msg as QuoteRequest;
     if (msg.role === 'quote-request' && models.includes(quoteRequestMsg.payload.model)) {
       // Check If Opted In to DSCO

@@ -1,3 +1,5 @@
+import { ChatCompletion } from "openai/resources/index";
+
 export interface QuoteRequestPayload {
   model: string;
   inputs: any; // TODO: Define a more specific type for inputs
@@ -84,7 +86,33 @@ export interface InferenceResponse {
   signature?: string;
 }
 
-export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | ContractCreated | ContractSigned | InferenceResponse;
+export interface RewardsPulse {
+  role: "rewards-pulse";
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  payload: {
+    date: string;
+    pulse: number;
+    inferenceTest: string | boolean;
+  };
+  signature?: string;
+}
+
+export interface RewardsPulseResponse {
+  role: "rewards-pulse-response";
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  payload: {
+    date: string;
+    pulse: number;
+    inferenceTest: Promise<ChatCompletion> | null;
+  };
+  signature?: string;
+}
+
+export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | ContractCreated | ContractSigned | InferenceResponse | RewardsPulse;
 
 export interface QuoteEvent {
   msg: QuoteResponse;

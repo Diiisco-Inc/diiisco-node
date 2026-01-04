@@ -24,4 +24,6 @@ export interface DiiiscoSmartContractConfig {
   tinymanPoolAddress: string;
   tinymanApp: number;
   defaultMinDscoOut?: number; // Use number for bigint representation
+  rewardAsset?: number;
+  rewardWallets?: string[];
 }

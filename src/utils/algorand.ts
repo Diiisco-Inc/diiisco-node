@@ -1,6 +1,6 @@
 import { sha256 } from 'js-sha256';
 import environment from '../environment/environment';
-import algosdk from 'algosdk';
+import algosdk, { AssetHolding } from 'algosdk';
 import { logger } from './logger';
 import { Environment } from '../environment/environment.types';
 import { NfdClient } from '@txnlab/nfd-sdk';
@@ -175,7 +175,7 @@ export default class algorand {
       const accountInfo = await algod.accountInformation(address).do();
 
       // Look for this ASA in their assets list
-      const asset = accountInfo.assets?.find((a) => a.assetId === BigInt(assetId));
+      const asset = accountInfo.assets?.find((a: algosdk.modelsv2.AssetHolding) => a.assetId === BigInt(assetId));
 
       if (!asset) {
         // Not opted-in
