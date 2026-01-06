@@ -5,7 +5,7 @@ import environment from "../environment/environment";
 import { sha256 } from "js-sha256";
 import { EventEmitter } from 'events';
 import { encode } from "msgpackr";
-import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse } from "../types/messages";
+import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsResponse, ListModelsRequest } from "../types/messages";
 import { logger } from '../utils/logger';
 import { waitForMesh } from '../libp2p/node';
 import { Libp2p } from '@libp2p/interface';
@@ -41,6 +41,37 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       res.status(500).send({ error: "Error fetching peers" });
     }
   });
+
+  app.get('/v1/models', async (req, res) => {
+    try {
+      nodeEvents.once('model-list-compiled', (response: ListModelsResponse) => {
+        res.status(200).send({
+            "object": "list",
+            "data": response,
+        });
+      });
+
+      const modelListMessage: ListModelsRequest = {
+       role: "list-models",
+        timestamp: Date.now(),
+        id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
+        fromWalletAddr: environment.algorand.addr,
+      };
+
+      modelListMessage.signature = await algo.signObject(modelListMessage);
+
+      waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(() => {
+        (node.services.pubsub as any).publish("diiisco/models/1.0.0", encode(modelListMessage));
+        logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${modelListMessage.id}`);
+      }).catch((err: string) => {
+        logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
+        return res.status(500).send({ error: "No peers available to handle the request." });
+      });
+    } catch (error) {
+      logger.error("Error fetching models:", error);
+      res.status(500).send({ error: "Error fetching models" });
+    }
+  })
 
   app.post(`/v1/chat/completions`, async (req, res) => {
     logger.info("🚀 Received /v1/chat/completions request.");

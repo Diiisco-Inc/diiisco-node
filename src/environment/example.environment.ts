@@ -1,5 +1,6 @@
 import { Environment } from "./environment.types"; // Import the new interface
 import { selectHighestStakeQuote } from "../utils/quoteSelectionMethods";
+import { createQuoteFromInputTokens } from "../utils/quoteCreationMethods";
 
 const environment: Environment = {
   peerIdStorage: {
@@ -37,6 +38,7 @@ const environment: Environment = {
   quoteEngine: {
     waitTime: 1000,
     quoteSelectionFunction: selectHighestStakeQuote,
+    quoteCreationFunction: [createQuoteFromInputTokens]
   },
   libp2pBootstrapServers: [
     "lon.diiisco.algo",
