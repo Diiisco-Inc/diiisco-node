@@ -46,7 +46,7 @@ export const handlePubSubMessage = async (
     }
     logger.info("🔐 Signature of incoming message has been successfully verified.");
 
-    if (msg.role === 'list-models') {
+    if (msg.role === 'list-models' && env.models.enabled) {
       const models_list = await model.getModels();
       const response: ListModelsResponse = {
         role: 'list-models-response',
