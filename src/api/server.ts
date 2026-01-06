@@ -75,11 +75,16 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
   app.post(`/v1/chat/completions`, async (req, res) => {
     logger.info("🚀 Received /v1/chat/completions request.");
-    if (!req.body || !req.body.model || !req.body.inputs) {
+    if (!req.body || !req.body.model || (!req.body.messages && !req.body.inputs)) {
       logger.warn("Missing model or messages in request body.");
       return res.status(400).send({ error: "Missing model or messages in request body." });
     };
 
+    if (req.body.messages) {
+      req.body.inputs = req.body.messages;
+      delete req.body.messages;
+    }
+    
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
       from: node.peerId.toString(),
