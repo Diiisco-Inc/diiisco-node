@@ -1,3 +1,5 @@
+import { Model } from "openai/resources/models";
+
 export interface QuoteRequestPayload {
   model: string;
   inputs: any; // TODO: Define a more specific type for inputs
@@ -84,7 +86,27 @@ export interface InferenceResponse {
   signature?: string;
 }
 
-export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | ContractCreated | ContractSigned | InferenceResponse;
+export interface ListModelsRequest {
+  role: "list-models";
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  signature?: string;
+}
+
+export interface ListModelsResponse {
+  role: "list-models-response";
+  timestamp: number;
+  id: string;
+  to: string;
+  fromWalletAddr: string;
+  payload: {
+    models: Model[];
+  };
+  signature?: string;
+}
+
+export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | ContractCreated | ContractSigned | InferenceResponse | ListModelsRequest | ListModelsResponse;
 
 export interface QuoteEvent {
   msg: QuoteResponse;
