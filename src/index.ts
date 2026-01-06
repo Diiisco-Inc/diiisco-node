@@ -40,7 +40,7 @@ class Application extends EventEmitter {
     super();
     this.env = environment;
     this.algo = new algorand();
-    this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`);
+    this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`, this);
     this.quoteMgr = new quoteEngine(this);
   }
   
