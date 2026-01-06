@@ -4,7 +4,7 @@ import algorand from "../utils/algorand";
 import environment from "../environment/environment";
 import { OpenAIInferenceModel } from "../utils/models";
 import quoteEngine from "../utils/quoteEngine";
-import { PubSubMessage, QuoteRequest, QuoteResponse, QuoteAccepted, InferenceResponse, ContractSigned, ContractCreated } from "../types/messages";
+import { PubSubMessage, QuoteRequest, QuoteResponse, QuoteAccepted, InferenceResponse, ContractSigned, ContractCreated, ListModelsResponse } from "../types/messages";
 import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
 import diiiscoContract from "../utils/contract";
@@ -45,6 +45,27 @@ export const handlePubSubMessage = async (
       return;
     }
     logger.info("🔐 Signature of incoming message has been successfully verified.");
+
+    if (msg.role === 'list-models') {
+      const models_list = await model.getModels();
+      const response: ListModelsResponse = {
+        role: 'list-models-response',
+        timestamp: Date.now(),
+        id: msg.id,
+        to: evt.detail.from.toString(),
+        fromWalletAddr: algo.account.addr.toString(),
+        payload: {
+          models: models_list,
+        }
+      };
+      response.signature = await algo.signObject(response);
+      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      logger.info(`📤 Sent list-models-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
+    }
+
+    if (msg.role === 'list-models-response' && msg.to === node.peerId.toString()) {
+      model.addModel(msg.payload.models);
+    }
 
     const quoteRequestMsg = msg as QuoteRequest;
     if (msg.role === 'quote-request' && models.includes(quoteRequestMsg.payload.model)) {
