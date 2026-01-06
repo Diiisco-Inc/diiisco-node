@@ -45,7 +45,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   app.get('/v1/models', async (req, res) => {
     try {
       nodeEvents.once('model-list-compiled', (response: ListModelsResponse) => {
-        res.status(200).send({ models: response });
+        res.status(200).send({
+            "object": "list",
+            "data": response,
+        });
       });
 
       const modelListMessage: ListModelsRequest = {
