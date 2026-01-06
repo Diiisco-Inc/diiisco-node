@@ -12,9 +12,12 @@ export default class quoteEngine {
   waitTime: number;
   nodeEventEmitter: EventEmitter;
 
-  constructor(nodeEvents: EventEmitter) {
+  private env: Environment;
+
+  constructor(nodeEvents: EventEmitter, env: Environment) {
     this.quoteQueue = {};
-    this.waitTime = (environment as Environment).quoteEngine.waitTime || 5000; // default wait time 5 seconds
+    this.env = env;
+    this.waitTime = this.env.quoteEngine?.waitTime || 5000; // default wait time 5 seconds
     this.nodeEventEmitter = nodeEvents;
   }
 
@@ -24,7 +27,7 @@ export default class quoteEngine {
         quotes: [quoteEvent],
         timeout: setTimeout(async () => {
           // Select Quote based on selection function
-          const selectionFunction = environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote;
+          const selectionFunction = this.env.quoteEngine?.quoteSelectionFunction ?? selectHighestStakeQuote;
           const selectedQuote = await selectionFunction(this.quoteQueue[quoteEvent.msg.id].quotes);
 
           // Emit event that quote is ready
@@ -40,7 +43,7 @@ export default class quoteEngine {
   }
 
   async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel){
-    const creationFunctionSetting = environment.quoteEngine.quoteCreationFunction ?? [createQuoteFromInputTokens];
+    const creationFunctionSetting = this.env.quoteEngine?.quoteCreationFunction ?? [createQuoteFromInputTokens];
     const creationFunctionArray: Function[] = Array.isArray(creationFunctionSetting) ? creationFunctionSetting : [creationFunctionSetting];
     
     for (const func of creationFunctionArray){

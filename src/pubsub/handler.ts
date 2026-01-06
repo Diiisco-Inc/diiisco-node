@@ -20,10 +20,10 @@ export const handlePubSubMessage = async (
   quoteMgr: quoteEngine,
   topics: string[],
   models: string[],
+  env: Environment,
 ) => {
   if (topics.includes(evt.detail.topic)) {
     const msg: PubSubMessage = decode(evt.detail.data);
-    const env: Environment = environment; // Use the typed environment
 
     // Verify the Algroand Address from teh Sender
     if (!msg.fromWalletAddr || !algo.isValidAddress(msg.fromWalletAddr)) {
@@ -46,7 +46,7 @@ export const handlePubSubMessage = async (
     }
     logger.info("🔐 Signature of incoming message has been successfully verified.");
 
-    if (msg.role === 'list-models' && env.models.enabled) {
+    if (msg.role === 'list-models' && env.models?.enabled) {
       const models_list = await model.getModels();
       const response: ListModelsResponse = {
         role: 'list-models-response',

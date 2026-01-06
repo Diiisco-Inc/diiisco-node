@@ -48,11 +48,11 @@ export interface PeerIdStorageConfig {
 export interface PeerIdConfig extends PeerId.JSONPeerId {}
 
 export interface Environment {
-  peerIdStorage: PeerIdStorageConfig;
-  models: ModelsConfig;
+  peerIdStorage?: PeerIdStorageConfig;
+  models?: ModelsConfig;
   algorand: AlgorandConfig;
-  api: ApiConfig;
-  quoteEngine: QuoteEngineConfig;
+  api?: ApiConfig;
+  quoteEngine?: QuoteEngineConfig;
   libp2pBootstrapServers?: string[]; // Array of multiaddrs for LibP2P bootstrapping
   // Add a new property for the server URL
   node?: {

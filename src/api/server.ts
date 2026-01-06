@@ -1,3 +1,4 @@
+import { Environment } from '../environment/environment.types';
 import express from 'express';
 import cors from "cors";
 import { requireBearer } from "../utils/endpoint";
@@ -12,13 +13,13 @@ import { Libp2p } from '@libp2p/interface';
 import { Connection } from 'libp2p-tcp';
 import algorand from '../utils/algorand';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand ) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, env: Environment) => {
   const app = express();
-  const port = environment.api.port || 8080;
+  const port = env.api?.port || 8080;
   app.use(cors());
   app.use(express.json());
 
-  if (environment.api.bearerAuthentication) {
+  if (env.api?.bearerAuthentication) {
     app.use("/v1", requireBearer);
     app.use("/peers", requireBearer);
   }
@@ -55,7 +56,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
        role: "list-models",
         timestamp: Date.now(),
         id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
-        fromWalletAddr: environment.algorand.addr,
+        fromWalletAddr: env.algorand.addr,
       };
 
       modelListMessage.signature = await algo.signObject(modelListMessage);
@@ -88,7 +89,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
       from: node.peerId.toString(),
-      fromWalletAddr: environment.algorand.addr,
+      fromWalletAddr: env.algorand.addr,
       timestamp: Date.now(),
       id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
       payload: {
@@ -119,7 +120,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         to: quote.from.toString(),
         timestamp: Date.now(),
         id: quote.msg.id,
-        fromWalletAddr: environment.algorand.addr,
+        fromWalletAddr: env.algorand.addr,
         payload: {
           ...quote.msg.payload,
         }
@@ -131,9 +132,9 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     });
   });
 
-  app.listen(port, '0.0.0.0', () => {
-    logger.info(`🚀 API server listening at ${environment.node?.url || `http://0.0.0.0:${port || 8080}`}`);
+  const server = app.listen(port, '0.0.0.0', () => {
+    logger.info(`🚀 API server listening at ${env.node?.url || `http://0.0.0.0:${port || 8080}`}`);
   });
 
-  return app;
+  return server;
 };

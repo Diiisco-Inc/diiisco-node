@@ -10,8 +10,9 @@ import { OpenAIInferenceModel } from "./utils/models";
 import quoteEngine from "./utils/quoteEngine";
 import OpenAI from "openai";
 import { logger } from './utils/logger';
+import { Server } from 'http';
 
-class Application extends EventEmitter {
+export class DIIISCO extends EventEmitter {
   private node: any;
   private algo: algorand;
   private model: OpenAIInferenceModel;
@@ -19,6 +20,9 @@ class Application extends EventEmitter {
   private quoteMgr: quoteEngine;
   private topics: string[] = [];
   private env: Environment;
+  private apiServer?: Server;
+  private healthCheckInterval?: NodeJS.Timeout;
+  private keepAliveInterval?: NodeJS.Timeout;
   
   // Track peers for reconnection
   private knownPeers: Map<string, { lastSeen: number; multiaddrs: string[] }> = new Map();
@@ -36,12 +40,21 @@ class Application extends EventEmitter {
   public lastBootstrapAttempt = 0;
   private readonly BOOTSTRAP_RETRY_INTERVAL = 120000; // Retry bootstrap every 2 minutes when disconnected
 
-  constructor() {
+  constructor(env: Partial<Environment>) {
     super();
-    this.env = environment;
-    this.algo = new algorand();
-    this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`, this);
-    this.quoteMgr = new quoteEngine(this);
+    this.env = {
+      ...environment,
+      ...env,
+      models: { ...environment.models, ...env.models },
+      algorand: { ...environment.algorand, ...env.algorand },
+      api: { ...environment.api, ...env.api },
+      quoteEngine: { ...environment.quoteEngine, ...env.quoteEngine },
+      node: { ...environment.node, ...env.node },
+    } as Environment;
+
+    this.algo = new algorand(this.env);
+    this.model = new OpenAIInferenceModel(`${this.env.models?.baseURL}:${this.env.models?.port}/v1`, this, this.env);
+    this.quoteMgr = new quoteEngine(this, this.env);
   }
   
   private createReconnectionDependencies(): ReconnectionDependencies {
@@ -63,11 +76,13 @@ class Application extends EventEmitter {
 
   async start() {
     // Load bootstrap server addresses for reconnection
-    this.bootstrapAddresses = await lookupBootstrapServers();
+    this.bootstrapAddresses = await lookupBootstrapServers(this.env);
     logger.info(`🌐 Loaded ${this.bootstrapAddresses.length} bootstrap server(s)`);
     
     // Create and Start the Libp2p Node
-    this.node = await createLibp2pNode();
+    const { node, keepAliveInterval } = await createLibp2pNode(this.env);
+    this.node = node;
+    this.keepAliveInterval = keepAliveInterval;
     
     // Initialize Algorand for DSCO Payments
     await this.algo.initialize(this.node.peerId.toString());
@@ -77,12 +92,12 @@ class Application extends EventEmitter {
     this.topics.push('diiisco/models/1.0.0');
 
     // Start the API Server
-    if (this.env.api.enabled) {
-      createApiServer(this.node, this, this.algo);
+    if (this.env.api?.enabled) {
+      this.apiServer = createApiServer(this.node, this, this.algo, this.env);
     }
 
     // Listen for Model PubSub Events
-    if (this.env.models.enabled) {
+    if (this.env.models?.enabled) {
       const models = await this.model.getModels();
       this.availableModels = models.filter((m: OpenAI.Models.Model) => m.object == 'model').map((modelInfo: OpenAI.Models.Model) => {
         logger.info(`🤖 Serving Model: ${modelInfo.id}`);
@@ -92,7 +107,7 @@ class Application extends EventEmitter {
 
     // Listen for PubSub Messages
     this.node.services.pubsub.addEventListener('message', async (evt: { detail: { topic: string; data: Uint8Array; from: any; }; }) => {
-      await handlePubSubMessage(evt, this.node, this, this.algo, this.model, this.quoteMgr, this.topics, this.availableModels);
+      await handlePubSubMessage(evt, this.node, this, this.algo, this.model, this.quoteMgr, this.topics, this.availableModels, this.env);
     });
 
     // Listen for Peer Discovery Events
@@ -145,18 +160,38 @@ class Application extends EventEmitter {
     });
 
     // Start periodic connection health check
-    startConnectionHealthCheck(this.createReconnectionDependencies());
+    this.healthCheckInterval = startConnectionHealthCheck(this.createReconnectionDependencies());
     
     logger.info('🚀 Diiisco Node fully initialized');
   }
+
+  async stop() {
+    logger.info('🛑 Stopping Diiisco Node...');
+    
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+    
+    if (this.keepAliveInterval) {
+      clearInterval(this.keepAliveInterval);
+    }
+
+    if (this.apiServer) {
+      await new Promise<void>((resolve) => {
+        this.apiServer?.close(() => {
+          logger.info('📡 API server stopped');
+          resolve();
+        });
+      });
+    }
+
+    if (this.node) {
+      await this.node.stop();
+      logger.info('🕸️ Libp2p node stopped');
+    }
+
+    logger.info('✅ Diiisco Node stopped');
+  }
 }
 
-const app = new Application();
-app.start().catch(err => {
-  if (err.message === "PeerID not found.") {
-    logger.error('🚨 Application failed to start: PeerID not found in environment.ts. Please generate one using \'npm run get-peer-id\' and add it to environment.ts.');
-  } else {
-    logger.error('🚨 Application failed to start:', err);
-  }
-  process.exit(1);
-});
+export { Environment };

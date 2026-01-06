@@ -53,8 +53,8 @@ export default class algorand {
   private contract: algosdk.ABIContract;
   private signer: algosdk.TransactionSigner;
 
-  constructor() {
-    this.env = environment;
+  constructor(env: Environment) {
+    this.env = env;
     this.mnemonic = this.env.algorand.mnemonic;
     this.nfdAddr = this.env.algorand.nfd || null;
     this.account = algosdk.mnemonicToSecretKey(this.mnemonic);

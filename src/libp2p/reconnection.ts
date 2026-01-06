@@ -135,7 +135,7 @@ export async function reconnectToBootstrap(deps: ReconnectionDependencies): Prom
 export function startConnectionHealthCheck(deps: ReconnectionDependencies) {
   const CHECK_INTERVAL = 60000; // Check every 60 seconds
 
-  setInterval(async () => {
+  const interval = setInterval(async () => {
     const connections = deps.node.getConnections();
     const uniquePeers = new Set(connections.map((c: any) => c.remotePeer.toString()));
     const connectionCount = uniquePeers.size;
@@ -229,4 +229,5 @@ export function startConnectionHealthCheck(deps: ReconnectionDependencies) {
   }, CHECK_INTERVAL);
 
   logger.info('📊 Connection health monitor started (interval: 60s)');
+  return interval;
 }

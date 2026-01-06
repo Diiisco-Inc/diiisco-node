@@ -1,3 +1,4 @@
+import { Environment } from '../environment/environment.types';
 import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
@@ -13,14 +14,14 @@ import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import environment from '../environment/environment';
 import { nfdToNodeAddress } from '../utils/algorand';
 
-export const lookupBootstrapServers = async (): Promise<string[]> => {
+export const lookupBootstrapServers = async (env: Environment): Promise<string[]> => {
   // No Bootstrap Servers Configured
-  if (!environment.libp2pBootstrapServers || environment.libp2pBootstrapServers.length === 0) {
+  if (!env.libp2pBootstrapServers || env.libp2pBootstrapServers.length === 0) {
     return [];
   }
 
   // Process Bootstrap Servers
-    const parsedBootstrapServers = (await Promise.all(environment.libp2pBootstrapServers.map(async (addr: string) => {
+    const parsedBootstrapServers = (await Promise.all(env.libp2pBootstrapServers.map(async (addr: string) => {
       addr = addr.trim();
       if (addr?.endsWith('diiisco.algo')) {
         const nfdAddress = await nfdToNodeAddress(addr);
@@ -31,15 +32,15 @@ export const lookupBootstrapServers = async (): Promise<string[]> => {
   return parsedBootstrapServers;
 };
 
-export const createLibp2pNode = async () => {
-  // Load or Create a Peer ID
-  const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
+export const createLibp2pNode = async (env: Environment) => {
+  // Load or Create a Peer ID);
+  const peer = await PeerIdManager.loadOrCreate(env.peerIdStorage?.path ? `${env.peerIdStorage.path}/diiisco-peer-id.protobuf` : 'diiisco-peer-id.protobuf');
 
   // Prepare Peer Discovery Modules
   const peerDiscovery: any[] = [mdns()];
   
-  if (environment.libp2pBootstrapServers && environment.libp2pBootstrapServers.length > 0) {
-    const parsedBootstrapServers = await lookupBootstrapServers();
+  if (env.libp2pBootstrapServers && env.libp2pBootstrapServers.length > 0) {
+    const parsedBootstrapServers = await lookupBootstrapServers(env);
 
     peerDiscovery.push(bootstrap({
       list: parsedBootstrapServers,
@@ -51,7 +52,7 @@ export const createLibp2pNode = async () => {
     privateKey: peer.privateKey,
     addresses: {
       listen: [
-        `/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`
+        `/ip4/0.0.0.0/tcp/${env.node?.port || 4242}`
     ]
     },
     transports: [tcp()],
@@ -111,25 +112,25 @@ export const createLibp2pNode = async () => {
   // Show Connection Details
   logger.info('👂 Listening on:');
   node.getMultiaddrs().forEach(addr => logger.info(`   ${addr.toString()}`));
-  if (environment.node && environment.node.url && !environment.node.url.includes('localhost')) {
-    logger.info(`📬 Other nodes can Connect at: "/dns4/${environment.node.url}/tcp/${environment.node?.port || 4242}/p2p/${node.peerId.toString()}"`);
+  if (env.node && env.node.url && !env.node.url.includes('localhost')) {
+    logger.info(`📬 Other nodes can Connect at: "/dns4/${env.node.url}/tcp/${env.node?.port || 4242}/p2p/${node.peerId.toString()}"`);
   }
 
   // Start keep-alive ping loop for connected peers
-  startKeepAlive(node);
+  const keepAliveInterval = startKeepAlive(node);
 
-  return node;
+  return { node, keepAliveInterval };
 };
 
 /**
  * Periodically ping connected peers to keep connections alive
  * This prevents NAT timeouts and detects dead peers early
  */
-async function startKeepAlive(node: any) {
+function startKeepAlive(node: any) {
   const PING_INTERVAL = 30000; // Ping every 30 seconds
   const PING_TIMEOUT = 10000;  // 10 second timeout per ping
 
-  setInterval(async () => {
+  const interval = setInterval(async () => {
     const connections = node.getConnections();
     
     if (connections.length === 0) {
@@ -156,6 +157,7 @@ async function startKeepAlive(node: any) {
   }, PING_INTERVAL);
 
   logger.info('🔄 Keep-alive ping service started (interval: 30s)');
+  return interval;
 }
 
 export async function waitForMesh(node: any, topic: string, { min = 1, timeoutMs = 10000 } = {}) {

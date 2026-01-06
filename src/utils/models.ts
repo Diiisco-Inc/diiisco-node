@@ -13,11 +13,11 @@ export class OpenAIInferenceModel {
   nodeEventEmitter: EventEmitter;
   availableModels: Model[] = [];
 
-  constructor(baseURL: string, nodeEvents: EventEmitter) {
-    this.env = environment;
+  constructor(baseURL: string, nodeEvents: EventEmitter, env: Environment) {
+    this.env = env;
     this.openai = new OpenAI({
       baseURL: baseURL,
-      apiKey: this.env.models.apiKey
+      apiKey: this.env.models?.apiKey
     });
     this.nodeEventEmitter = nodeEvents;
   }
@@ -58,7 +58,7 @@ export class OpenAIInferenceModel {
         this.nodeEventEmitter.emit(`model-list-compiled`, uniqueModels);
         logger.info(`✅ Model list compiled and event emitted: ${JSON.stringify(uniqueModels)}`);
         this.availableModels = [];
-      }, environment.quoteEngine.waitTime || 5000);
+      }, this.env.quoteEngine?.waitTime || 5000);
     } else {
       this.availableModels = [...this.availableModels, ...models];
     }

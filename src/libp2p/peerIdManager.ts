@@ -22,7 +22,7 @@ export class PeerIdManager {
   static async loadOrCreate(fileName: string): Promise<{ peerId: PeerId; privateKey: PrivateKey }> {
     let privateKey: PrivateKey
     let peerId: PeerId
-    const sanitizedPath = environment.peerIdStorage.path.replace('~', process.env.HOME || '').replace(/\/$/, '');
+    const sanitizedPath = fileName.replace('~', process.env.HOME || '').replace(/\/$/, '');
 
     // Check the existence of the protobuf folder
     if (!existsSync(sanitizedPath)) {
@@ -30,8 +30,9 @@ export class PeerIdManager {
     }
 
     // Now Make the File Path
-    const filePath = `${sanitizedPath}/${fileName}`;
-    
+    const filePath = sanitizedPath;
+    console.log(`FILE PATH: ${filePath}`);
+
     if (existsSync(filePath)) {
       console.log(`📁 Loading existing private key from ${filePath}`)
       try {
