@@ -3,7 +3,7 @@ import { encode, decode } from 'msgpackr';
 import { PubSubMessage } from '../types/messages';
 import environment from '../environment/environment';
 import { pipe } from 'it-pipe';
-import lp from 'it-length-prefixed';
+import * as lp from 'it-length-prefixed';
 import type { Stream } from '@libp2p/interface';
 
 export class DirectMessagingHandler {

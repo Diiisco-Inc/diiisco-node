@@ -62,8 +62,7 @@ export const createLibp2pNode = async () => {
     privateKey: peer.privateKey,
     addresses: {
       listen: [
-        `/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`,
-        ...(environment.relay.enableRelayClient ? ['/p2p-circuit'] : []),
+        `/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`
       ]
     },
     transports,
