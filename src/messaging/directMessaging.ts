@@ -112,18 +112,24 @@ export class DirectMessagingHandler {
       // Encode message
       const encoded = encode(message);
 
-      // In libp2p v3+, pipe directly to the stream
-      // The stream itself acts as a sink when used in pipe
-      await pipe(
-        async function* () {
-          yield encoded;
-        },
+      // Create a pushable stream for writing
+      const source = pushable();
+
+      // Start the pipe in the background (send data to remote peer)
+      const writePromise = pipe(
+        source,
         lp.encode(),
         stream
       );
 
-      // Close the stream after writing
-      await stream.close();
+      // Push the encoded message
+      source.push(encoded);
+
+      // Signal end of data
+      source.end();
+
+      // Wait for the write to complete
+      await writePromise;
 
       logger.info(`✅ Direct message sent (${message.role}) to ${peerId.slice(0, 16)}...`);
       return true;
