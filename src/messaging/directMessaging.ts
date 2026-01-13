@@ -6,6 +6,7 @@ import { pipe } from 'it-pipe';
 import * as lp from 'it-length-prefixed';
 import type { Stream } from '@libp2p/interface';
 import { peerIdFromString } from '@libp2p/peer-id';
+import { pushable } from 'it-pushable';
 
 export class DirectMessagingHandler {
   private node: any;
@@ -108,21 +109,17 @@ export class DirectMessagingHandler {
         { signal: AbortSignal.timeout(timeout) }
       );
 
-      logger.debug(`📝 Stream obtained, type: ${typeof stream}, has sink: ${!!stream?.sink}, has source: ${!!stream?.source}`);
-
       // Encode message
       const encoded = encode(message);
 
-      // Write to stream using the sink property (matching receiver pattern)
-      // Receiver reads from stream.source, sender writes to stream.sink
-      if (!stream.sink) {
-        throw new Error('Stream has no sink property');
-      }
-
+      // In libp2p v3+, pipe directly to the stream
+      // The stream itself acts as a sink when used in pipe
       await pipe(
-        [encoded],      // Source: array with single message
-        lp.encode(),    // Transform: add length prefix
-        stream.sink     // Sink: write to the stream's sink
+        async function* () {
+          yield encoded;
+        },
+        lp.encode(),
+        stream
       );
 
       // Close the stream after writing
