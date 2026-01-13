@@ -113,13 +113,20 @@ export class DirectMessagingHandler {
       // Encode message
       const encoded = encode(message);
 
-      // libp2p v3: pipe directly to stream (which acts as a sink)
-      // See: https://github.com/libp2p/js-libp2p-example-custom-protocols
+      // Write to stream using the sink property (matching receiver pattern)
+      // Receiver reads from stream.source, sender writes to stream.sink
+      if (!stream.sink) {
+        throw new Error('Stream has no sink property');
+      }
+
       await pipe(
         [encoded],      // Source: array with single message
         lp.encode(),    // Transform: add length prefix
-        stream          // Sink: the stream itself
+        stream.sink     // Sink: write to the stream's sink
       );
+
+      // Close the stream after writing
+      await stream.close();
 
       logger.info(`✅ Direct message sent (${message.role}) to ${peerId.slice(0, 16)}...`);
       return true;
