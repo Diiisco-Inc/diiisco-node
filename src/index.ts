@@ -81,6 +81,15 @@ class Application extends EventEmitter {
     // Initialize Algorand for DSCO Payments
     await this.algo.initialize(this.node.peerId.toString());
 
+    // Load available models FIRST before initializing message processor
+    if (this.env.models.enabled) {
+      const models = await this.model.getModels();
+      this.availableModels = models.filter((m: OpenAI.Models.Model) => m.object == 'model').map((modelInfo: OpenAI.Models.Model) => {
+        logger.info(`🤖 Serving Model: ${modelInfo.id}`);
+        return modelInfo.id;
+      });
+    }
+
     // Initialize direct messaging if enabled
     if (this.env.directMessaging.enabled) {
       this.directHandler = new DirectMessagingHandler(
@@ -105,7 +114,7 @@ class Application extends EventEmitter {
     // Initialize message router
     this.messageRouter = new MessageRouter(this.node, this.directHandler);
 
-    // Initialize unified message processor
+    // Initialize unified message processor with loaded models
     this.messageProcessor = new MessageProcessor(
       this.algo,
       this.model,
@@ -122,15 +131,6 @@ class Application extends EventEmitter {
     // Start the API Server
     if (this.env.api.enabled) {
       createApiServer(this.node, this, this.algo, this.messageRouter);
-    }
-
-    // Listen for Model PubSub Events
-    if (this.env.models.enabled) {
-      const models = await this.model.getModels();
-      this.availableModels = models.filter((m: OpenAI.Models.Model) => m.object == 'model').map((modelInfo: OpenAI.Models.Model) => {
-        logger.info(`🤖 Serving Model: ${modelInfo.id}`);
-        return modelInfo.id;
-      });
     }
 
     // Listen for PubSub Messages
