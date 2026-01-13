@@ -36,6 +36,7 @@
     "has-flag": "^5.0.1",
     "it-all": "^3.0.4",
     "it-length-prefixed": "^9.0.0",
+    "it-length-prefixed-stream": "^2.0.4",
     "it-pipe": "^3.0.1",
     "it-pushable": "^3.2.3",
     "js-sha256": "^0.11.1",

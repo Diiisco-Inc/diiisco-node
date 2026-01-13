@@ -2,11 +2,9 @@ import { logger } from '../utils/logger';
 import { encode, decode } from 'msgpackr';
 import { PubSubMessage } from '../types/messages';
 import environment from '../environment/environment';
-import { pipe } from 'it-pipe';
-import * as lp from 'it-length-prefixed';
 import type { Stream } from '@libp2p/interface';
 import { peerIdFromString } from '@libp2p/peer-id';
-import { pushable } from 'it-pushable';
+import { lpStream } from 'it-length-prefixed-stream';
 
 export class DirectMessagingHandler {
   private node: any;
@@ -23,71 +21,41 @@ export class DirectMessagingHandler {
    * Register the direct messaging protocol handler
    */
   async registerProtocol() {
-    await this.node.handle(this.protocol, async ({ stream, connection }: any) => {
-      const peerId = connection.remotePeer.toString();
-      logger.debug(`📨 Incoming direct message from ${peerId}`);
-
-      try {
-        await this.handleIncomingStream(stream, peerId);
-      } catch (err: any) {
-        logger.error(`❌ Error handling direct stream: ${err.message}`);
+    await this.node.handle(this.protocol, (stream: any) => {
+      // Handle stream asynchronously (don't block handle registration)
+      Promise.resolve().then(async () => {
         try {
-          await stream.close();
-        } catch (closeErr) {
-          // Ignore close errors
+          const peerId = stream.connection?.remotePeer?.toString() || 'unknown';
+          logger.debug(`📨 Incoming direct message from ${peerId}`);
+
+          // Use lpStream to read length-prefixed message
+          const lp = lpStream(stream);
+          const data = await lp.read();
+
+          // Convert Uint8ArrayList to Uint8Array if needed
+          const messageData = data.subarray ? data.subarray() : data;
+
+          // Check message size
+          if (messageData.length > environment.directMessaging.maxMessageSize) {
+            throw new Error(`Message exceeds max size: ${environment.directMessaging.maxMessageSize} bytes`);
+          }
+
+          // Decode message
+          const msg: PubSubMessage = decode(messageData);
+          logger.info(`📥 Received direct message (${msg.role}) from ${peerId}`);
+
+          // Process through unified handler
+          await this.onMessage(msg, peerId);
+
+        } catch (err: any) {
+          logger.error(`❌ Error handling direct stream: ${err.message}`);
         }
-      }
+      }).catch(err => {
+        logger.error(`❌ Unhandled error in protocol handler: ${err.message}`);
+      });
     });
 
     logger.info(`✅ Direct messaging protocol registered: ${this.protocol}`);
-  }
-
-  /**
-   * Handle incoming direct message stream
-   */
-  private async handleIncomingStream(stream: Stream, peerId: string) {
-    const maxSize = environment.directMessaging.maxMessageSize;
-
-    try {
-      // Use length-prefixed framing to read message
-      const chunks: Uint8Array[] = [];
-      let totalSize = 0;
-
-      await pipe(
-        stream.source,
-        lp.decode(),
-        async (source) => {
-          for await (const chunk of source) {
-            totalSize += chunk.length;
-            if (totalSize > maxSize) {
-              throw new Error(`Message exceeds max size: ${maxSize} bytes`);
-            }
-            chunks.push(chunk);
-          }
-        }
-      );
-
-      // Combine chunks
-      const combined = new Uint8Array(totalSize);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      // Decode message
-      const msg: PubSubMessage = decode(combined);
-      logger.info(`📥 Received direct message (${msg.role}) from ${peerId}`);
-
-      // Process through unified handler
-      await this.onMessage(msg, peerId);
-
-      // Close stream
-      await stream.close();
-    } catch (err: any) {
-      logger.error(`❌ Error processing direct message: ${err.message}`);
-      throw err;
-    }
   }
 
   /**
@@ -112,30 +80,17 @@ export class DirectMessagingHandler {
       // Encode message
       const encoded = encode(message);
 
-      // Create a pushable stream for writing
-      const source = pushable();
+      // Use lpStream to write length-prefixed message
+      const lp = lpStream(stream);
+      await lp.write(encoded);
 
-      // Start the pipe in the background (send data to remote peer)
-      const writePromise = pipe(
-        source,
-        lp.encode(),
-        stream
-      );
-
-      // Push the encoded message
-      source.push(encoded);
-
-      // Signal end of data
-      source.end();
-
-      // Wait for the write to complete
-      await writePromise;
+      // Unwrap and close the stream
+      await lp.unwrap().close();
 
       logger.info(`✅ Direct message sent (${message.role}) to ${peerId.slice(0, 16)}...`);
       return true;
     } catch (err: any) {
       logger.warn(`⚠️ Direct message failed to ${peerId.slice(0, 16)}...: ${err.message}`);
-      logger.debug(`Full error:`, err);
       return false;
     }
   }
