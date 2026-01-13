@@ -21,27 +21,40 @@ export class DirectMessagingHandler {
    * Register the direct messaging protocol handler
    */
   async registerProtocol() {
-    await this.node.handle(this.protocol, (stream: any) => {
+    await this.node.handle(this.protocol, (...args: any[]) => {
       // Handle stream asynchronously (don't block handle registration)
       Promise.resolve().then(async () => {
-        // Debug: log stream structure
-        logger.info(`🔍 Stream object keys: ${Object.keys(stream).join(', ')}`);
-        if (stream.connection) {
-          logger.info(`🔍 Stream.connection keys: ${Object.keys(stream.connection).join(', ')}`);
+        // Debug: log all handler arguments
+        logger.info(`🔍 Handler received ${args.length} arguments`);
+        for (let i = 0; i < args.length; i++) {
+          logger.info(`🔍 Arg ${i} keys: ${Object.keys(args[i]).join(', ')}`);
         }
+
+        const stream = args[0];
 
         // Extract peer ID from stream - try multiple approaches for libp2p v3
         let peerId = 'unknown';
 
-        if (stream.connection?.remotePeer) {
-          // remotePeer might already be a string or have toString()
-          peerId = typeof stream.connection.remotePeer === 'string'
-            ? stream.connection.remotePeer
-            : stream.connection.remotePeer.toString();
-        } else if (stream.remotePeer) {
-          peerId = typeof stream.remotePeer === 'string'
-            ? stream.remotePeer
-            : stream.remotePeer.toString();
+        // Try different argument patterns
+        if (args.length > 1) {
+          // Maybe second argument is connection or peer info?
+          const secondArg = args[1];
+          logger.info(`🔍 Second arg type: ${typeof secondArg}, keys: ${secondArg ? Object.keys(secondArg).join(', ') : 'null'}`);
+
+          if (secondArg?.remotePeer) {
+            peerId = secondArg.remotePeer.toString();
+          } else if (secondArg?.connection?.remotePeer) {
+            peerId = secondArg.connection.remotePeer.toString();
+          }
+        }
+
+        // If still unknown, check first arg properties
+        if (peerId === 'unknown') {
+          if (stream.connection?.remotePeer) {
+            peerId = stream.connection.remotePeer.toString();
+          } else if (stream.remotePeer) {
+            peerId = stream.remotePeer.toString();
+          }
         }
 
         logger.info(`📨 Incoming direct message from ${peerId}`);
