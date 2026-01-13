@@ -5,6 +5,7 @@ import environment from '../environment/environment';
 import { pipe } from 'it-pipe';
 import * as lp from 'it-length-prefixed';
 import type { Stream } from '@libp2p/interface';
+import { peerIdFromString } from '@libp2p/peer-id';
 
 export class DirectMessagingHandler {
   private node: any;
@@ -96,9 +97,12 @@ export class DirectMessagingHandler {
     const timeout = environment.directMessaging.timeout;
 
     try {
+      // Convert string peerId to PeerId object
+      const peerIdObj = peerIdFromString(peerId);
+
       // Create stream to peer
       const stream = await this.node.dialProtocol(
-        peerId,
+        peerIdObj,
         this.protocol,
         { signal: AbortSignal.timeout(timeout) }
       );
