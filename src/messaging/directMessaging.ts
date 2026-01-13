@@ -24,7 +24,28 @@ export class DirectMessagingHandler {
     await this.node.handle(this.protocol, (stream: any) => {
       // Handle stream asynchronously (don't block handle registration)
       Promise.resolve().then(async () => {
-        const peerId = stream.connection?.remotePeer?.toString() || 'unknown';
+        // Debug: log stream structure
+        logger.debug(`🔍 Stream properties: ${JSON.stringify({
+          hasConnection: !!stream.connection,
+          hasRemotePeer: !!stream.remotePeer,
+          connectionRemotePeer: stream.connection?.remotePeer ? 'exists' : 'missing',
+          connectionRemotePeerId: stream.connection?.remotePeerId ? 'exists' : 'missing',
+        })}`);
+
+        // Extract peer ID from stream - try multiple approaches for libp2p v3
+        let peerId = 'unknown';
+
+        if (stream.connection?.remotePeer) {
+          // remotePeer might already be a string or have toString()
+          peerId = typeof stream.connection.remotePeer === 'string'
+            ? stream.connection.remotePeer
+            : stream.connection.remotePeer.toString();
+        } else if (stream.remotePeer) {
+          peerId = typeof stream.remotePeer === 'string'
+            ? stream.remotePeer
+            : stream.remotePeer.toString();
+        }
+
         logger.debug(`📨 Incoming direct message from ${peerId}`);
 
         // Use lpStream to read length-prefixed message
