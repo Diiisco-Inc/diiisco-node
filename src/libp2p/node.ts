@@ -7,6 +7,9 @@ import { mdns } from '@libp2p/mdns';
 import { yamux } from '@libp2p/yamux';
 import { gossipsub } from '@libp2p/gossipsub';
 import { kadDHT } from '@libp2p/kad-dht';
+import { autoNAT } from '@libp2p/autonat';
+import { circuitRelayServer, circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { dcutr } from '@libp2p/dcutr';
 import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
@@ -37,7 +40,7 @@ export const createLibp2pNode = async () => {
 
   // Prepare Peer Discovery Modules
   const peerDiscovery: any[] = [mdns()];
-  
+
   if (environment.libp2pBootstrapServers && environment.libp2pBootstrapServers.length > 0) {
     const parsedBootstrapServers = await lookupBootstrapServers();
 
@@ -46,15 +49,24 @@ export const createLibp2pNode = async () => {
     }));
   }
 
+  // Prepare transports
+  const transports: any[] = [tcp()];
+  if (environment.relay.enableRelayClient) {
+    transports.push(circuitRelayTransport({
+      discoverRelays: 1,  // Discover at least 1 relay
+    }));
+  }
+
   // Create the Libp2p Node with connection management and keep-alive
   const node = await createLibp2p({
     privateKey: peer.privateKey,
     addresses: {
       listen: [
-        `/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`
-    ]
+        `/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`,
+        ...(environment.relay.enableRelayClient ? ['/p2p-circuit'] : []),
+      ]
     },
-    transports: [tcp()],
+    transports,
     connectionEncrypters: [noise()],
     peerDiscovery,
     streamMuxers: [yamux()],
@@ -74,14 +86,14 @@ export const createLibp2pNode = async () => {
     services: {
       identify: identify(),
       identifyPush: identifyPush(),
-      
+
       // Ping service for keep-alive (using standard libp2p protocol)
       ping: ping({
         maxInboundStreams: 32,
         maxOutboundStreams: 32,
         timeout: 10000, // 10 second timeout for pings
       }),
-      
+
       // GossipSub with optimized settings
       pubsub: gossipsub({
         allowPublishToZeroTopicPeers: true,
@@ -94,8 +106,26 @@ export const createLibp2pNode = async () => {
         // Time to wait for responses (ms)
         // seenTTL: 120000,
       }),
-      
-      dht: kadDHT()
+
+      dht: kadDHT(),
+
+      // AutoNAT for detecting reachability
+      autoNAT: autoNAT(),
+
+      // Circuit Relay Server (if enabled)
+      ...(environment.relay.enableRelayServer ? {
+        relay: circuitRelayServer({
+          reservations: {
+            maxReservations: environment.relay.maxRelayedConnections * 2,
+          },
+          maxConnections: environment.relay.maxRelayedConnections,
+        })
+      } : {}),
+
+      // DCUtR for connection upgrade (if enabled)
+      ...(environment.relay.enableDCUtR ? {
+        dcutr: dcutr()
+      } : {}),
     }
   });
 
@@ -114,6 +144,20 @@ export const createLibp2pNode = async () => {
   if (environment.node && environment.node.url && !environment.node.url.includes('localhost')) {
     logger.info(`📬 Other nodes can Connect at: "/dns4/${environment.node.url}/tcp/${environment.node?.port || 4242}/p2p/${node.peerId.toString()}"`);
   }
+
+  // Listen for AutoNAT reachability updates
+  node.addEventListener('self:peer:update', (evt: any) => {
+    const reachability = evt.detail.peer.metadata.get('autonat:reachability');
+    if (reachability) {
+      logger.info(`🔍 AutoNAT Reachability: ${reachability}`);
+
+      if (reachability === 'public' && environment.relay.enableRelayServer) {
+        logger.info('🌐 Node is publicly accessible - relay server active');
+      } else if (reachability === 'private') {
+        logger.info('🔒 Node is behind NAT - using relay client only');
+      }
+    }
+  });
 
   // Start keep-alive ping loop for connected peers
   startKeepAlive(node);

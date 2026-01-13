@@ -47,7 +47,23 @@ const environment: Environment = {
   node: {
     url: "http://localhost",
     port: 4242
-  }
+  },
+  relay: {
+    enableRelayServer: true,        // Auto-disabled if behind NAT
+    autoEnableRelay: true,
+    maxRelayedConnections: 100,
+    enableRelayClient: true,
+    enableDCUtR: true,
+    maxDataPerConnection: 104857600,  // 100 MB
+    maxRelayDuration: 300000,  // 5 minutes
+  },
+  directMessaging: {
+    enabled: true,
+    timeout: 10000,
+    fallbackToGossipsub: true,
+    protocol: '/diiisco/direct/1.0.0',
+    maxMessageSize: 10485760,  // 10 MB
+  },
 }
 
 export default environment;

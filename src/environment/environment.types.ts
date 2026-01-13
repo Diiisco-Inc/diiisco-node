@@ -47,6 +47,24 @@ export interface PeerIdStorageConfig {
 
 export interface PeerIdConfig extends PeerId.JSONPeerId {}
 
+export interface RelayConfig {
+  enableRelayServer: boolean;
+  autoEnableRelay: boolean;
+  maxRelayedConnections: number;
+  enableRelayClient: boolean;
+  enableDCUtR: boolean;
+  maxDataPerConnection: number;
+  maxRelayDuration: number;
+}
+
+export interface DirectMessagingConfig {
+  enabled: boolean;
+  timeout: number;
+  fallbackToGossipsub: boolean;
+  protocol: string;
+  maxMessageSize: number;
+}
+
 export interface Environment {
   peerIdStorage: PeerIdStorageConfig;
   models: ModelsConfig;
@@ -59,4 +77,6 @@ export interface Environment {
     url?: string;
     port?: number;
   };
+  relay: RelayConfig;
+  directMessaging: DirectMessagingConfig;
 }
