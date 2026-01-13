@@ -100,27 +100,32 @@ export class DirectMessagingHandler {
       // Convert string peerId to PeerId object
       const peerIdObj = peerIdFromString(peerId);
 
-      // dialProtocol returns the stream directly in newer libp2p versions
+      // Dial protocol and get stream
+      logger.debug(`🔌 Dialing protocol ${this.protocol} to ${peerId.slice(0, 16)}...`);
       const stream = await this.node.dialProtocol(
         peerIdObj,
         this.protocol,
         { signal: AbortSignal.timeout(timeout) }
       );
 
+      logger.debug(`📝 Stream obtained, type: ${typeof stream}, has sink: ${!!stream?.sink}, has source: ${!!stream?.source}`);
+
       // Encode message
       const encoded = encode(message);
 
-      // Send with length-prefixed framing - write directly to the stream
+      // libp2p v3: pipe directly to stream (which acts as a sink)
+      // See: https://github.com/libp2p/js-libp2p-example-custom-protocols
       await pipe(
-        [encoded],
-        lp.encode(),
-        stream
+        [encoded],      // Source: array with single message
+        lp.encode(),    // Transform: add length prefix
+        stream          // Sink: the stream itself
       );
 
       logger.info(`✅ Direct message sent (${message.role}) to ${peerId.slice(0, 16)}...`);
       return true;
     } catch (err: any) {
       logger.warn(`⚠️ Direct message failed to ${peerId.slice(0, 16)}...: ${err.message}`);
+      logger.debug(`Full error:`, err);
       return false;
     }
   }
