@@ -100,8 +100,8 @@ export class DirectMessagingHandler {
       // Convert string peerId to PeerId object
       const peerIdObj = peerIdFromString(peerId);
 
-      // Create stream to peer
-      const stream = await this.node.dialProtocol(
+      // Create stream to peer - dialProtocol returns { stream }
+      const { stream } = await this.node.dialProtocol(
         peerIdObj,
         this.protocol,
         { signal: AbortSignal.timeout(timeout) }
