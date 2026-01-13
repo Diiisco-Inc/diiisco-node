@@ -100,8 +100,8 @@ export class DirectMessagingHandler {
       // Convert string peerId to PeerId object
       const peerIdObj = peerIdFromString(peerId);
 
-      // Create stream to peer - dialProtocol returns { stream }
-      const { stream } = await this.node.dialProtocol(
+      // dialProtocol returns the stream directly in newer libp2p versions
+      const stream = await this.node.dialProtocol(
         peerIdObj,
         this.protocol,
         { signal: AbortSignal.timeout(timeout) }
@@ -110,11 +110,11 @@ export class DirectMessagingHandler {
       // Encode message
       const encoded = encode(message);
 
-      // Send with length-prefixed framing
+      // Send with length-prefixed framing - write directly to the stream
       await pipe(
         [encoded],
         lp.encode(),
-        stream.sink
+        stream
       );
 
       logger.info(`✅ Direct message sent (${message.role}) to ${peerId.slice(0, 16)}...`);
