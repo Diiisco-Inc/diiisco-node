@@ -11,8 +11,9 @@ import { waitForMesh } from '../libp2p/node';
 import { Libp2p } from '@libp2p/interface';
 import { Connection } from 'libp2p-tcp';
 import algorand from '../utils/algorand';
+import { MessageRouter } from '../messaging/messageRouter';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand ) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter) => {
   const app = express();
   const port = environment.api.port || 8080;
   app.use(cors());
@@ -60,8 +61,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
       modelListMessage.signature = await algo.signObject(modelListMessage);
 
-      waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(() => {
-        (node.services.pubsub as any).publish("diiisco/models/1.0.0", encode(modelListMessage));
+      waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(async () => {
+        await messageRouter.sendMessage(modelListMessage);
         logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${modelListMessage.id}`);
       }).catch((err: string) => {
         logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
@@ -98,8 +99,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
     quoteMessage.signature = await algo.signObject(quoteMessage);
 
-    waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(() => {
-      (node.services.pubsub as any).publish("diiisco/models/1.0.0", encode(quoteMessage));
+    waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(async () => {
+      await messageRouter.sendMessage(quoteMessage);
       logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${quoteMessage.id}`);
     }).catch((err: string) => {
       logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
@@ -126,8 +127,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       };
 
       acceptance.signature = await algo.signObject(acceptance);
-      (node.services.pubsub as any).publish('diiisco/models/1.0.0', encode(acceptance));
-      logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}: ${JSON.stringify(acceptance)}`);
+      await messageRouter.sendMessage(acceptance, quote.from.toString());
+      logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}`);
     });
   });
 

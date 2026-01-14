@@ -1,7 +1,6 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
 import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck } from './libp2p/reconnection';
 import { createApiServer } from './api/server';
-import { handlePubSubMessage } from './pubsub/handler';
 import { EventEmitter } from 'events';
 import algorand from "./utils/algorand";
 import environment from "./environment/environment";
@@ -10,6 +9,15 @@ import { OpenAIInferenceModel } from "./utils/models";
 import quoteEngine from "./utils/quoteEngine";
 import OpenAI from "openai";
 import { logger } from './utils/logger';
+import { DirectMessagingHandler } from './messaging/directMessaging';
+import { MessageRouter } from './messaging/messageRouter';
+import { MessageProcessor } from './messaging/messageProcessor';
+import { decode } from 'msgpackr';
+import { PubSubMessage } from './types/messages';
+import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
+
+// Get direct messaging config with defaults
+const directMessagingConfig = environment.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;
 
 class Application extends EventEmitter {
   private node: any;
@@ -19,7 +27,12 @@ class Application extends EventEmitter {
   private quoteMgr: quoteEngine;
   private topics: string[] = [];
   private env: Environment;
-  
+
+  // Direct messaging components
+  private directHandler: DirectMessagingHandler | null = null;
+  private messageRouter: MessageRouter | null = null;
+  private messageProcessor: MessageProcessor | null = null;
+
   // Track peers for reconnection
   private knownPeers: Map<string, { lastSeen: number; multiaddrs: string[] }> = new Map();
   private reconnectAttempts: Map<string, { count: number; lastAttempt: number }> = new Map();
@@ -72,16 +85,7 @@ class Application extends EventEmitter {
     // Initialize Algorand for DSCO Payments
     await this.algo.initialize(this.node.peerId.toString());
 
-    // Create a Relay PubSub Topic
-    this.node.services.pubsub.subscribe('diiisco/models/1.0.0');
-    this.topics.push('diiisco/models/1.0.0');
-
-    // Start the API Server
-    if (this.env.api.enabled) {
-      createApiServer(this.node, this, this.algo);
-    }
-
-    // Listen for Model PubSub Events
+    // Load available models FIRST before initializing message processor
     if (this.env.models.enabled) {
       const models = await this.model.getModels();
       this.availableModels = models.filter((m: OpenAI.Models.Model) => m.object == 'model').map((modelInfo: OpenAI.Models.Model) => {
@@ -90,9 +94,63 @@ class Application extends EventEmitter {
       });
     }
 
+    // Initialize direct messaging if enabled
+    if (directMessagingConfig.enabled) {
+      this.directHandler = new DirectMessagingHandler(
+        this.node,
+        async (msg, peerId) => {
+          if (this.messageProcessor) {
+            // Check if message is addressed to us
+            if ('to' in msg && msg.to === this.node.peerId.toString()) {
+              await this.messageProcessor.process(msg, peerId);
+            } else if (!('to' in msg)) {
+              // Messages without 'to' field (like list-models)
+              await this.messageProcessor.process(msg, peerId);
+            }
+          }
+        }
+      );
+
+      await this.directHandler.registerProtocol();
+      logger.info('✅ Direct messaging enabled');
+    }
+
+    // Initialize message router
+    this.messageRouter = new MessageRouter(this.node, this.directHandler);
+
+    // Initialize unified message processor with loaded models
+    this.messageProcessor = new MessageProcessor(
+      this.algo,
+      this.model,
+      this.quoteMgr,
+      this.availableModels,
+      this,
+      this.messageRouter
+    );
+
+    // Create a Relay PubSub Topic
+    this.node.services.pubsub.subscribe('diiisco/models/1.0.0');
+    this.topics.push('diiisco/models/1.0.0');
+
+    // Start the API Server
+    if (this.env.api.enabled) {
+      createApiServer(this.node, this, this.algo, this.messageRouter);
+    }
+
     // Listen for PubSub Messages
     this.node.services.pubsub.addEventListener('message', async (evt: { detail: { topic: string; data: Uint8Array; from: any; }; }) => {
-      await handlePubSubMessage(evt, this.node, this, this.algo, this.model, this.quoteMgr, this.topics, this.availableModels);
+      if (this.topics.includes(evt.detail.topic) && this.messageProcessor) {
+        const msg: PubSubMessage = decode(evt.detail.data);
+        const sourcePeerId = evt.detail.from.toString();
+
+        // Check if message is addressed to us (or is a broadcast message)
+        if ('to' in msg && msg.to === this.node.peerId.toString()) {
+          await this.messageProcessor.process(msg, sourcePeerId);
+        } else if (!('to' in msg)) {
+          // Messages without 'to' field (like quote-request, list-models)
+          await this.messageProcessor.process(msg, sourcePeerId);
+        }
+      }
     });
 
     // Listen for Peer Discovery Events

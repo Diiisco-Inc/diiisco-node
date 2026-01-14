@@ -47,7 +47,7 @@ const environment: Environment = {
   node: {
     url: "http://localhost",
     port: 4242
-  }
+  },
 }
 
 export default environment;
