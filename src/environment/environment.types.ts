@@ -77,6 +77,6 @@ export interface Environment {
     url?: string;
     port?: number;
   };
-  relay: RelayConfig;
-  directMessaging: DirectMessagingConfig;
+  relay?: RelayConfig;  // Optional: uses defaults if not provided
+  directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
 }

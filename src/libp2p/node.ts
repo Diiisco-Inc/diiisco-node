@@ -15,6 +15,21 @@ import { PeerIdManager } from './peerIdManager';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import environment from '../environment/environment';
 import { nfdToNodeAddress } from '../utils/algorand';
+import type { RelayConfig } from '../environment/environment.types';
+
+// Default relay configuration (used if not specified in environment)
+const DEFAULT_RELAY_CONFIG: RelayConfig = {
+  enableRelayServer: true,        // Auto-disabled by AutoNAT if behind NAT
+  autoEnableRelay: true,
+  maxRelayedConnections: 100,
+  enableRelayClient: true,
+  enableDCUtR: true,              // Upgrade relayed connections to direct when possible
+  maxDataPerConnection: 104857600,  // 100 MB
+  maxRelayDuration: 300000,       // 5 minutes
+};
+
+// Get relay config with defaults
+const relayConfig = environment.relay || DEFAULT_RELAY_CONFIG;
 
 export const lookupBootstrapServers = async (): Promise<string[]> => {
   // No Bootstrap Servers Configured
@@ -51,7 +66,7 @@ export const createLibp2pNode = async () => {
 
   // Prepare transports
   const transports: any[] = [tcp()];
-  if (environment.relay.enableRelayClient) {
+  if (relayConfig.enableRelayClient) {
     transports.push(circuitRelayTransport({
       discoverRelays: 1,  // Discover at least 1 relay
     }));
@@ -112,17 +127,17 @@ export const createLibp2pNode = async () => {
       autoNAT: autoNAT(),
 
       // Circuit Relay Server (if enabled)
-      ...(environment.relay.enableRelayServer ? {
+      ...(relayConfig.enableRelayServer ? {
         relay: circuitRelayServer({
           reservations: {
-            maxReservations: environment.relay.maxRelayedConnections * 2,
+            maxReservations: relayConfig.maxRelayedConnections * 2,
           },
-          maxConnections: environment.relay.maxRelayedConnections,
+          maxConnections: relayConfig.maxRelayedConnections,
         })
       } : {}),
 
       // DCUtR for connection upgrade (if enabled)
-      ...(environment.relay.enableDCUtR ? {
+      ...(relayConfig.enableDCUtR ? {
         dcutr: dcutr()
       } : {}),
     }
@@ -150,7 +165,7 @@ export const createLibp2pNode = async () => {
     if (reachability) {
       logger.info(`🔍 AutoNAT Reachability: ${reachability}`);
 
-      if (reachability === 'public' && environment.relay.enableRelayServer) {
+      if (reachability === 'public' && relayConfig.enableRelayServer) {
         logger.info('🌐 Node is publicly accessible - relay server active');
       } else if (reachability === 'private') {
         logger.info('🔒 Node is behind NAT - using relay client only');

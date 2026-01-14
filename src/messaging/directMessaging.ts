@@ -2,9 +2,22 @@ import { logger } from '../utils/logger';
 import { encode, decode } from 'msgpackr';
 import { PubSubMessage } from '../types/messages';
 import environment from '../environment/environment';
-import type { Stream } from '@libp2p/interface';
+import type { Connection, Stream } from '@libp2p/interface';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { lpStream } from '@libp2p/utils';
+import type { DirectMessagingConfig } from '../environment/environment.types';
+
+// Default direct messaging configuration (used if not specified in environment)
+const DEFAULT_DIRECT_MESSAGING_CONFIG: DirectMessagingConfig = {
+  enabled: true,
+  timeout: 10000,                 // 10 seconds
+  fallbackToGossipsub: true,      // Always fallback for reliability
+  protocol: '/diiisco/direct/1.0.0',
+  maxMessageSize: 10485760,       // 10 MB
+};
+
+// Get direct messaging config with defaults
+const directMessagingConfig = environment.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;
 
 export class DirectMessagingHandler {
   private node: any;
@@ -13,7 +26,7 @@ export class DirectMessagingHandler {
 
   constructor(node: any, onMessage: (msg: PubSubMessage, peerId: string) => Promise<void>) {
     this.node = node;
-    this.protocol = environment.directMessaging.protocol;
+    this.protocol = directMessagingConfig.protocol;
     this.onMessage = onMessage;
   }
 
@@ -22,7 +35,7 @@ export class DirectMessagingHandler {
    * In libp2p v3, the handler receives (stream, connection) as separate parameters
    */
   async registerProtocol() {
-    await this.node.handle(this.protocol, (stream: Stream, connection: any) => {
+    await this.node.handle(this.protocol, (stream: Stream, connection: Connection) => {
       // Handle stream asynchronously (don't block handle registration)
       Promise.resolve().then(async () => {
         // Extract peer ID from connection (libp2p v3 pattern)
@@ -37,8 +50,8 @@ export class DirectMessagingHandler {
         const messageData = data.subarray();
 
         // Check message size
-        if (messageData.length > environment.directMessaging.maxMessageSize) {
-          throw new Error(`Message exceeds max size: ${environment.directMessaging.maxMessageSize} bytes`);
+        if (messageData.length > directMessagingConfig.maxMessageSize) {
+          throw new Error(`Message exceeds max size: ${directMessagingConfig.maxMessageSize} bytes`);
         }
 
         // Decode message
@@ -62,7 +75,7 @@ export class DirectMessagingHandler {
    * @returns true if successful, false if failed
    */
   async sendDirect(peerId: string, message: PubSubMessage): Promise<boolean> {
-    const timeout = environment.directMessaging.timeout;
+    const timeout = directMessagingConfig.timeout;
 
     try {
       // Convert string peerId to PeerId object

@@ -3,6 +3,19 @@ import { logger } from '../utils/logger';
 import { DirectMessagingHandler } from './directMessaging';
 import environment from '../environment/environment';
 import { encode } from 'msgpackr';
+import type { DirectMessagingConfig } from '../environment/environment.types';
+
+// Default direct messaging configuration (used if not specified in environment)
+const DEFAULT_DIRECT_MESSAGING_CONFIG: DirectMessagingConfig = {
+  enabled: true,
+  timeout: 10000,                 // 10 seconds
+  fallbackToGossipsub: true,      // Always fallback for reliability
+  protocol: '/diiisco/direct/1.0.0',
+  maxMessageSize: 10485760,       // 10 MB
+};
+
+// Get direct messaging config with defaults
+const directMessagingConfig = environment.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;
 
 export class MessageRouter {
   private node: any;
@@ -17,7 +30,7 @@ export class MessageRouter {
    * Determine if a message should use direct messaging
    */
   private shouldUseDirect(message: PubSubMessage): boolean {
-    if (!environment.directMessaging.enabled) return false;
+    if (!directMessagingConfig.enabled) return false;
 
     // Post-selection messages go direct
     const directMessageTypes = [
@@ -49,7 +62,7 @@ export class MessageRouter {
       }
 
       // Direct failed - try fallback
-      if (environment.directMessaging.fallbackToGossipsub) {
+      if (directMessagingConfig.fallbackToGossipsub) {
         logger.info(`📡 Falling back to GossipSub for ${message.role}`);
         await this.sendViaGossipsub(message);
       } else {
