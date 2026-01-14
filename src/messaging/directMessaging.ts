@@ -5,16 +5,7 @@ import environment from '../environment/environment';
 import type { Connection, Stream } from '@libp2p/interface';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { lpStream } from '@libp2p/utils';
-import type { DirectMessagingConfig } from '../environment/environment.types';
-
-// Default direct messaging configuration (used if not specified in environment)
-const DEFAULT_DIRECT_MESSAGING_CONFIG: DirectMessagingConfig = {
-  enabled: true,
-  timeout: 10000,                 // 10 seconds
-  fallbackToGossipsub: true,      // Always fallback for reliability
-  protocol: '/diiisco/direct/1.0.0',
-  maxMessageSize: 10485760,       // 10 MB
-};
+import { DEFAULT_DIRECT_MESSAGING_CONFIG } from '../utils/defaults';
 
 // Get direct messaging config with defaults
 const directMessagingConfig = environment.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;

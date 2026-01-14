@@ -4,7 +4,7 @@ import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
 import algorand from "./utils/algorand";
 import environment from "./environment/environment";
-import { Environment, DirectMessagingConfig } from "./environment/environment.types";
+import { Environment } from "./environment/environment.types";
 import { OpenAIInferenceModel } from "./utils/models";
 import quoteEngine from "./utils/quoteEngine";
 import OpenAI from "openai";
@@ -14,15 +14,7 @@ import { MessageRouter } from './messaging/messageRouter';
 import { MessageProcessor } from './messaging/messageProcessor';
 import { decode } from 'msgpackr';
 import { PubSubMessage } from './types/messages';
-
-// Default direct messaging configuration (used if not specified in environment)
-const DEFAULT_DIRECT_MESSAGING_CONFIG: DirectMessagingConfig = {
-  enabled: true,
-  timeout: 10000,
-  fallbackToGossipsub: true,
-  protocol: '/diiisco/direct/1.0.0',
-  maxMessageSize: 10485760,
-};
+import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
 
 // Get direct messaging config with defaults
 const directMessagingConfig = environment.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;

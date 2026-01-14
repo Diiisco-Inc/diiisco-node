@@ -48,49 +48,6 @@ const environment: Environment = {
     url: "http://localhost",
     port: 4242
   },
-
-  // ============================================================================
-  // OPTIONAL: Relay and Direct Messaging Configuration
-  // ============================================================================
-  // The following configurations are OPTIONAL. If omitted, sensible defaults
-  // will be used automatically. Only include these if you need to customize
-  // the default behavior.
-  //
-  // Default relay config (used if omitted):
-  // - enableRelayServer: true (auto-disabled by AutoNAT if behind NAT)
-  // - enableRelayClient: true
-  // - enableDCUtR: true (upgrades relayed connections to direct)
-  // - maxRelayedConnections: 100
-  // - maxDataPerConnection: 100 MB
-  // - maxRelayDuration: 5 minutes
-  //
-  // Default directMessaging config (used if omitted):
-  // - enabled: true
-  // - timeout: 10 seconds
-  // - fallbackToGossipsub: true (always fallback for reliability)
-  // - protocol: '/diiisco/direct/1.0.0'
-  // - maxMessageSize: 10 MB
-  //
-  // Uncomment below to customize (otherwise defaults are used):
-  // ============================================================================
-
-  // relay: {
-  //   enableRelayServer: true,
-  //   autoEnableRelay: true,
-  //   maxRelayedConnections: 100,
-  //   enableRelayClient: true,
-  //   enableDCUtR: true,
-  //   maxDataPerConnection: 104857600,  // 100 MB
-  //   maxRelayDuration: 300000,  // 5 minutes
-  // },
-
-  // directMessaging: {
-  //   enabled: true,
-  //   timeout: 10000,
-  //   fallbackToGossipsub: true,
-  //   protocol: '/diiisco/direct/1.0.0',
-  //   maxMessageSize: 10485760,  // 10 MB
-  // },
 }
 
 export default environment;

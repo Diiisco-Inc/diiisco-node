@@ -15,18 +15,7 @@ import { PeerIdManager } from './peerIdManager';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import environment from '../environment/environment';
 import { nfdToNodeAddress } from '../utils/algorand';
-import type { RelayConfig } from '../environment/environment.types';
-
-// Default relay configuration (used if not specified in environment)
-const DEFAULT_RELAY_CONFIG: RelayConfig = {
-  enableRelayServer: true,        // Auto-disabled by AutoNAT if behind NAT
-  autoEnableRelay: true,
-  maxRelayedConnections: 100,
-  enableRelayClient: true,
-  enableDCUtR: true,              // Upgrade relayed connections to direct when possible
-  maxDataPerConnection: 104857600,  // 100 MB
-  maxRelayDuration: 300000,       // 5 minutes
-};
+import { DEFAULT_RELAY_CONFIG } from '../utils/defaults';
 
 // Get relay config with defaults
 const relayConfig = environment.relay || DEFAULT_RELAY_CONFIG;
