@@ -5,7 +5,14 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "serve": "tsup src/index.ts --format=esm --dts --out-dir=dist && node dist/index.js"
+    "build": "tsup src/index.ts --format=esm --dts --out-dir=dist",
+    "serve": "npm run build && node dist/index.js",
+    "node:start": "npm run build && pm2 start pm2.config.cjs",
+    "node:stop": "pm2 stop diiisco-node",
+    "node:restart": "npm run build && pm2 restart diiisco-node",
+    "node:status": "pm2 status diiisco-node",
+    "node:logs": "pm2 logs diiisco-node --lines 100",
+    "node:monit": "pm2 monit"
   },
   "author": "",
   "license": "ISC",
@@ -26,7 +33,7 @@
     "@libp2p/mplex": "^12.0.6",
     "@libp2p/peer-id-factory": "^4.2.4",
     "@libp2p/tcp": "^11.0.5",
-    "@libp2p/utils": "^7.0.1",
+    "@libp2p/utils": "^7.0.10",
     "@libp2p/yamux": "^8.0.1",
     "@multiformats/multiaddr": "^13.0.1",
     "@txnlab/nfd-sdk": "0.10.1",
@@ -47,7 +54,8 @@
     "msgpack-lite": "^0.1.26",
     "msgpackr": "^1.11.5",
     "openai": "^6.5.0",
-    "peer-id": "^0.16.0"
+    "peer-id": "^0.16.0",
+    "pm2": "^6.0.5"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
