@@ -132,9 +132,9 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     });
   });
 
-  app.listen(port, '0.0.0.0', () => {
+  const server = app.listen(port, '0.0.0.0', () => {
     logger.info(`🚀 API server listening at ${environment.node?.url || `http://0.0.0.0:${port || 8080}`}`);
   });
 
-  return app;
+  return { app, server };
 };

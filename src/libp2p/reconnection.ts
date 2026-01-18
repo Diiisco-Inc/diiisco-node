@@ -1,5 +1,19 @@
 import { logger } from '../utils/logger';
 
+// Track health check interval for cleanup
+let healthCheckIntervalId: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Stop the connection health check interval
+ */
+export function stopConnectionHealthCheck(): void {
+  if (healthCheckIntervalId) {
+    clearInterval(healthCheckIntervalId);
+    healthCheckIntervalId = null;
+    logger.info('📊 Connection health monitor stopped');
+  }
+}
+
 export interface ReconnectionDependencies {
   reconnectAttempts: Map<string, { count: number; lastAttempt: number }>;
   RECONNECT_COOLDOWN: number;
@@ -135,7 +149,10 @@ export async function reconnectToBootstrap(deps: ReconnectionDependencies): Prom
 export function startConnectionHealthCheck(deps: ReconnectionDependencies) {
   const CHECK_INTERVAL = 60000; // Check every 60 seconds
 
-  setInterval(async () => {
+  // Stop any existing health check before starting a new one
+  stopConnectionHealthCheck();
+
+  healthCheckIntervalId = setInterval(async () => {
     const connections = deps.node.getConnections();
     const uniquePeers = new Set(connections.map((c: any) => c.remotePeer.toString()));
     const connectionCount = uniquePeers.size;

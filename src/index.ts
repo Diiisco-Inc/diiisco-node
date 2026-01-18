@@ -1,5 +1,5 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
-import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck } from './libp2p/reconnection';
+import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck, stopConnectionHealthCheck } from './libp2p/reconnection';
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
 import algorand from "./utils/algorand";
@@ -18,6 +18,7 @@ import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
 
 // Get direct messaging config with defaults
 const directMessagingConfig = environment.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;
+import type { Server } from 'http';
 
 class Application extends EventEmitter {
   private node: any;
@@ -33,6 +34,9 @@ class Application extends EventEmitter {
   private messageRouter: MessageRouter | null = null;
   private messageProcessor: MessageProcessor | null = null;
 
+  private apiServer: Server | null = null;
+  private isShuttingDown = false;
+  
   // Track peers for reconnection
   private knownPeers: Map<string, { lastSeen: number; multiaddrs: string[] }> = new Map();
   private reconnectAttempts: Map<string, { count: number; lastAttempt: number }> = new Map();
@@ -134,7 +138,8 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      createApiServer(this.node, this, this.algo, this.messageRouter);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter);
+      this.apiServer = server;
     }
 
     // Listen for PubSub Messages
@@ -204,12 +209,77 @@ class Application extends EventEmitter {
 
     // Start periodic connection health check
     startConnectionHealthCheck(this.createReconnectionDependencies());
-    
+
     logger.info('🚀 Diiisco Node fully initialized');
+
+    // Signal PM2 that app is ready
+    if (process.send) {
+      process.send('ready');
+    }
+  }
+
+  /**
+   * Gracefully shutdown the application
+   */
+  async shutdown(signal: string): Promise<void> {
+    if (this.isShuttingDown) {
+      logger.info('Shutdown already in progress...');
+      return;
+    }
+    this.isShuttingDown = true;
+
+    logger.info(`Received ${signal}, initiating graceful shutdown...`);
+
+    try {
+      // 1. Stop accepting new API requests
+      if (this.apiServer) {
+        await new Promise<void>((resolve, reject) => {
+          this.apiServer!.close((err) => {
+            if (err) {
+              logger.error('Error closing API server:', err);
+              reject(err);
+            } else {
+              logger.info('API server closed');
+              resolve();
+            }
+          });
+        });
+      }
+
+      // 2. Stop background services (health checks)
+      stopConnectionHealthCheck();
+
+      // 3. Unsubscribe from pubsub topics
+      for (const topic of this.topics) {
+        try {
+          this.node.services.pubsub.unsubscribe(topic);
+          logger.info(`Unsubscribed from topic: ${topic}`);
+        } catch (err) {
+          logger.warn(`Error unsubscribing from ${topic}:`, err);
+        }
+      }
+
+      // 4. Close libp2p node gracefully
+      if (this.node) {
+        await this.node.stop();
+        logger.info('LibP2P node stopped');
+      }
+
+      logger.info('Graceful shutdown complete');
+      process.exit(0);
+    } catch (error) {
+      logger.error('Error during shutdown:', error);
+      process.exit(1);
+    }
   }
 }
 
 const app = new Application();
+
+// Register graceful shutdown handlers
+process.on('SIGTERM', () => app.shutdown('SIGTERM'));
+process.on('SIGINT', () => app.shutdown('SIGINT'));
+
 app.start().catch(err => {
   if (err.message === "PeerID not found.") {
     logger.error('🚨 Application failed to start: PeerID not found in environment.ts. Please generate one using \'npm run get-peer-id\' and add it to environment.ts.');
