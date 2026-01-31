@@ -1,6 +1,7 @@
-import { Environment } from "./environment.types"; // Import the new interface
+import { Environment } from "./environment.types";
 import { selectHighestStakeQuote } from "../utils/quoteSelectionMethods";
 import { createQuoteFromInputTokens } from "../utils/quoteCreationMethods";
+import { deepMerge } from "../utils/deepMerge";
 
 const environment: Environment = {
   peerIdStorage: {
@@ -48,6 +49,13 @@ const environment: Environment = {
     url: "http://localhost",
     port: 4242
   },
+};
+
+/**
+ * Override environment settings. Call BEFORE creating Application instance.
+ */
+export function configureEnvironment(overrides: Partial<Environment>): void {
+  Object.assign(environment, deepMerge(environment, overrides));
 }
 
 export default environment;

@@ -15,9 +15,6 @@ import { MessageProcessor } from './messaging/messageProcessor';
 import { decode } from 'msgpackr';
 import { PubSubMessage } from './types/messages';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
-
-// Get direct messaging config with defaults
-const directMessagingConfig = environment.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;
 import type { Server } from 'http';
 
 class Application extends EventEmitter {
@@ -99,6 +96,7 @@ class Application extends EventEmitter {
     }
 
     // Initialize direct messaging if enabled
+    const directMessagingConfig = this.env.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;
     if (directMessagingConfig.enabled) {
       this.directHandler = new DirectMessagingHandler(
         this.node,
@@ -274,17 +272,22 @@ class Application extends EventEmitter {
   }
 }
 
-const app = new Application();
+export { Application };
+export { configureEnvironment } from './environment/environment';
+export type { Environment } from './environment/environment.types';
 
-// Register graceful shutdown handlers
-process.on('SIGTERM', () => app.shutdown('SIGTERM'));
-process.on('SIGINT', () => app.shutdown('SIGINT'));
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
 
-app.start().catch(err => {
-  if (err.message === "PeerID not found.") {
-    logger.error('🚨 Application failed to start: PeerID not found in environment.ts. Please generate one using \'npm run get-peer-id\' and add it to environment.ts.');
-  } else {
-    logger.error('🚨 Application failed to start:', err);
-  }
-  process.exit(1);
-});
+if (isMainModule) {
+  const app = new Application();
+  process.on('SIGTERM', () => app.shutdown('SIGTERM'));
+  process.on('SIGINT', () => app.shutdown('SIGINT'));
+  app.start().catch(err => {
+    if (err.message === "PeerID not found.") {
+      logger.error('🚨  Application failed to start: PeerID not found.');
+    } else {
+      logger.error('🚨  Application failed to start:', err);
+    }
+    process.exit(1);
+  });
+}

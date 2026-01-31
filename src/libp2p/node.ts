@@ -17,9 +17,6 @@ import environment from '../environment/environment';
 import { nfdToNodeAddress } from '../utils/algorand';
 import { DEFAULT_RELAY_CONFIG } from '../utils/defaults';
 
-// Get relay config with defaults
-const relayConfig = environment.relay || DEFAULT_RELAY_CONFIG;
-
 export const lookupBootstrapServers = async (): Promise<string[]> => {
   // No Bootstrap Servers Configured
   if (!environment.libp2pBootstrapServers || environment.libp2pBootstrapServers.length === 0) {
@@ -39,6 +36,9 @@ export const lookupBootstrapServers = async (): Promise<string[]> => {
 };
 
 export const createLibp2pNode = async () => {
+  // Get relay config with defaults
+  const relayConfig = environment.relay || DEFAULT_RELAY_CONFIG;
+
   // Load or Create a Peer ID
   const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
 
