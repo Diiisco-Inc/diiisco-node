@@ -4,6 +4,13 @@
   "description": "Run a Diiisco Node in Node.JS!",
   "main": "dist/index.js",
   "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsup src/index.ts --format=esm --dts --out-dir=dist",
     "serve": "npm run build && node dist/index.js",
