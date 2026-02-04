@@ -12,9 +12,9 @@ const environment: Environment = {
     baseURL: "http://localhost",
     port: 11434,
     apiKey: "YOUR_LOCAL_LLM_API_KEY_HERE_OFTEN_NOT_NEEDED",
-    chargePer1KTokens: {
-      default: 0.000001,
-      "gpt-oss:20b": 0.000002,
+    chargePer1MTokens: {
+      default: 0.01703,
+      "gpt-oss:20b": 0.02,
     }
   },
   algorand: {

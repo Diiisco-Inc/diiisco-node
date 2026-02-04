@@ -174,7 +174,7 @@ export class MessageProcessor {
           model: msg.payload.model,
           inputCount: msg.payload.inputs.length,
           tokenCount: rawQuote.tokens,
-          pricePer1K: rawQuote.rate,
+          pricePer1M: rawQuote.rate,
           totalPrice: rawQuote.price,
           addr: this.algo.account.addr.toString(),
         },

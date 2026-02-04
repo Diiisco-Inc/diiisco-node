@@ -52,9 +52,9 @@ const environment: Environment = {
     baseURL: "http://localhost",
     port: 11434,                          // Default Ollama port
     apiKey: "",                           // Usually not needed for local LLMs
-    chargePer1KTokens: {
-      default: 0.000001,                  // Price per 1K tokens in ALGO
-      "gpt-oss:20b": 0.000002,            // Custom pricing per model
+    chargePer1MTokens: {
+      default: 0.001,                     // Price per 1M tokens in USDC
+      "gpt-oss:20b": 0.002,               // Custom pricing per model
     }
   },
   algorand: {

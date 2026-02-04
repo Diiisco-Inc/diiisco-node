@@ -1166,8 +1166,8 @@ function Create-EnvironmentConfig {
     $llmApiKey = Read-Host "`nLLM API Key (leave blank if not needed - Ollama doesn't require one)"
     if ([string]::IsNullOrWhiteSpace($llmApiKey)) { $llmApiKey = "" }
     
-    $chargePer1K = Read-Host "Charge per 1K tokens (default) [0.000001]"
-    if ([string]::IsNullOrWhiteSpace($chargePer1K)) { $chargePer1K = "0.000001" }
+    $chargePer1M = Read-Host "Charge per 1M tokens (default) [0.001]"
+    if ([string]::IsNullOrWhiteSpace($chargePer1M)) { $chargePer1M = "0.001" }
     
     # --- Algorand Configuration ---
     Write-Host "`n--- Algorand Wallet Settings ---" -ForegroundColor Yellow
@@ -1254,8 +1254,8 @@ const environment: Environment = {
     baseURL: "$llmBaseURL",
     port: $llmPort,
     apiKey: "$llmApiKey",
-    chargePer1KTokens: {
-      default: $chargePer1K,
+    chargePer1MTokens: {
+      default: $chargePer1M,
     }
   },
   algorand: {
