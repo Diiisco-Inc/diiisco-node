@@ -40,9 +40,10 @@ export class OpenAIInferenceModel {
     return resp.data;
   }
 
-  async countEmbeddings(model: string, inputs: string[]) {
+  async countEmbeddings(model: string, inputs: any[]) {
     return inputs.reduce((acc, input) => {
-      const tokens = tokenizer.encode(input);
+      const text = typeof input === 'string' ? input : (input.content || '');
+      const tokens = tokenizer.encode(String(text));
       return acc + tokens.length;
     }, 0);
   }
