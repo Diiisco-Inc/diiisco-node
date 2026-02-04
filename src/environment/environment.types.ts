@@ -21,7 +21,11 @@ export interface ModelsConfig {
   baseURL: string;
   port: number;
   apiKey: string;
-  chargePer1KTokens: {
+  chargePer1MTokens?: {
+    default: number;
+    [key: string]: number;
+  };
+  chargePer1KTokens?: {
     default: number;
     [key: string]: number;
   };

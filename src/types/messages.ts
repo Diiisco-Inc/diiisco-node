@@ -19,7 +19,7 @@ export interface QuoteResponsePayload {
   model: string;
   inputCount: number;
   tokenCount: number;
-  pricePer1K: number;
+  pricePer1M: number;
   totalPrice: number;
   addr: string;
 }

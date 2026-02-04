@@ -96,7 +96,7 @@ export const handlePubSubMessage = async (
             model: quoteRequestMsg.payload.model,
             inputCount: quoteRequestMsg.payload.inputs.length,
             tokenCount: rawQuote.tokens,
-            pricePer1K: rawQuote.rate,
+            pricePer1M: rawQuote.rate,
             totalPrice: rawQuote.price,
             addr: algo.account.addr.toString(),
           },
