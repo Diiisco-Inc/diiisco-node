@@ -42,8 +42,18 @@ export class OpenAIInferenceModel {
 
   async countEmbeddings(model: string, inputs: any[]) {
     return inputs.reduce((acc, input) => {
-      const text = typeof input === 'string' ? input : (input.content || '');
-      const tokens = tokenizer.encode(String(text));
+      let text: string;
+      if (typeof input === 'string') {
+        text = input;
+      } else if (Array.isArray(input.content)) {
+        text = input.content
+          .filter((part: any) => part.type === 'text')
+          .map((part: any) => part.text)
+          .join('');
+      } else {
+        text = input.content || '';
+      }
+      const tokens = tokenizer.encode(text);
       return acc + tokens.length;
     }, 0);
   }
