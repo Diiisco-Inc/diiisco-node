@@ -276,7 +276,8 @@ export { Application };
 export { configureEnvironment } from './environment/environment';
 export type { Environment } from './environment/environment.types';
 
-const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+const isMainModule = import.meta.url === `file://${process.argv[1]}`
+  || typeof process.env.pm_id !== 'undefined';
 
 if (isMainModule) {
   const app = new Application();
