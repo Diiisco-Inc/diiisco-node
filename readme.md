@@ -66,6 +66,7 @@ const environment: Environment = {
       port: 443,
       token: ""
     },
+    nfd: "your-nfd-name.algo",            // Optional: your NFD domain for verified identity
   },
   api: {
     enabled: true,
@@ -87,10 +88,17 @@ const environment: Environment = {
   ],
   node: {
     url: "http://localhost",
-    port: 4242                            // Port for node-to-node communication
+    port: 4242,                           // Port for node-to-node communication
+    displayName: "My Diiisco Node",       // Optional: human-readable name shown on the network
   },
 }
 ```
+
+#### `algorand.nfd` — NFD Domain (optional)
+
+[NFD (Non-Fungible Domain)](https://app.nf.domains/name/diiisco.algo?view=segments) is an Algorand naming service. Setting this field links your node to a human-readable `.algo` domain, providing a verified on-chain identity that other nodes on the network can trust. Your NFD record must have a custom property `diiiscohost` set to your node's full libp2p multiaddr (e.g. `/dns4/mynode.example.com/tcp/4242/p2p/<your-peer-id>`)
+
+If the NFD check fails at startup, your node will still operate normally — peers will simply see an unverified identity.
 
 ### 🚀 You're Ready to Go
 
