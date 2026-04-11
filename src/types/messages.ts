@@ -106,7 +106,34 @@ export interface ListModelsResponse {
   signature?: string;
 }
 
-export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | ContractCreated | ContractSigned | InferenceResponse | ListModelsRequest | ListModelsResponse;
+export interface NetworkNode {
+  peerId: string;
+  walletAddr: string;
+  nfd?: string;
+  displayName?: string;
+}
+
+export interface ListNetworkRequest {
+  role: "list-network";
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  signature?: string;
+}
+
+export interface ListNetworkResponse {
+  role: "list-network-response";
+  timestamp: number;
+  id: string;
+  to: string;
+  fromWalletAddr: string;
+  payload: {
+    node: NetworkNode;
+  };
+  signature?: string;
+}
+
+export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | ContractCreated | ContractSigned | InferenceResponse | ListModelsRequest | ListModelsResponse | ListNetworkRequest | ListNetworkResponse;
 
 export interface QuoteEvent {
   msg: QuoteResponse;

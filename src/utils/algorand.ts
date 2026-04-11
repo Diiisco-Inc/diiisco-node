@@ -48,6 +48,7 @@ export default class algorand {
   mnemonic: string;
   account: algosdk.Account;
   nfdAddr: string | null;
+  nfdVerified: boolean = false;
   private env: Environment;
   private algod: algosdk.Algodv2;
   private contract: algosdk.ABIContract;
@@ -112,6 +113,7 @@ export default class algorand {
     if (this.nfdAddr) {
       verifyNFD(nodeId, this.account.addr.toString(), this.nfdAddr).then((isValid) => {
         if (isValid) {
+          this.nfdVerified = true;
           logger.info(`✅  NFD ${this.nfdAddr} successfully verified for node ID and wallet address.`);
         } else {
           logger.warn(`⚠️  NFD ${this.nfdAddr} verification failed for node ID and wallet address. Peers are less likely to trust this node.`);

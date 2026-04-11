@@ -7,7 +7,8 @@ module.exports = {
     instances: 1,              // Single instance (P2P node should not cluster)
     autorestart: true,         // Auto-restart on crash
     max_restarts: 10,          // Limit restart attempts
-    restart_delay: 5000,       // Wait 5s between restarts
+    restart_delay: 5000,       // Wait 5s between restarts (initial)
+    exp_backoff_restart_delay: 1000, // Double the delay on each crash, up to ~15s cap
 
     // Graceful shutdown
     kill_timeout: 10000,       // 10s for graceful shutdown

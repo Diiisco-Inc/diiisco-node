@@ -26,6 +26,7 @@ const environment: Environment = {
       port: 443,
       token: ""
     },
+    nfd: "your-name.diiisco.algo",           // Optional: your NFD .diiisco.algo domain for verified identity. Claim at https://app.nf.domains/name/diiisco.algo?view=segments
   },
   api: {
     enabled: true,
@@ -47,7 +48,8 @@ const environment: Environment = {
   ],
   node: {
     url: "http://localhost",
-    port: 4242
+    port: 4242,
+    displayName: "My Diiisco Node",       // Optional: human-readable name shown on the network
   },
 };
 
