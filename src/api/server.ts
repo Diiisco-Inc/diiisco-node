@@ -5,7 +5,7 @@ import environment from "../environment/environment";
 import { sha256 } from "js-sha256";
 import { EventEmitter } from 'events';
 import { encode } from "msgpackr";
-import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsResponse, ListModelsRequest } from "../types/messages";
+import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsResponse, ListModelsRequest, ListNetworkRequest, NetworkNode } from "../types/messages";
 import { logger } from '../utils/logger';
 import { waitForMesh } from '../libp2p/node';
 import { Libp2p } from '@libp2p/interface';
@@ -22,6 +22,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   if (environment.api.bearerAuthentication) {
     app.use("/v1", requireBearer);
     app.use("/peers", requireBearer);
+    app.use("/network", requireBearer);
   }
 
   app.get('/health', (req, res) => {
@@ -33,13 +34,53 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       const peers = node.getConnections().map((conn: Connection) => {
         return {
           remoteAddr: conn.remoteAddr.toString(),
-          peerId: conn.remotePeer.toString()
+          peerId: conn.remotePeer.toString(),
         };
       });
       res.status(200).send({ peers });
     } catch (error) {
       logger.error("Error fetching peers:", error);
       res.status(500).send({ error: "Error fetching peers" });
+    }
+  });
+
+  app.get('/network', async (req, res) => {
+    try {
+      const nodes: NetworkNode[] = [];
+      const waitTime = environment.quoteEngine?.waitTime || 5000;
+
+      const onNodeReceived = (node: NetworkNode) => {
+        nodes.push(node);
+      };
+      nodeEvents.on('network-node-received', onNodeReceived);
+
+      const networkListMessage: ListNetworkRequest = {
+        role: "list-network",
+        timestamp: Date.now(),
+        id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
+        fromWalletAddr: environment.algorand.addr,
+      };
+      networkListMessage.signature = await algo.signObject(networkListMessage);
+
+      waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(async () => {
+        await messageRouter.sendMessage(networkListMessage);
+        logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${networkListMessage.id}`);
+
+        setTimeout(() => {
+          nodeEvents.off('network-node-received', onNodeReceived);
+          res.status(200).send({
+            "object": "list",
+            "data": nodes,
+          });
+        }, waitTime);
+      }).catch((err: string) => {
+        nodeEvents.off('network-node-received', onNodeReceived);
+        logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
+        return res.status(500).send({ error: "No peers available to handle the request." });
+      });
+    } catch (error) {
+      logger.error("Error fetching network:", error);
+      res.status(500).send({ error: "Error fetching network" });
     }
   });
 

@@ -12,7 +12,10 @@ import {
   ContractSigned,
   ContractCreated,
   ListModelsRequest,
-  ListModelsResponse
+  ListModelsResponse,
+  ListNetworkRequest,
+  ListNetworkResponse,
+  NetworkNode,
 } from "../types/messages";
 import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
@@ -29,6 +32,7 @@ export class MessageProcessor {
   private nodeEvents: EventEmitter;
   private messageRouter: MessageRouter;
   private env: Environment;
+  private ownPeerId: string;
 
   constructor(
     algo: algorand,
@@ -36,7 +40,8 @@ export class MessageProcessor {
     quoteMgr: quoteEngine,
     availableModels: string[],
     nodeEvents: EventEmitter,
-    messageRouter: MessageRouter
+    messageRouter: MessageRouter,
+    ownPeerId: string
   ) {
     this.algo = algo;
     this.model = model;
@@ -45,6 +50,7 @@ export class MessageProcessor {
     this.nodeEvents = nodeEvents;
     this.messageRouter = messageRouter;
     this.env = environment;
+    this.ownPeerId = ownPeerId;
   }
 
   /**
@@ -83,6 +89,12 @@ export class MessageProcessor {
           break;
         case 'list-models-response':
           await this.handleListModelsResponse(msg as ListModelsResponse, sourcePeerId);
+          break;
+        case 'list-network':
+          await this.handleListNetwork(msg as ListNetworkRequest, sourcePeerId);
+          break;
+        case 'list-network-response':
+          await this.handleListNetworkResponse(msg as ListNetworkResponse, sourcePeerId);
           break;
         case 'quote-request':
           await this.handleQuoteRequest(msg as QuoteRequest, sourcePeerId);
@@ -140,6 +152,29 @@ export class MessageProcessor {
     // Note: msg.to check removed because we need the peer ID from the node, not from this class
     // This will be handled by checking if the message is addressed to us in the main handler
     this.model.addModel(msg.payload.models);
+  }
+
+  private async handleListNetwork(msg: ListNetworkRequest, sourcePeerId: string) {
+    const response: ListNetworkResponse = {
+      role: 'list-network-response',
+      timestamp: Date.now(),
+      id: msg.id,
+      to: sourcePeerId,
+      fromWalletAddr: this.algo.account.addr.toString(),
+      payload: {
+        node: {
+          peerId: this.ownPeerId,
+          walletAddr: this.algo.account.addr.toString(),
+        }
+      }
+    };
+    response.signature = await this.algo.signObject(response);
+    await this.messageRouter.sendMessage(response);
+    logger.info(`📤 Sent list-network-response to ${sourcePeerId}`);
+  }
+
+  private async handleListNetworkResponse(msg: ListNetworkResponse, _sourcePeerId: string) {
+    this.nodeEvents.emit('network-node-received', msg.payload.node);
   }
 
   private async handleQuoteRequest(msg: QuoteRequest, sourcePeerId: string) {

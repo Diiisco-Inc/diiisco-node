@@ -127,7 +127,8 @@ class Application extends EventEmitter {
       this.quoteMgr,
       this.availableModels,
       this,
-      this.messageRouter
+      this.messageRouter,
+      this.node.peerId.toString()
     );
 
     // Create a Relay PubSub Topic
