@@ -80,6 +80,7 @@ export interface Environment {
   node?: {
     url?: string;
     port?: number;
+    displayName?: string;
   };
   relay?: RelayConfig;  // Optional: uses defaults if not provided
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided

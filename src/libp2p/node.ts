@@ -195,9 +195,8 @@ async function startKeepAlive(node: any) {
         });
         logger.debug(`📶 Ping to ${peerId.toString().slice(0, 16)}...: ${latency}ms`);
       } catch (err: any) {
-        logger.warn(`⚠️ Ping failed for ${peerId.toString().slice(0, 16)}...: ${err.message}`);
-        // Optionally close dead connections
-        // try { await conn.close(); } catch {}
+        logger.warn(`⚠️ Keep-alive ping failed for ${peerId.toString().slice(0, 16)}... — closing dead connection`);
+        try { await conn.close(); } catch {}
       }
     }
   }, PING_INTERVAL);

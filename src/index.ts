@@ -127,7 +127,8 @@ class Application extends EventEmitter {
       this.quoteMgr,
       this.availableModels,
       this,
-      this.messageRouter
+      this.messageRouter,
+      this.node.peerId.toString()
     );
 
     // Create a Relay PubSub Topic
@@ -208,12 +209,51 @@ class Application extends EventEmitter {
     // Start periodic connection health check
     startConnectionHealthCheck(this.createReconnectionDependencies());
 
+    // Start sleep detection via wall-clock polling
+    this.startSleepDetection();
+
     logger.info('🚀 Diiisco Node fully initialized');
 
     // Signal PM2 that app is ready
     if (process.send) {
       process.send('ready');
     }
+  }
+
+  /**
+   * Poll wall-clock time to detect host machine waking from sleep.
+   * A gap larger than the poll interval indicates the process was suspended.
+   */
+  private startSleepDetection() {
+    const POLL_INTERVAL = 2000;    // Poll every 2s
+    const SLEEP_THRESHOLD = 10000; // Gap > 10s means the machine was asleep
+    let lastCheck = Date.now();
+
+    setInterval(() => {
+      const now = Date.now();
+      const gap = now - lastCheck;
+      if (gap > SLEEP_THRESHOLD) {
+        logger.info(`💤 Wake from sleep detected (gap: ${Math.round(gap / 1000)}s) — forcing reconnection`);
+        this.handleWakeFromSleep();
+      }
+      lastCheck = now;
+    }, POLL_INTERVAL);
+  }
+
+  /**
+   * Close stale connections and force an immediate bootstrap reconnect after wake.
+   */
+  private async handleWakeFromSleep() {
+    const connections = this.node.getConnections();
+    logger.info(`🔌 Closing ${connections.length} potentially stale connection(s)...`);
+    for (const conn of connections) {
+      try { await conn.close(); } catch {}
+    }
+
+    // Reset exhausted reconnect attempt counters so cooldowns don't block recovery
+    this.reconnectAttempts.clear();
+
+    await reconnectToBootstrap(this.createReconnectionDependencies());
   }
 
   /**
@@ -276,7 +316,7 @@ export { Application };
 export { configureEnvironment } from './environment/environment';
 export type { Environment } from './environment/environment.types';
 
-const isMainModule = import.meta.url === `file://${process.argv[1]}`
+const isMainModule = import.meta.url.replace('%20', ' ') === `file://${process.argv[1]}`
   || typeof process.env.pm_id !== 'undefined';
 
 if (isMainModule) {
