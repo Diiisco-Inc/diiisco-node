@@ -109,6 +109,7 @@ export interface ListModelsResponse {
 export interface NetworkNode {
   peerId: string;
   walletAddr: string;
+  nfd?: string;
 }
 
 export interface ListNetworkRequest {

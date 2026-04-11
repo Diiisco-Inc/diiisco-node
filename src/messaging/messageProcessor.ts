@@ -20,6 +20,7 @@ import {
 import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
 import diiiscoContract from "../utils/contract";
+import { verifyNFD } from '../utils/algorand';
 import { RawQuote } from "../types/quotes";
 import { Address } from "algosdk";
 import { MessageRouter } from './messageRouter';
@@ -165,6 +166,7 @@ export class MessageProcessor {
         node: {
           peerId: this.ownPeerId,
           walletAddr: this.algo.account.addr.toString(),
+          nfd: this.algo.nfdVerified ? (this.algo.nfdAddr ?? undefined) : undefined,
         }
       }
     };
@@ -174,7 +176,13 @@ export class MessageProcessor {
   }
 
   private async handleListNetworkResponse(msg: ListNetworkResponse, _sourcePeerId: string) {
-    this.nodeEvents.emit('network-node-received', msg.payload.node);
+    const node = msg.payload.node;
+    let verifiedNfd: string | undefined = undefined;
+    if (node.nfd) {
+      const isValid = await verifyNFD(node.peerId, node.walletAddr, node.nfd).catch(() => false);
+      if (isValid) verifiedNfd = node.nfd;
+    }
+    this.nodeEvents.emit('network-node-received', { ...node, nfd: verifiedNfd });
   }
 
   private async handleQuoteRequest(msg: QuoteRequest, sourcePeerId: string) {
