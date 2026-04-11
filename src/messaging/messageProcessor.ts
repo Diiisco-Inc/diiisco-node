@@ -167,6 +167,7 @@ export class MessageProcessor {
           peerId: this.ownPeerId,
           walletAddr: this.algo.account.addr.toString(),
           nfd: this.algo.nfdVerified ? (this.algo.nfdAddr ?? undefined) : undefined,
+          displayName: this.env.node?.displayName,
         }
       }
     };

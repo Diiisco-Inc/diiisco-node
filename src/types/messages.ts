@@ -110,6 +110,7 @@ export interface NetworkNode {
   peerId: string;
   walletAddr: string;
   nfd?: string;
+  displayName?: string;
 }
 
 export interface ListNetworkRequest {
