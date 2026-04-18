@@ -191,11 +191,13 @@ export class MessageProcessor {
       return;
     }
 
-    // Check If Opted In to DSCO
-    const x = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoContract.asset);
-    if (!x.optedIn) {
-      logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
-      return;
+    // Check If Opted In to DSCO (skipped in local mode)
+    if (!this.env.local?.enabled) {
+      const x = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoContract.asset);
+      if (!x.optedIn) {
+        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
+        return;
+      }
     }
 
     // Generate Quote
@@ -238,6 +240,15 @@ export class MessageProcessor {
   }
 
   private async handleQuoteAccepted(msg: QuoteAccepted, sourcePeerId: string) {
+    if (this.env.local?.enabled || sourcePeerId === this.ownPeerId) {
+      // Skip the contract round-trips and run inference directly:
+      // - local mode: payments are disabled network-wide
+      // - self-request: same node is both client and provider; the payment
+      //   contract cannot have the same Algorand address as both customer and provider
+      await this.executeInference(msg, sourcePeerId);
+      return;
+    }
+
     await this.algo.createQuote({
       quoteId: msg.id,
       customerAddress: msg.fromWalletAddr,
@@ -259,10 +270,12 @@ export class MessageProcessor {
   }
 
   private async handleContractCreated(msg: ContractCreated, sourcePeerId: string) {
-    await this.algo.fundQuote({
-      quoteId: msg.id,
-      usdcAmount: BigInt(msg.payload.quote.totalPrice * 1_000_000),
-    });
+    if (!this.env.local?.enabled) {
+      await this.algo.fundQuote({
+        quoteId: msg.id,
+        usdcAmount: BigInt(msg.payload.quote.totalPrice * 1_000_000),
+      });
+    }
 
     let response: ContractSigned = {
       ...msg,
@@ -285,14 +298,17 @@ export class MessageProcessor {
       return;
     }
 
-    // Execute Inference
+    await this.executeInference(msg, sourcePeerId);
+  }
+
+  private async executeInference(msg: { id: string; payload: any }, sourcePeerId: string) {
     const completion = await this.model.getResponse(msg.payload.model, msg.payload.inputs);
     let response: InferenceResponse = {
       role: 'inference-response',
       to: sourcePeerId,
       timestamp: Date.now(),
       id: msg.id,
-      fromWalletAddr: this.env.algorand.addr,
+      fromWalletAddr: this.algo.account.addr.toString(),
       payload: {
         ...msg.payload,
         completion: completion,
@@ -300,18 +316,19 @@ export class MessageProcessor {
     };
 
     response.signature = await this.algo.signObject(response);
-
-    // Send via router (will use direct messaging for post-selection)
     await this.messageRouter.sendMessage(response, sourcePeerId);
     logger.info(`📤 Sent inference-response to ${sourcePeerId}`);
   }
 
   private async handleInferenceResponse(msg: InferenceResponse, sourcePeerId: string) {
     logger.info(`📥 Received inference-response from ${sourcePeerId}`);
-    const payment = await this.algo.completeQuote({
-      quoteId: msg.id,
-      provider: Address.fromString(msg.fromWalletAddr)
-    });
+    let payment: number | null = null;
+    if (!this.env.local?.enabled) {
+      payment = await this.algo.completeQuote({
+        quoteId: msg.id,
+        provider: Address.fromString(msg.fromWalletAddr)
+      });
+    }
     this.nodeEvents.emit(`inference-response-${msg.id}`, {
       ...msg,
       payment: payment,
