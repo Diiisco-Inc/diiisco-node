@@ -2,7 +2,7 @@ import environment from '../environment/environment'
 import { EventEmitter } from 'events'
 import { QuoteEvent, QuoteQueueEntry, QuoteRequest } from '../types/messages';
 import { Environment } from '../environment/environment.types';
-import { selectHighestStakeQuote } from './quoteSelectionMethods';
+import { selectHighestStakeQuote, selectFirstQuote } from './quoteSelectionMethods';
 import { OpenAIInferenceModel } from './models';
 import { createQuoteFromInputTokens } from './quoteCreationMethods';
 import { RawQuote } from '../types/quotes';
@@ -23,8 +23,11 @@ export default class quoteEngine {
       this.quoteQueue[quoteEvent.msg.id] = {
         quotes: [quoteEvent],
         timeout: setTimeout(async () => {
-          // Select Quote based on selection function
-          const selectionFunction = environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote;
+          // In local mode always use selectFirstQuote — selectHighestStakeQuote
+          // requires live Algorand RPC calls which are not available in local mode.
+          const selectionFunction = environment.local?.enabled
+            ? selectFirstQuote
+            : (environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote);
           const selectedQuote = await selectionFunction(this.quoteQueue[quoteEvent.msg.id].quotes);
 
           // Emit event that quote is ready
