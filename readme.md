@@ -45,16 +45,16 @@ Edit `src/environment/environment.ts` with your configuration:
 ```typescript
 const environment: Environment = {
   peerIdStorage: {
-    path: "~/Desktop/"                    // Where to store your peer identity
+    path: "~/Desktop/"                      // Where to store your peer identity
   },
   models: {
     enabled: true,
     baseURL: "http://localhost",
-    port: 11434,                          // Default Ollama port
-    apiKey: "",                           // Usually not needed for local LLMs
+    port: 11434,                            // Default Ollama port
+    apiKey: "",                             // Usually not needed for local LLMs
     chargePer1MTokens: {
-      default: 0.001,                     // Price per 1M tokens in USDC
-      "gpt-oss:20b": 0.002,               // Custom pricing per model
+      default: 0.001,                       // Price per 1M tokens in USDC
+      "gpt-oss:20b": 0.002,                 // Per-model override
     }
   },
   algorand: {
@@ -66,21 +66,22 @@ const environment: Environment = {
       port: 443,
       token: ""
     },
-    nfd: "your-name.diiisco.algo",            // Optional: your NFD domain for verified identity. Claim at https://app.nf.domains/name/diiisco.algo?view=segments
+    nfd: "your-name.diiisco.algo",          // Optional: NFD domain for verified identity
   },
   api: {
     enabled: true,
     bearerAuthentication: true,
     keys: [
-      "sk-your-api-key-1",                // API keys for client authentication
+      "sk-your-api-key-1",
       "sk-your-api-key-2"
     ],
-    port: 8080                            // Port for the REST API
+    port: 8080
   },
   quoteEngine: {
     waitTime: 1000,
     quoteSelectionFunction: selectHighestStakeQuote,
-    quoteCreationFunction: [createQuoteFromInputTokens]
+    quoteCreationFunction: [createQuoteFromInputTokens],
+    preferSelf: false,                      // Set true to serve requests locally instead of earning DSCO
   },
   libp2pBootstrapServers: [
     "lon.diiisco.algo",
@@ -88,17 +89,21 @@ const environment: Environment = {
   ],
   node: {
     url: "http://localhost",
-    port: 4242,                           // Port for node-to-node communication
-    displayName: "My Diiisco Node",       // Optional: human-readable name shown on the network
+    port: 4242,                             // Port for node-to-node communication
+    displayName: "My Diiisco Node",
   },
 }
 ```
 
-#### `algorand.nfd` — NFD Domain (optional)
+#### `algorand.nfd`: NFD Domain (optional)
 
 [NFD (Non-Fungible Domain)](https://app.nf.domains/name/diiisco.algo?view=segments) is an Algorand naming service. Setting this field links your node to a human-readable `.diiisco.algo` domain, providing a verified on-chain identity that other nodes on the network can trust. Your NFD record must have a custom property `diiiscohost` set to your node's full libp2p multiaddr (e.g. `/dns4/mynode.example.com/tcp/4242/p2p/<your-peer-id>`)
 
-If the NFD check fails at startup, your node will still operate normally — peers will simply see an unverified identity.
+If the NFD check fails at startup, your node will still operate normally but peers will simply see an unverified identity.
+
+#### `quoteEngine.preferSelf`: Local-First Inference (default: `true`)
+
+When `preferSelf` is `true`, a node will serve a request directly from its own model if the requested model is available locally, without broadcasting a quote request to the network. This eliminates network round-trip latency.
 
 ### 🚀 You're Ready to Go
 
@@ -107,6 +112,8 @@ For development or testing, build and run with:
 ```bash
 npm run serve
 ```
+
+This command builds the project and starts the node in a single step.
 
 ### 🖥️ Production Deployment
 
@@ -138,4 +145,65 @@ Every Diiisco node exposes REST API endpoints compatible with the OpenAI API sta
 
 Point your OpenAI client to your node's API endpoint (default: `http://localhost:8080`) and use one of your configured API keys for authentication.
 
-Diiisco is open-source and free forever. While we operate a single mainnet, you're welcome to create your own Diiisco network for your workplace or home.
+Diiisco is open-source and free forever.
+
+## 🏠 Running a Private Network
+
+You can run Diiisco on a private network, for example, across machines you own in a home lab, office, or cloud environment, without any Algorand payments. In this mode, all nodes serve inference requests freely to any peer on the network.
+
+### Setting up a private network
+
+On each node, configure the `local` block and remove the `algorand` block entirely:
+
+```typescript
+const environment: Environment = {
+  peerIdStorage: {
+    path: "~/Desktop/"
+  },
+  models: {
+    enabled: true,
+    baseURL: "http://localhost",
+    port: 11434,
+    apiKey: "",
+    chargePer1MTokens: {
+      default: 0.001,
+    }
+  },
+  api: {
+    enabled: true,
+    bearerAuthentication: true,
+    keys: ["sk-your-api-key"],
+    port: 8080
+  },
+  quoteEngine: {
+    waitTime: 1000,
+    quoteCreationFunction: [createQuoteFromInputTokens],
+  },
+  libp2pBootstrapServers: [
+    "/ip4/192.168.1.10/tcp/4242/p2p/<peer-id>",  // your own bootstrap node
+  ],
+  node: {
+    url: "http://localhost",
+    port: 4242,
+    displayName: "My Private Node",
+  },
+  local: {
+    enabled: true,
+    privateTopic: "my-org/models/1.0.0"           // unique name for your network
+  },
+}
+```
+
+When `local.enabled` is `true`:
+
+- **No Algorand wallet is required.** Each node generates an ephemeral keypair at startup used only for P2P message signing.
+- **All inference requests are served freely.** Payment contract steps are skipped entirely.
+- **The network is isolated by topic.** Only nodes sharing the same `privateTopic` value can communicate with each other.
+
+> **Choose a unique `privateTopic`** for your deployment. A descriptive name (e.g. `"acme-corp/models/1.0.0"`) avoids accidental collisions with other private networks.
+
+### Bootstrap servers on a private network
+
+Use your own bootstrap server rather than the public Diiisco ones. You can run any Diiisco node as a bootstrap server, just take note of its multiaddr from the startup log and add it to `libp2pBootstrapServers` on your other nodes. For a single local LAN, you can leave `libp2pBootstrapServers` empty and rely on mDNS discovery instead.
+
+> **Do not use the public Diiisco bootstrap servers on a private network.** GossipSub subscription announcements are transmitted in plaintext, which means any peer you connect to can see the `privateTopic` name your nodes are subscribed to. A node running modified software could then subscribe to the same topic and join your network. Message signatures prevent forgery, but they do not prevent eavesdropping or participation by rogue nodes that have learned your topic name.
