@@ -132,12 +132,13 @@ class Application extends EventEmitter {
     );
 
     // Create a Relay PubSub Topic
-    this.node.services.pubsub.subscribe('diiisco/models/1.0.0');
-    this.topics.push('diiisco/models/1.0.0');
+    const topic = this.env.local?.privateTopic ?? 'diiisco/models/1.0.0';
+    this.node.services.pubsub.subscribe(topic);
+    this.topics.push(topic);
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter, this.model, this.availableModels);
       this.apiServer = server;
     }
 
