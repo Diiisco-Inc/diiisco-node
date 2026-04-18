@@ -70,7 +70,7 @@ export class MessageRouter {
    */
   private async sendViaGossipsub(message: PubSubMessage): Promise<void> {
     const encoded = encode(message);
-    await this.node.services.pubsub.publish('diiisco/models/1.0.0', encoded);
+    await this.node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encoded);
     logger.info(`📡 Sent ${message.role} via GossipSub`);
   }
 }
