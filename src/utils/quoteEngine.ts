@@ -43,13 +43,14 @@ export default class quoteEngine {
   }
 
   async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel){
+    const MIN_PRICE = 0.000001; // 1 microUSDC — smart contract rejects zero-value quotes
     const creationFunctionSetting = environment.quoteEngine.quoteCreationFunction ?? [createQuoteFromInputTokens];
     const creationFunctionArray: Function[] = Array.isArray(creationFunctionSetting) ? creationFunctionSetting : [creationFunctionSetting];
-    
+
     for (const func of creationFunctionArray){
       const result: RawQuote = await func(quoteRequestMsg, model);
       if (result !== null){
-        return result;
+        return { ...result, price: Math.max(result.price, MIN_PRICE) };
       }
     }
 
