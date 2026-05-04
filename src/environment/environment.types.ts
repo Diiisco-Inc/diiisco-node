@@ -72,7 +72,7 @@ export interface DirectMessagingConfig {
 
 export interface LocalConfig {
   enabled: boolean;
-  privateTopic: string;
+  privateTopic?: string;
 }
 
 export interface Environment {
