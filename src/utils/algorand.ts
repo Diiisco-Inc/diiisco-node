@@ -56,16 +56,34 @@ export default class algorand {
 
   constructor() {
     this.env = environment;
-    this.mnemonic = this.env.algorand.mnemonic;
-    this.nfdAddr = this.env.algorand.nfd || null;
+
+    if (this.env.local?.enabled) {
+      // Generate an ephemeral keypair used only for P2P message signing — no blockchain interaction.
+      this.account = algosdk.generateAccount();
+      this.mnemonic = algosdk.secretKeyToMnemonic(this.account.sk);
+      this.nfdAddr = null;
+      this.signer = makeSigner(this.account);
+      // algod client and contract are not used in local mode; assign placeholders to satisfy TS.
+      this.algod = null as unknown as algosdk.Algodv2;
+      this.contract = null as unknown as algosdk.ABIContract;
+      return;
+    }
+
+    this.mnemonic = this.env.algorand!.mnemonic;
+    this.nfdAddr = this.env.algorand!.nfd || null;
     this.account = algosdk.mnemonicToSecretKey(this.mnemonic);
     this.signer = makeSigner(this.account);
 
-    this.algod = new algosdk.Algodv2(this.env.algorand.client.token, this.env.algorand.client.address, this.env.algorand.client.port);
+    this.algod = new algosdk.Algodv2(this.env.algorand!.client.token, this.env.algorand!.client.address, this.env.algorand!.client.port);
     this.contract = new algosdk.ABIContract(diiiscoContract.abiSpec as algosdk.ABIContractParams);
   }
 
   async initialize(nodeId: string) {
+    if (this.env.local?.enabled) {
+      logger.info("🏠 Local mode enabled — Algorand payments are disabled. Using ephemeral identity for message signing.");
+      return;
+    }
+
     // validate that address is valid
     if (!algosdk.isValidAddress(this.account.addr.toString())) {
       throw new Error("❌ Invalid Algorand address provided in environment.");
@@ -167,9 +185,9 @@ export default class algorand {
 
   async checkIfOptedInToAsset(address: string, assetId: number): Promise<{ optedIn: boolean; balance: BigInt }> {
     const algod = new algosdk.Algodv2(
-      this.env.algorand.client.token,
-      this.env.algorand.client.address,
-      this.env.algorand.client.port
+      this.env.algorand!.client.token,
+      this.env.algorand!.client.address,
+      this.env.algorand!.client.port
     );
     
     try {
@@ -198,9 +216,9 @@ export default class algorand {
 
   async optInToAsset(address: string, assetId: number) {
     const algod = new algosdk.Algodv2(
-      this.env.algorand.client.token,
-      this.env.algorand.client.address,
-      this.env.algorand.client.port
+      this.env.algorand!.client.token,
+      this.env.algorand!.client.address,
+      this.env.algorand!.client.port
     );
     const sk = algosdk.mnemonicToSecretKey(this.mnemonic).sk;
 
