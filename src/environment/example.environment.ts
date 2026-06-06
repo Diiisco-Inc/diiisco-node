@@ -35,7 +35,8 @@ const environment: Environment = {
       "sk-testkey1",                        // API keys for client authentication
       "sk-testkey2"
     ],
-    port: 8080
+    port: 8080,
+    networkWaitTime: 10000,                 // Time to wait for network responses before timing out (ms)
   },
   quoteEngine: {
     waitTime: 1000,                         // Time to collect quotes before selecting one (ms)

@@ -241,10 +241,6 @@ export class MessageProcessor {
 
   private async handleQuoteAccepted(msg: QuoteAccepted, sourcePeerId: string) {
     if (this.env.local?.enabled || sourcePeerId === this.ownPeerId) {
-      // Skip the contract round-trips and run inference directly:
-      // - local mode: payments are disabled network-wide
-      // - self-request: same node is both client and provider; the payment
-      //   contract cannot have the same Algorand address as both customer and provider
       await this.executeInference(msg, sourcePeerId);
       return;
     }
@@ -323,7 +319,7 @@ export class MessageProcessor {
   private async handleInferenceResponse(msg: InferenceResponse, sourcePeerId: string) {
     logger.info(`📥 Received inference-response from ${sourcePeerId}`);
     let payment: number | null = null;
-    if (!this.env.local?.enabled) {
+    if (!this.env.local?.enabled && sourcePeerId !== this.ownPeerId) {
       payment = await this.algo.completeQuote({
         quoteId: msg.id,
         provider: Address.fromString(msg.fromWalletAddr)
