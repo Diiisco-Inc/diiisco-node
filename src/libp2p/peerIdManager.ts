@@ -5,6 +5,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id'
 import type { PrivateKey } from '@libp2p/interface'
 import type { PeerId } from '@libp2p/interface'
 import environment from '../environment/environment'
+import { logger } from '../utils/logger'
 
 /**
  * Utility class for managing persistent libp2p peer IDs
@@ -33,45 +34,45 @@ export class PeerIdManager {
     const filePath = `${sanitizedPath}/${fileName}`;
     
     if (existsSync(filePath)) {
-      console.log(`📁 Loading existing private key from ${filePath}`)
+      logger.info(`📁 Loading existing private key from ${filePath}`)
       try {
         // Read the protobuf private key bytes from file
         const keyBytes = await readFile(filePath)
-        
+
         // Reconstruct the private key from the protobuf bytes
         privateKey = await privateKeyFromProtobuf(keyBytes)
-        
+
         // Create peer ID from the private key
         peerId = peerIdFromPrivateKey(privateKey)
-        
-        console.log(`📋 Loaded peer ID: ${peerId.toString()}`)
+
+        logger.info(`📋 Loaded peer ID: ${peerId.toString()}`)
       } catch (err: any) {
-        console.log('Error loading private key:', err)
-        console.log(`⚠️  Failed to load private key, creating new one: ${err.message}`)
-        
+        logger.error('Error loading private key:', err)
+        logger.warn(`⚠️  Failed to load private key, creating new one: ${err.message}`)
+
         // Fall back to creating a new key
         privateKey = await generateKeyPair('Ed25519')
         peerId = peerIdFromPrivateKey(privateKey)
-        
-        console.log(`🆕 Generated new peer ID: ${peerId.toString()}`)
+
+        logger.info(`🆕 Generated new peer ID: ${peerId.toString()}`)
       }
     } else {
-      console.log(`🆕 Creating new private key and saving to ${filePath}`)
-      
+      logger.info(`🆕 Creating new private key and saving to ${filePath}`)
+
       // Generate new private key
       privateKey = await generateKeyPair('Ed25519')
       peerId = peerIdFromPrivateKey(privateKey)
-      
-      console.log(`🆕 Generated new peer ID: ${peerId.toString()}`)
+
+      logger.info(`🆕 Generated new peer ID: ${peerId.toString()}`)
     }
 
     try {
       // Save the protobuf private key bytes to file
       const keyBytes = privateKeyToProtobuf(privateKey)
       await writeFile(filePath, keyBytes)
-      console.log(`💾 Private key saved to ${filePath}`)
+      logger.info(`💾 Private key saved to ${filePath}`)
     } catch (err: any) {
-      console.log(`⚠️  Failed to save private key: ${err.message}`)
+      logger.warn(`⚠️  Failed to save private key: ${err.message}`)
     }
 
     return { peerId, privateKey }
