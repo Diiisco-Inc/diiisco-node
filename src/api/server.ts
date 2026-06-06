@@ -48,7 +48,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   app.get('/network', async (req, res) => {
     try {
       const nodes: NetworkNode[] = [];
-      const waitTime = environment.quoteEngine?.waitTime || 5000;
+      const waitTime = environment.api?.networkWaitTime || 5000;
 
       const onNodeReceived = (node: NetworkNode) => {
         nodes.push(node);
