@@ -617,6 +617,48 @@ export default class algorand {
   isValidAddress(addr: string): boolean {
     return algosdk.isValidAddress(addr);
   }
+
+  async getDiagnostics(): Promise<{
+    localMode: boolean;
+    address?: string;
+    appId?: number;
+    algodReachable: boolean;
+    algoBalance?: string;
+    dsco?: { optedIn: boolean; balance: string };
+    usdc?: { optedIn: boolean; balance: string };
+    contractRegistered?: boolean;
+    error?: string;
+  }> {
+    if (this.env.local?.enabled) {
+      return { localMode: true, algodReachable: false };
+    }
+
+    const address = this.account.addr.toString();
+    const result: Awaited<ReturnType<algorand['getDiagnostics']>> = {
+      localMode: false,
+      address,
+      appId: diiiscoContract.app,
+      algodReachable: false,
+    };
+
+    try {
+      const accountInfo = await this.algod.accountInformation(address).do();
+      result.algodReachable = true;
+      result.algoBalance = (Number(accountInfo.amount) / 1_000_000).toFixed(6) + ' ALGO';
+
+      const dsco = await this.checkIfOptedInToAsset(address, diiiscoContract.asset);
+      result.dsco = { optedIn: dsco.optedIn, balance: dsco.balance.toString() };
+
+      const usdc = await this.checkIfOptedInToAsset(address, diiiscoContract.usdc);
+      result.usdc = { optedIn: usdc.optedIn, balance: (Number(usdc.balance) / 1_000_000).toFixed(6) + ' USDC' };
+
+      result.contractRegistered = await this.checkIfRegistered(address, diiiscoContract.app);
+    } catch (err: any) {
+      result.error = err.message ?? String(err);
+    }
+
+    return result;
+  }
 }
 
 export async function nfdToNodeAddress(addr: string): Promise<string | null> {
