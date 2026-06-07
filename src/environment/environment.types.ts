@@ -36,7 +36,7 @@ export interface ApiConfig {
   bearerAuthentication: boolean;
   keys: string[];
   port: number;
-  networkWaitTime: number;
+  networkWaitTime?: number;
 }
 
 
