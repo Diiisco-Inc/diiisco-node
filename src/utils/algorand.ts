@@ -9,7 +9,7 @@ import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
 import { diiiscoContract } from './contract';
 import { QuoteDetails, VerifyQuoteFundedResult } from '../types/algorand';
-import { ApplicationLocalState } from 'algosdk/dist/types/client/v2/algod/models/types';
+import { ApplicationLocalState } from 'algosdk/client/algod';
 
 /**
  * Recursively sorts object keys and stringifies to ensure a canonical representation.

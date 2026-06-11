@@ -56,9 +56,7 @@ export const createLibp2pNode = async () => {
   // Prepare transports
   const transports: any[] = [tcp()];
   if (relayConfig.enableRelayClient) {
-    transports.push(circuitRelayTransport({
-      discoverRelays: 1,  // Discover at least 1 relay
-    }));
+    transports.push(circuitRelayTransport());
   }
 
   // Create the Libp2p Node with connection management and keep-alive
@@ -121,7 +119,6 @@ export const createLibp2pNode = async () => {
           reservations: {
             maxReservations: relayConfig.maxRelayedConnections * 2,
           },
-          maxConnections: relayConfig.maxRelayedConnections,
         })
       } : {}),
 
