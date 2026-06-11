@@ -9,7 +9,7 @@ import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
 import { diiiscoContract } from './contract';
 import { QuoteDetails, VerifyQuoteFundedResult } from '../types/algorand';
-import { ApplicationLocalState } from 'algosdk/dist/types/client/v2/algod/models/types';
+import { ApplicationLocalState } from 'algosdk/client/algod';
 
 /**
  * Recursively sorts object keys and stringifies to ensure a canonical representation.
@@ -56,16 +56,34 @@ export default class algorand {
 
   constructor() {
     this.env = environment;
-    this.mnemonic = this.env.algorand.mnemonic;
-    this.nfdAddr = this.env.algorand.nfd || null;
+
+    if (this.env.local?.enabled) {
+      // Generate an ephemeral keypair used only for P2P message signing — no blockchain interaction.
+      this.account = algosdk.generateAccount();
+      this.mnemonic = algosdk.secretKeyToMnemonic(this.account.sk);
+      this.nfdAddr = null;
+      this.signer = makeSigner(this.account);
+      // algod client and contract are not used in local mode; assign placeholders to satisfy TS.
+      this.algod = null as unknown as algosdk.Algodv2;
+      this.contract = null as unknown as algosdk.ABIContract;
+      return;
+    }
+
+    this.mnemonic = this.env.algorand!.mnemonic;
+    this.nfdAddr = this.env.algorand!.nfd || null;
     this.account = algosdk.mnemonicToSecretKey(this.mnemonic);
     this.signer = makeSigner(this.account);
 
-    this.algod = new algosdk.Algodv2(this.env.algorand.client.token, this.env.algorand.client.address, this.env.algorand.client.port);
+    this.algod = new algosdk.Algodv2(this.env.algorand!.client.token, this.env.algorand!.client.address, this.env.algorand!.client.port);
     this.contract = new algosdk.ABIContract(diiiscoContract.abiSpec as algosdk.ABIContractParams);
   }
 
   async initialize(nodeId: string) {
+    if (this.env.local?.enabled) {
+      logger.info("🏠 Local mode enabled — Algorand payments are disabled. Using ephemeral identity for message signing.");
+      return;
+    }
+
     // validate that address is valid
     if (!algosdk.isValidAddress(this.account.addr.toString())) {
       throw new Error("❌ Invalid Algorand address provided in environment.");
@@ -167,9 +185,9 @@ export default class algorand {
 
   async checkIfOptedInToAsset(address: string, assetId: number): Promise<{ optedIn: boolean; balance: BigInt }> {
     const algod = new algosdk.Algodv2(
-      this.env.algorand.client.token,
-      this.env.algorand.client.address,
-      this.env.algorand.client.port
+      this.env.algorand!.client.token,
+      this.env.algorand!.client.address,
+      this.env.algorand!.client.port
     );
     
     try {
@@ -198,9 +216,9 @@ export default class algorand {
 
   async optInToAsset(address: string, assetId: number) {
     const algod = new algosdk.Algodv2(
-      this.env.algorand.client.token,
-      this.env.algorand.client.address,
-      this.env.algorand.client.port
+      this.env.algorand!.client.token,
+      this.env.algorand!.client.address,
+      this.env.algorand!.client.port
     );
     const sk = algosdk.mnemonicToSecretKey(this.mnemonic).sk;
 
@@ -598,6 +616,48 @@ export default class algorand {
 
   isValidAddress(addr: string): boolean {
     return algosdk.isValidAddress(addr);
+  }
+
+  async getDiagnostics(): Promise<{
+    localMode: boolean;
+    address?: string;
+    appId?: number;
+    algodReachable: boolean;
+    algoBalance?: string;
+    dsco?: { optedIn: boolean; balance: string };
+    usdc?: { optedIn: boolean; balance: string };
+    contractRegistered?: boolean;
+    error?: string;
+  }> {
+    if (this.env.local?.enabled) {
+      return { localMode: true, algodReachable: false };
+    }
+
+    const address = this.account.addr.toString();
+    const result: Awaited<ReturnType<algorand['getDiagnostics']>> = {
+      localMode: false,
+      address,
+      appId: diiiscoContract.app,
+      algodReachable: false,
+    };
+
+    try {
+      const accountInfo = await this.algod.accountInformation(address).do();
+      result.algodReachable = true;
+      result.algoBalance = (Number(accountInfo.amount) / 1_000_000).toFixed(6) + ' ALGO';
+
+      const dsco = await this.checkIfOptedInToAsset(address, diiiscoContract.asset);
+      result.dsco = { optedIn: dsco.optedIn, balance: dsco.balance.toString() };
+
+      const usdc = await this.checkIfOptedInToAsset(address, diiiscoContract.usdc);
+      result.usdc = { optedIn: usdc.optedIn, balance: (Number(usdc.balance) / 1_000_000).toFixed(6) + ' USDC' };
+
+      result.contractRegistered = await this.checkIfRegistered(address, diiiscoContract.app);
+    } catch (err: any) {
+      result.error = err.message ?? String(err);
+    }
+
+    return result;
   }
 }
 

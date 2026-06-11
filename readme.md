@@ -1,30 +1,47 @@
 <img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/diiisco-logo.png?raw=true" width="1000" />
 
-Diiisco is a globally distributed peer-to-peer network for running large language models. Send a prompt to any node on the network and receive a response from the model of your choice. Contributors earn Algorand for providing compute power.
 
-## 👋 Join the Network
+<p align="center">
+  <a href="https://diiisco.com"><img src="https://img.shields.io/badge/Website-diiisco.com-black?style=flat-square&logoColor=white" alt="Website" /></a>
+  &nbsp;
+  <a href="https://diiisco.com/docs/welcome"><img src="https://img.shields.io/badge/Docs-diiisco.com/docs-black?style=flat-square&logoColor=white" alt="Docs" /></a>
+  &nbsp;
+  <a href="https://x.com/diiiscohq"><img src="https://img.shields.io/badge/X-@diiiscohq-black?style=flat-square&logo=x&logoColor=white" alt="X" /></a>
+  &nbsp;
+  <a href="https://discord.gg/WcuuVcrHFa"><img src="https://img.shields.io/badge/Discord-Join_Us-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord" /></a>
+</p>
 
-Joining the network is easy. You'll need:
+DIIISCO is a peer-to-peer network for running large language models. Any node on the network can send an inference request; any node running a compatible model can fulfil it and earn, settled instantly on Algorand.
+
+DIIISCO is open-source and free forever. Any application that calls an OpenAI Copatable API can be used with DIIISCO.
+
+---
+
+## 🪩 How DIIISCO works
+
+When a request arrives at a DIIISCO node, it is broadcast to the network as a quote request. Nodes that can serve the model respond with a price. The best quote is selected, an on-chain escrow contract is created, inference runs, and payment is released automatically on delivery. Nodes that don't need payment such as private clusters, skip the contract entirely and serve inference directly overf the network.
+
+### Public network (payments enabled)
+
+Nodes connect to the global DIIISCO network. Requesters pay providers in USDC; providers earn DSCO tokens as an additional reward. Requires an Algorand wallet on each node.
+
+### Private network (payments disabled)
+
+A cluster of nodes you control, isolated from the public network by a unique topic name. No Algorand wallets required — nodes generate an ephemeral signing key at startup. Useful for home labs, office clusters, or any situation where you want distributed inference without blockchain overhead.
+
+---
+
+## 📋 Requirements
 
 - **Node.js 22** or higher
-- **A local LLM runtime** such as [Ollama](https://ollama.com/) or [Shimmy](https://github.com/Michael-A-Kuykendall/shimmy)
-- **An Algorand wallet** for receiving payments (we recommend [Pera Wallet](https://perawallet.app/))
+- **An LLM runtime** — [Ollama](https://ollama.com/) or any OpenAI-compatible backend (e.g. [Shimmy](https://github.com/Michael-A-Kuykendall/shimmy))
+- **An Algorand wallet** — required for the public network only (we recommend [Pera Wallet](https://perawallet.app/))
 
-### 🦙 Run Your Own Large Language Model
+> ⚠️ **Never share your mnemonic.** Never enter it on a device you don't control.
 
-Download and install [Ollama](https://ollama.com/) or follow the [Shimmy installation guide](https://github.com/Michael-A-Kuykendall/shimmy). Once installed, download a model appropriate for your hardware:
+---
 
-- **Laptops**: Small models (7B parameters or less)
-- **Desktop PCs**: Medium models (13B-30B parameters)
-- **Gaming PCs / GPUs**: Large models (30B+ parameters)
-
-### 💰 Get Setup with Algorand
-
-Download [Pera Wallet](https://perawallet.app/) on iOS or Android. You'll need your wallet address and 25-word mnemonic passphrase.
-
-> **Warning**: Never share or enter your mnemonic on a device you don't control. Keep it secret, keep it safe.
-
-### 📦 Download and Install Diiisco Node
+## 📦 Installation
 
 ```bash
 git clone https://github.com/Diiisco-Inc/diiisco-node.git
@@ -32,110 +49,337 @@ cd diiisco-node
 npm install
 ```
 
-### 🌍 Set Your Environment
+---
 
-Copy the example environment file and edit it with your settings:
+## ⚙️ Configuration
+
+Copy the example configuration and edit it:
 
 ```bash
 cp src/environment/example.environment.ts src/environment/environment.ts
 ```
 
-Edit `src/environment/environment.ts` with your configuration:
+### 🌐 Public network configuration
 
 ```typescript
+import { Environment } from "./environment.types";
+import { selectHighestStakeQuote } from "../utils/quoteSelectionMethods";
+import { createQuoteFromInputTokens } from "../utils/quoteCreationMethods";
+
 const environment: Environment = {
   peerIdStorage: {
-    path: "~/Desktop/"                    // Where to store your peer identity
+    path: "~/Desktop/"               // Where to store your persistent peer identity
   },
   models: {
     enabled: true,
     baseURL: "http://localhost",
-    port: 11434,                          // Default Ollama port
-    apiKey: "",                           // Usually not needed for local LLMs
+    port: 11434,                     // Default Ollama port
+    apiKey: "",                      // Usually not needed for local LLMs
     chargePer1MTokens: {
-      default: 0.001,                     // Price per 1M tokens in USDC
-      "gpt-oss:20b": 0.002,               // Custom pricing per model
+      default: 0.01703,              // Price per 1M tokens in USDC
+      "llama3:8b": 0.01,             // Per-model price override
     }
   },
   algorand: {
-    addr: "YOUR_ALGORAND_ADDRESS_HERE",
-    mnemonic: "YOUR_ALGORAND_MNEMONIC_HERE",
+    addr: "YOUR_ALGORAND_ADDRESS",
+    mnemonic: "YOUR_25_WORD_MNEMONIC",
     network: "mainnet",
     client: {
       address: "https://mainnet-api.algonode.cloud/",
       port: 443,
       token: ""
     },
-    nfd: "your-name.diiisco.algo",            // Optional: your NFD domain for verified identity. Claim at https://app.nf.domains/name/diiisco.algo?view=segments
+    nfd: "your-name.diiisco.algo",   // Optional — see Verified Identity below
   },
   api: {
     enabled: true,
     bearerAuthentication: true,
-    keys: [
-      "sk-your-api-key-1",                // API keys for client authentication
-      "sk-your-api-key-2"
-    ],
-    port: 8080                            // Port for the REST API
+    keys: ["sk-your-key"],
+    port: 8080,
+    networkWaitTime: 10000,          // How long to collect /network responses (ms)
   },
   quoteEngine: {
-    waitTime: 1000,
+    waitTime: 1000,                  // How long to collect quotes before selecting (ms)
     quoteSelectionFunction: selectHighestStakeQuote,
-    quoteCreationFunction: [createQuoteFromInputTokens]
+    quoteCreationFunction: [createQuoteFromInputTokens],
+    preferSelf: true,                // Serve locally when model is available, skipping the network
   },
   libp2pBootstrapServers: [
     "lon.diiisco.algo",
     "nyc.diiisco.algo",
   ],
   node: {
-    url: "http://localhost",
-    port: 4242,                           // Port for node-to-node communication
-    displayName: "My Diiisco Node",       // Optional: human-readable name shown on the network
+    url: "http://mynode.example.com",
+    port: 4242,
+    displayName: "My DIIISCO Node",
   },
-}
+};
+
+export default environment;
 ```
 
-#### `algorand.nfd` — NFD Domain (optional)
+### 🔒 Private network configuration
 
-[NFD (Non-Fungible Domain)](https://app.nf.domains/name/diiisco.algo?view=segments) is an Algorand naming service. Setting this field links your node to a human-readable `.diiisco.algo` domain, providing a verified on-chain identity that other nodes on the network can trust. Your NFD record must have a custom property `diiiscohost` set to your node's full libp2p multiaddr (e.g. `/dns4/mynode.example.com/tcp/4242/p2p/<your-peer-id>`)
+Remove the `algorand` block and add a `local` block. Each node still needs its own `peerIdStorage` path.
 
-If the NFD check fails at startup, your node will still operate normally — peers will simply see an unverified identity.
+```typescript
+const environment: Environment = {
+  peerIdStorage: { path: "~/Desktop/" },
+  models: {
+    enabled: true,
+    baseURL: "http://localhost",
+    port: 11434,
+    apiKey: "",
+    chargePer1MTokens: { default: 0.01703 }
+  },
+  api: {
+    enabled: true,
+    bearerAuthentication: true,
+    keys: ["sk-your-key"],
+    port: 8080,
+    networkWaitTime: 10000,
+  },
+  quoteEngine: {
+    waitTime: 1000,
+    quoteCreationFunction: [createQuoteFromInputTokens],
+  },
+  libp2pBootstrapServers: [
+    "/ip4/192.168.1.10/tcp/4242/p2p/<peer-id-of-your-bootstrap-node>",
+  ],
+  node: {
+    port: 4242,
+    displayName: "My Private Node",
+  },
+  local: {
+    enabled: true,
+    privateTopic: "acme-corp/models/1.0.0",  // Unique name — isolates your cluster
+  },
+};
+```
 
-### 🚀 You're Ready to Go
+When `local.enabled` is `true`:
+- 🔓 No Algorand wallet is required. Each node generates an ephemeral signing key at startup.
+- 🆓 All inference is served freely. Payment contract steps are skipped entirely.
+- 🔐 Only nodes sharing the same `privateTopic` can communicate.
 
-For development or testing, build and run with:
+For single-machine or LAN setups you can omit `libp2pBootstrapServers` entirely and rely on mDNS auto-discovery.
+
+> ⚠️ **Use a unique `privateTopic`.** GossipSub subscription names are transmitted in plaintext over any shared connections. A descriptive, unique value (e.g. `acme-corp/models/1.0.0`) avoids accidental overlap with other networks. Do not use the public DIIISCO bootstrap servers on a private network.
+
+---
+
+## 📖 Configuration reference
+
+### `peerIdStorage`
+
+| Field | Description |
+|---|---|
+| `path` | Directory where `diiisco-peer-id.protobuf` is stored. This file is your node's persistent libp2p identity — back it up. |
+
+### `models`
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Whether this node provides inference to the network |
+| `baseURL` | `http://localhost` | Base URL of your LLM backend |
+| `port` | `11434` | Port of your LLM backend (Ollama default) |
+| `apiKey` | `""` | API key for the LLM backend, if required |
+| `chargePer1MTokens` | — | USDC price per 1M tokens. `default` applies to all models; add per-model keys to override |
+
+### `algorand` (public network only)
+
+| Field | Description |
+|---|---|
+| `addr` | Your Algorand wallet address |
+| `mnemonic` | Your 25-word mnemonic passphrase |
+| `network` | `"mainnet"` or `"testnet"` |
+| `client.address` | Algod API endpoint |
+| `client.port` | Algod API port |
+| `client.token` | Algod API token (empty for public nodes) |
+| `nfd` | Optional `.diiisco.algo` NFD domain for verified on-chain identity |
+
+On startup, the node automatically opts into the DSCO and USDC assets and registers with the DIIISCO smart contract if not already done. This requires a small ALGO balance for transaction fees and box storage.
+
+### `api`
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Whether to start the HTTP API server |
+| `bearerAuthentication` | `true` | Require `Authorization: Bearer <key>` on API requests |
+| `keys` | `[]` | Accepted bearer tokens |
+| `port` | `8080` | Port for the HTTP API |
+| `networkWaitTime` | `10000` | How long (ms) the `/network` endpoint waits for peer responses before returning |
+
+### `quoteEngine`
+
+| Field | Default | Description |
+|---|---|---|
+| `waitTime` | `1000` | How long (ms) to collect quotes before selecting the best one |
+| `quoteSelectionFunction` | `selectHighestStakeQuote` | Strategy used to choose among received quotes |
+| `quoteCreationFunction` | `[createQuoteFromInputTokens]` | How the node prices its own quotes |
+| `preferSelf` | `true` | If `true` and the requested model is available locally, serve it directly without broadcasting to the network |
+
+**Quote selection strategies:**
+
+- `selectHighestStakeQuote` — prefers providers with the most DSCO staked (default, public network)
+- `selectFirstQuote` — takes the first quote received (default in local mode)
+
+### `node`
+
+| Field | Description |
+|---|---|
+| `url` | Publicly reachable URL of this node (used in log output) |
+| `port` | TCP port for libp2p peer-to-peer connections (default: `4242`) |
+| `displayName` | Human-readable name shown on the `/network` endpoint |
+
+### `local`
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Disables Algorand payments and isolates the network to `privateTopic` |
+| `privateTopic` | `diiisco/models/1.0.0` | GossipSub topic name. Must match across all nodes in the cluster |
+
+### `libp2pBootstrapServers`
+
+A list of known peers used to join the network on startup. Accepts multiaddrs directly (`/ip4/…/tcp/…/p2p/…`) or `.diiisco.algo` NFD names that resolve to a multiaddr. Leave empty on a LAN to use mDNS auto-discovery instead.
+
+### 🪪 Verified identity with NFD
+
+[NFD (Non-Fungible Domains)](https://app.nf.domains) is an Algorand naming service. Setting `algorand.nfd` to a `.diiisco.algo` subdomain links your node to a human-readable, on-chain identity that other nodes can verify. Your NFD record must contain a custom property `diiiscohost` set to your full libp2p multiaddr:
+
+```
+/dns4/mynode.example.com/tcp/4242/p2p/<your-peer-id>
+```
+
+If NFD verification fails at startup, the node operates normally — peers will see an unverified identity.
+
+---
+
+## 🚀 Running the node
+
+**Development / one-off:**
 
 ```bash
 npm run serve
 ```
 
-### 🖥️ Production Deployment
+Builds the project and starts the node in a single step.
 
-For running your node as a background service, use the PM2 commands:
+**Production (PM2):**
 
 ```bash
-# Start the node
-npm run node:start
-
-# Check status
-npm run node:status
-
-# View logs
-npm run node:logs
-
-# Monitor in real-time
-npm run node:monit
-
-# Restart the node
-npm run node:restart
-
-# Stop the node
-npm run node:stop
+npm run node:start    # Build and start as a background service
+npm run node:status   # Check running status
+npm run node:logs     # Tail recent logs
+npm run node:monit    # Live resource monitor
+npm run node:restart  # Rebuild and restart
+npm run node:stop     # Stop the service
 ```
 
-## ❤️ Love Diiisco, Use Diiisco
+---
 
-Every Diiisco node exposes REST API endpoints compatible with the OpenAI API standard. This means you can use Diiisco as a drop-in replacement in any codebase that uses the OpenAI API or SDK.
+## 🔌 API reference
 
-Point your OpenAI client to your node's API endpoint (default: `http://localhost:8080`) and use one of your configured API keys for authentication.
+Every DIIISCO node exposes an OpenAI-compatible REST API. Point any OpenAI client or SDK at `http://your-node:8080` to use it as a drop-in backend.
 
-Diiisco is open-source and free forever. While we operate a single mainnet, you're welcome to create your own Diiisco network for your workplace or home.
+When `api.bearerAuthentication` is `true`, all `/v1` and management endpoints require:
+
+```
+Authorization: Bearer <your-key>
+```
+
+### 🤖 Inference
+
+#### `POST /v1/chat/completions`
+
+Standard OpenAI chat completions endpoint. Accepts `messages` or `inputs`.
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-your-key" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3:8b", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+#### `GET /v1/models`
+
+Returns a list of models available across the network.
+
+```bash
+curl http://localhost:8080/v1/models \
+  -H "Authorization: Bearer sk-your-key"
+```
+
+### 🌍 Network
+
+#### `GET /network`
+
+Returns information about all reachable nodes. Waits `api.networkWaitTime` milliseconds for responses before returning.
+
+```bash
+curl http://localhost:8080/network \
+  -H "Authorization: Bearer sk-your-key"
+```
+
+#### `GET /peers`
+
+Returns the list of currently connected libp2p peers.
+
+```bash
+curl http://localhost:8080/peers \
+  -H "Authorization: Bearer sk-your-key"
+```
+
+### 💚 Health
+
+#### `GET /health`
+
+Returns `200 API is healthy`. No authentication required. Suitable for load balancer health checks.
+
+#### `GET /health/algorand`
+
+Returns the Algorand wallet and contract registration status. Returns `200` when everything is healthy, `503` when the node is not ready to participate in paid inference.
+
+```json
+{
+  "localMode": false,
+  "address": "XXXX...",
+  "appId": 3357935482,
+  "algodReachable": true,
+  "algoBalance": "13.269000 ALGO",
+  "dsco": { "optedIn": true, "balance": "463414" },
+  "usdc": { "optedIn": true, "balance": "2.940801 USDC" },
+  "contractRegistered": true
+}
+```
+
+A `503` with `contractRegistered: false` means the wallet hasn't registered with the DIIISCO smart contract — typically caused by insufficient ALGO balance at first startup.
+
+---
+
+## 🧩 Embedding DIIISCO in your application
+
+The node can be imported as a library rather than run as a standalone process:
+
+```typescript
+import { Application, configureEnvironment } from 'diiisco-node';
+
+configureEnvironment({
+  models: { enabled: false },
+  api: { port: 9090 },
+});
+
+const app = new Application();
+await app.start();
+```
+
+Call `configureEnvironment` before constructing `Application`. Settings are deep-merged with the defaults in `environment.ts`.
+
+---
+
+<p align="center">
+  <a href="https://diiisco.com">🌐 DIIISCO.com</a> &nbsp;·&nbsp;
+  <a href="https://diiisco.com/docs/welcome">📖 Docs</a> &nbsp;·&nbsp;
+  <a href="https://x.com/diiiscohq">𝕏 @diiiscohq</a> &nbsp;·&nbsp;
+  <a href="https://discord.gg/WcuuVcrHFa">💬 Discord</a>
+</p>

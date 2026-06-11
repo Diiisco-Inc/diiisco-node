@@ -12,6 +12,8 @@ import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
 import { MessageRouter } from './messaging/messageRouter';
 import { MessageProcessor } from './messaging/messageProcessor';
+import { MeshReadinessMonitor } from './libp2p/meshReadinessMonitor';
+import { MeshMessageQueue } from './messaging/meshMessageQueue';
 import { decode } from 'msgpackr';
 import { PubSubMessage } from './types/messages';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
@@ -132,12 +134,18 @@ class Application extends EventEmitter {
     );
 
     // Create a Relay PubSub Topic
-    this.node.services.pubsub.subscribe('diiisco/models/1.0.0');
-    this.topics.push('diiisco/models/1.0.0');
+    const topic = this.env.local?.privateTopic ?? 'diiisco/models/1.0.0';
+    this.node.services.pubsub.subscribe(topic);
+    this.topics.push(topic);
+
+    // Event-driven mesh readiness — replaces per-request waitForMesh polling
+    const meshMin = this.env.local?.enabled ? 0 : 1;
+    const meshMonitor = new MeshReadinessMonitor(this.node, topic, meshMin);
+    const meshQueue = new MeshMessageQueue(meshMonitor, this.messageRouter!);
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.availableModels);
       this.apiServer = server;
     }
 

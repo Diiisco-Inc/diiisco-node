@@ -7,13 +7,14 @@ import { EventEmitter } from 'events';
 import { encode } from "msgpackr";
 import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsResponse, ListModelsRequest, ListNetworkRequest, NetworkNode } from "../types/messages";
 import { logger } from '../utils/logger';
-import { waitForMesh } from '../libp2p/node';
 import { Libp2p } from '@libp2p/interface';
+import { MeshMessageQueue } from '../messaging/meshMessageQueue';
 import { Connection } from 'libp2p-tcp';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
+import { OpenAIInferenceModel } from '../utils/models';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, availableModels?: string[]) => {
   const app = express();
   const port = environment.api.port || 8080;
   app.use(cors());
@@ -23,10 +24,22 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     app.use("/v1", requireBearer);
     app.use("/peers", requireBearer);
     app.use("/network", requireBearer);
+    app.use("/health/algorand", requireBearer);
   }
 
   app.get('/health', (req, res) => {
     res.status(200).send('API is healthy');
+  });
+
+  app.get('/health/algorand', async (req, res) => {
+    try {
+      const diagnostics = await algo.getDiagnostics();
+      const ok = diagnostics.localMode
+        || (diagnostics.algodReachable && diagnostics.contractRegistered);
+      res.status(ok ? 200 : 503).json(diagnostics);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   app.get('/peers', async (req, res) => {
@@ -47,7 +60,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   app.get('/network', async (req, res) => {
     try {
       const nodes: NetworkNode[] = [];
-      const waitTime = environment.quoteEngine?.waitTime || 5000;
+      const waitTime = environment.api?.networkWaitTime || 5000;
 
       const onNodeReceived = (node: NetworkNode) => {
         nodes.push(node);
@@ -58,12 +71,11 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         role: "list-network",
         timestamp: Date.now(),
         id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
-        fromWalletAddr: environment.algorand.addr,
+        fromWalletAddr: algo.account.addr.toString(),
       };
       networkListMessage.signature = await algo.signObject(networkListMessage);
 
-      waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(async () => {
-        await messageRouter.sendMessage(networkListMessage);
+      meshQueue.enqueue(networkListMessage).then(() => {
         logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${networkListMessage.id}`);
 
         setTimeout(() => {
@@ -73,9 +85,9 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
             "data": nodes,
           });
         }, waitTime);
-      }).catch((err: string) => {
+      }).catch((err: Error) => {
         nodeEvents.off('network-node-received', onNodeReceived);
-        logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
+        logger.error(`❌ Error dispatching network list message: ${err}`);
         return res.status(500).send({ error: "No peers available to handle the request." });
       });
     } catch (error) {
@@ -97,16 +109,15 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
        role: "list-models",
         timestamp: Date.now(),
         id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
-        fromWalletAddr: environment.algorand.addr,
+        fromWalletAddr: algo.account.addr.toString(),
       };
 
       modelListMessage.signature = await algo.signObject(modelListMessage);
 
-      waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(async () => {
-        await messageRouter.sendMessage(modelListMessage);
+      meshQueue.enqueue(modelListMessage).then(() => {
         logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${modelListMessage.id}`);
-      }).catch((err: string) => {
-        logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
+      }).catch((err: Error) => {
+        logger.error(`❌ Error dispatching model list message: ${err}`);
         return res.status(500).send({ error: "No peers available to handle the request." });
       });
     } catch (error) {
@@ -126,11 +137,18 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       req.body.inputs = req.body.messages;
       delete req.body.messages;
     }
-    
+
+    const preferSelf = environment.quoteEngine.preferSelf !== false;
+    if (preferSelf && model && availableModels?.includes(req.body.model)) {
+      logger.info(`⚡ Serving request locally (preferSelf). Model: ${req.body.model}`);
+      const completion = await model.getResponse(req.body.model, req.body.inputs);
+      return res.status(200).send(completion);
+    }
+
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
       from: node.peerId.toString(),
-      fromWalletAddr: environment.algorand.addr,
+      fromWalletAddr: algo.account.addr.toString(),
       timestamp: Date.now(),
       id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
       payload: {
@@ -140,11 +158,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
     quoteMessage.signature = await algo.signObject(quoteMessage);
 
-    waitForMesh(node, "diiisco/models/1.0.0", { min: 1, timeoutMs: 5000 }).then(async () => {
-      await messageRouter.sendMessage(quoteMessage);
+    meshQueue.enqueue(quoteMessage).then(() => {
       logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${quoteMessage.id}`);
-    }).catch((err: string) => {
-      logger.error(`❌ Error waiting for mesh before publishing: ${err}`);
+    }).catch((err: Error) => {
+      logger.error(`❌ Error dispatching quote request: ${err}`);
       return res.status(500).send({ error: "No peers available to handle the request." });
     });
 
@@ -161,7 +178,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         to: quote.from.toString(),
         timestamp: Date.now(),
         id: quote.msg.id,
-        fromWalletAddr: environment.algorand.addr,
+        fromWalletAddr: algo.account.addr.toString(),
         payload: {
           ...quote.msg.payload,
         }

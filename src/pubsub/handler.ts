@@ -59,7 +59,7 @@ export const handlePubSubMessage = async (
         }
       };
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent list-models-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
@@ -104,7 +104,7 @@ export const handlePubSubMessage = async (
       };
 
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
@@ -130,7 +130,7 @@ export const handlePubSubMessage = async (
         fromWalletAddr: algo.account.addr.toString(),
       };
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent contract-created to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
@@ -150,7 +150,7 @@ export const handlePubSubMessage = async (
         fromWalletAddr: algo.account.addr.toString(),
       };
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent contract-signed to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
     
@@ -169,7 +169,7 @@ export const handlePubSubMessage = async (
         to: evt.detail.from.toString(),
         timestamp: Date.now(),
         id: contractSignedMsg.id,
-        fromWalletAddr: env.algorand.addr,
+        fromWalletAddr: algo.account.addr.toString(),
         payload: {
           ...contractSignedMsg.payload,
           completion: completion,
@@ -177,7 +177,7 @@ export const handlePubSubMessage = async (
       };
 
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish('diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
       logger.info(`📤 Sent inference-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 

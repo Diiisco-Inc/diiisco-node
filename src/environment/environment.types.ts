@@ -36,11 +36,13 @@ export interface ApiConfig {
   bearerAuthentication: boolean;
   keys: string[];
   port: number;
+  networkWaitTime?: number;
 }
 
 
 export interface QuoteEngineConfig {
   waitTime: number;
+  preferSelf?: boolean;
   quoteSelectionFunction?: (quotes: QuoteEvent[]) => Promise<QuoteEvent>;
   quoteCreationFunction?: QuoteCreationFunction | QuoteCreationFunction[];
 }
@@ -69,10 +71,16 @@ export interface DirectMessagingConfig {
   maxMessageSize: number;
 }
 
+export interface LocalConfig {
+  enabled: boolean;
+  privateTopic?: string;
+}
+
 export interface Environment {
+  local?: LocalConfig;
   peerIdStorage: PeerIdStorageConfig;
   models: ModelsConfig;
-  algorand: AlgorandConfig;
+  algorand?: AlgorandConfig;
   api: ApiConfig;
   quoteEngine: QuoteEngineConfig;
   libp2pBootstrapServers?: string[]; // Array of multiaddrs for LibP2P bootstrapping

@@ -2,7 +2,7 @@ import environment from '../environment/environment'
 import { EventEmitter } from 'events'
 import { QuoteEvent, QuoteQueueEntry, QuoteRequest } from '../types/messages';
 import { Environment } from '../environment/environment.types';
-import { selectHighestStakeQuote } from './quoteSelectionMethods';
+import { selectHighestStakeQuote, selectFirstQuote } from './quoteSelectionMethods';
 import { OpenAIInferenceModel } from './models';
 import { createQuoteFromInputTokens } from './quoteCreationMethods';
 import { RawQuote } from '../types/quotes';
@@ -23,8 +23,11 @@ export default class quoteEngine {
       this.quoteQueue[quoteEvent.msg.id] = {
         quotes: [quoteEvent],
         timeout: setTimeout(async () => {
-          // Select Quote based on selection function
-          const selectionFunction = environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote;
+          // In local mode always use selectFirstQuote — selectHighestStakeQuote
+          // requires live Algorand RPC calls which are not available in local mode.
+          const selectionFunction = environment.local?.enabled
+            ? selectFirstQuote
+            : (environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote);
           const selectedQuote = await selectionFunction(this.quoteQueue[quoteEvent.msg.id].quotes);
 
           // Emit event that quote is ready
@@ -40,13 +43,14 @@ export default class quoteEngine {
   }
 
   async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel){
+    const MIN_PRICE = 0.000001; // 1 microUSDC — smart contract rejects zero-value quotes
     const creationFunctionSetting = environment.quoteEngine.quoteCreationFunction ?? [createQuoteFromInputTokens];
     const creationFunctionArray: Function[] = Array.isArray(creationFunctionSetting) ? creationFunctionSetting : [creationFunctionSetting];
-    
+
     for (const func of creationFunctionArray){
       const result: RawQuote = await func(quoteRequestMsg, model);
       if (result !== null){
-        return result;
+        return { ...result, price: Math.max(result.price, MIN_PRICE) };
       }
     }
 
