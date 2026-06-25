@@ -519,7 +519,7 @@ export default class algorand {
       ],
     });
 
-    const res = await atc.execute(this.algod, 4);
+    const res = await atc.simulate(this.algod);
     const value = res.methodResults[0].returnValue as [bigint, bigint, bigint];
     const [funded, status, usdcAmount] = value;
 
