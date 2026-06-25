@@ -228,6 +228,7 @@ export default class algorand {
     const txId = await this.algod.sendRawTransaction(signed).do();
     logger.info(`⏳ Waiting for confirmation of opt-in transaction ID: ${txId.txid}...`);
     const transactionCompletion = await algosdk.waitForConfirmation(this.algod, txId.txid, 5);
+    this.suggestedParamsCache = null;
     logger.info(`✅ Opted in to asset ID ${assetId} for address ${address}. Transaction ID: ${txId.txid}`);
     return transactionCompletion;
   }
@@ -333,6 +334,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 
@@ -352,6 +354,7 @@ export default class algorand {
     if (usdcAmount === undefined) throw new Error('usdcAmount is required');
 
     const sp = await this.getSuggestedParams();
+    logger.info(`[createQuote] params quoteId=${quoteId} usdcAmount=${usdcAmount}n customer=${options.customerAddress} provider=${this.account.addr} appId=${sc.app} firstValid=${sp.firstValid} lastValid=${sp.lastValid}`);
     const atc = new algosdk.AtomicTransactionComposer();
     const method = this.contract.getMethodByName('createQuote');
 
@@ -379,6 +382,8 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
+    logger.info(`[createQuote] confirmed at round ${res.confirmedRound}`);
     return Number(res.confirmedRound);
   }
 
@@ -402,7 +407,7 @@ export default class algorand {
     const quoteIdBytes = toBytes(quoteId);
     const boxName = toBytes('quotes' + quoteId);
 
-    console.log("Funding quote:", { quoteId, usdcAmount, appAddress });
+    logger.info(`[fundQuote] params quoteId=${quoteId} usdcAmount=${usdcAmount}n sender=${this.account.addr} receiver=${appAddress} assetIndex=${sc.usdc} appId=${sc.app} firstValid=${sp.firstValid} lastValid=${sp.lastValid}`);
     const usdcTx = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       sender: this.account.addr,
       receiver: appAddress,
@@ -434,6 +439,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 
@@ -572,6 +578,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 
@@ -607,6 +614,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 
