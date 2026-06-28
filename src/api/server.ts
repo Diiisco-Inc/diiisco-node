@@ -166,12 +166,12 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     });
 
     nodeEvents.once(`inference-response-${quoteMessage.id}`, (response: InferenceResponse) => {
-      logger.info(`🚀 Sending inference response for request ID ${quoteMessage.id}:`, response);
+      logger.info(`🚀 Sending inference response for request ID ${quoteMessage.id}`);
       res.status(200).send(response.payload.completion);
     });
 
     nodeEvents.once(`quote-selected-${quoteMessage.id}`, async (quote: { msg: QuoteResponse, from: string }) => {
-      logger.info(`✅ Quote selected for request ID ${quoteMessage.id}:`, quote.msg);
+      logger.info(`✅ Quote selected for request ID ${quoteMessage.id}. Served by ${quote.from.toString()}. Sending quote-accepted message.`);
 
       let acceptance: QuoteAccepted = {
         role: 'quote-accepted',

@@ -407,7 +407,6 @@ export default class algorand {
     const quoteIdBytes = toBytes(quoteId);
     const boxName = toBytes('quotes' + quoteId);
 
-    logger.info(`[fundQuote] params quoteId=${quoteId} usdcAmount=${usdcAmount}n sender=${this.account.addr} receiver=${appAddress} assetIndex=${sc.usdc} appId=${sc.app} firstValid=${sp.firstValid} lastValid=${sp.lastValid}`);
     const usdcTx = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       sender: this.account.addr,
       receiver: appAddress,

@@ -258,7 +258,6 @@ export class MessageProcessor {
     }
 
     const createUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
-    logger.info(`[handleQuoteAccepted] totalPrice=${msg.payload.quote.totalPrice} usdcAmount=${createUsdcAmount}n`);
     await this.algo.createQuote({
       quoteId: msg.id,
       customerAddress: msg.fromWalletAddr,
@@ -282,7 +281,6 @@ export class MessageProcessor {
   private async handleContractCreated(msg: ContractCreated, sourcePeerId: string) {
     if (!this.env.local?.enabled) {
       const fundUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
-      logger.info(`[handleContractCreated] totalPrice=${msg.payload.quote.totalPrice} usdcAmount=${fundUsdcAmount}n`);
       await this.algo.fundQuote({
         quoteId: msg.id,
         usdcAmount: fundUsdcAmount,
