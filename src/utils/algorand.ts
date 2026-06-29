@@ -354,7 +354,6 @@ export default class algorand {
     if (usdcAmount === undefined) throw new Error('usdcAmount is required');
 
     const sp = await this.getSuggestedParams();
-    logger.info(`[createQuote] params quoteId=${quoteId} usdcAmount=${usdcAmount}n customer=${options.customerAddress} provider=${this.account.addr} appId=${sc.app} firstValid=${sp.firstValid} lastValid=${sp.lastValid}`);
     const atc = new algosdk.AtomicTransactionComposer();
     const method = this.contract.getMethodByName('createQuote');
 
@@ -383,7 +382,6 @@ export default class algorand {
 
     const res = await atc.execute(this.algod, 4);
     this.suggestedParamsCache = null;
-    logger.info(`[createQuote] confirmed at round ${res.confirmedRound}`);
     return Number(res.confirmedRound);
   }
 
