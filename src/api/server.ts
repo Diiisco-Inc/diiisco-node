@@ -127,6 +127,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   })
 
   app.post(`/v1/chat/completions`, async (req, res) => {
+    const requestStartedAt = Date.now();
     logger.info("🚀 Received /v1/chat/completions request.");
     if (!req.body || !req.body.model || (!req.body.messages && !req.body.inputs)) {
       logger.warn("Missing model or messages in request body.");
@@ -142,6 +143,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     if (preferSelf && model && availableModels?.includes(req.body.model)) {
       logger.info(`⚡ Serving request locally (preferSelf). Model: ${req.body.model}`);
       const completion = await model.getResponse(req.body.model, req.body.inputs);
+      const localElapsed = ((Date.now() - requestStartedAt) / 1000).toFixed(2);
+      logger.info(`✅ Local inference complete in ${localElapsed}s`);
       return res.status(200).send(completion);
     }
 
@@ -166,7 +169,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     });
 
     nodeEvents.once(`inference-response-${quoteMessage.id}`, (response: InferenceResponse) => {
-      logger.info(`🚀 Sending inference response for request ID ${quoteMessage.id}`);
+      const networkElapsed = ((Date.now() - requestStartedAt) / 1000).toFixed(2);
+      logger.info(`🚀 Sending inference response for request ID ${quoteMessage.id} in ${networkElapsed}s`);
       res.status(200).send(response.payload.completion);
     });
 

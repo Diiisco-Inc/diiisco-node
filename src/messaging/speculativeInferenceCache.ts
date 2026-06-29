@@ -22,12 +22,13 @@ export class SpeculativeInferenceCache {
       logger.debug(`⚡ Speculative cache full (${this.maxJobs}) — skipping ${quoteId}`);
       return;
     }
+    const startedAt = Date.now();
     const promise = work();
     // Self-evict on failure; .catch here prevents an unhandled-rejection warning.
     // The rejection is re-surfaced as null when resolve() awaits the stored promise.
     promise.catch(() => this.cache.delete(quoteId));
-    this.cache.set(quoteId, { promise, createdAt: Date.now() });
-    logger.debug(`⚡ Speculative inference started for ${quoteId}`);
+    this.cache.set(quoteId, { promise, createdAt: startedAt });
+    logger.info(`❇️ Speculative inference started for ${quoteId}`);
   }
 
   async resolve(quoteId: string): Promise<unknown | null> {
@@ -36,7 +37,8 @@ export class SpeculativeInferenceCache {
     this.cache.delete(quoteId);
     try {
       const result = await entry.promise;
-      logger.info(`⚡ Speculative inference hit for ${quoteId}`);
+      const elapsed = ((Date.now() - entry.createdAt) / 1000).toFixed(2);
+      logger.info(`✅ Speculative inference complete for ${quoteId} in ${elapsed}s`);
       return result;
     } catch {
       return null;
