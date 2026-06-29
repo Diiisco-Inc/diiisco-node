@@ -60,13 +60,25 @@ export const createLibp2pNode = async () => {
     transports.push(circuitRelayTransport());
   }
 
+  const port = environment.node?.port || 4242;
+  const publicUrl = environment.node?.url && !environment.node.url.includes('localhost') && environment.node.url !== '127.0.0.1'
+    ? environment.node.url
+    : null;
+
   // Create the Libp2p Node with connection management and keep-alive
   const node = await createLibp2p({
     privateKey: peer.privateKey,
     addresses: {
       listen: [
-        `/ip4/0.0.0.0/tcp/${environment.node?.port || 4242}`
-      ]
+        `/ip4/0.0.0.0/tcp/${port}`,
+        // Required for circuitRelayTransport to call reserveRelay() and make
+        // relay reservations. Without this entry pendingReservations stays empty
+        // and every discovered relay peer is immediately rejected.
+        ...(relayConfig.enableRelayClient ? ['/p2p-circuit'] : []),
+      ],
+      // Announce the stable DNS name so relay circuit addresses returned to
+      // clients carry the domain rather than a raw IP.
+      ...(publicUrl ? { announce: [`/dns4/${publicUrl}/tcp/${port}`] } : {}),
     },
     transports,
     connectionEncrypters: [noise()],
@@ -147,17 +159,22 @@ export const createLibp2pNode = async () => {
   }
 
   // In libp2p v3, AutoNAT works by confirming/removing observed addresses rather than
-  // setting a reachability metadata key. We infer reachability by filtering getMultiaddrs()
-  // to non-private IPs — only AutoNAT-confirmed external addresses appear there.
+  // setting a reachability metadata key. We infer reachability by filtering getMultiaddrs().
   node.addEventListener('self:peer:update', () => {
-    const publicAddrs = node.getMultiaddrs().filter((a: any) => !isPrivate(a));
+    const allAddrs = node.getMultiaddrs();
+    const publicAddrs = allAddrs.filter((a: any) => !isPrivate(a) && !a.toString().includes('p2p-circuit'));
+    const relayAddrs = allAddrs.filter((a: any) => a.toString().includes('p2p-circuit'));
+
     if (publicAddrs.length > 0) {
-      logger.info(`🔍 AutoNAT confirmed public reachability: ${publicAddrs.map((a: any) => a.toString()).join(', ')}`);
+      logger.info(`🌐 Node is publicly reachable: ${publicAddrs.map((a: any) => a.toString()).join(', ')}`);
       if (relayConfig.enableRelayServer) {
-        logger.info('🌐 Node is publicly accessible - relay server active');
+        logger.info('🌐 Relay server active — accepting reservations from private nodes');
       }
+    } else if (relayAddrs.length > 0) {
+      logger.info(`🔗 Relay reservation established — reachable via:`);
+      relayAddrs.forEach((a: any) => logger.info(`   ${a.toString()}`));
     } else {
-      logger.info('🔒 No public addresses confirmed — node is behind NAT, using relay client only');
+      logger.info('🔒 No public or relay addresses yet — waiting for relay reservation');
     }
   });
 

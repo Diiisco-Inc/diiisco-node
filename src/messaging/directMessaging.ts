@@ -83,6 +83,9 @@ export class DirectMessagingHandler {
         const found = await this.node.peerRouting.findPeer(peerIdObj, { signal: AbortSignal.timeout(timeout) });
         knownAddrs = found.multiaddrs.map((a: any) => a.toString());
         logger.info(`🔍 DHT found ${knownAddrs.length} address(es) for ${peerId.slice(0, 16)}...: ${knownAddrs.join(', ')}`);
+        if (found.multiaddrs.length > 0) {
+          await this.node.peerStore.merge(peerIdObj, { multiaddrs: found.multiaddrs });
+        }
       } catch (e: any) {
         logger.info(`🔍 DHT lookup failed for ${peerId.slice(0, 16)}...: ${e.message}`);
       }
