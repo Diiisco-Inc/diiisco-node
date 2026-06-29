@@ -45,6 +45,8 @@ export interface QuoteEngineConfig {
   preferSelf?: boolean;
   quoteSelectionFunction?: (quotes: QuoteEvent[]) => Promise<QuoteEvent>;
   quoteCreationFunction?: QuoteCreationFunction | QuoteCreationFunction[];
+  optimisticInference?: boolean;  // default true — provider starts inference in parallel with createQuote
+  maxSpeculativeJobs?: number;    // default 2 — max concurrent speculative inference jobs
 }
 
 export interface PeerIdStorageConfig {

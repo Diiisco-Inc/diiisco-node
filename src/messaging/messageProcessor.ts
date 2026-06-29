@@ -24,6 +24,7 @@ import { verifyNFD } from '../utils/algorand';
 import { RawQuote } from "../types/quotes";
 import { Address } from "algosdk";
 import { MessageRouter } from './messageRouter';
+import { SpeculativeInferenceCache } from './speculativeInferenceCache';
 
 export class MessageProcessor {
   private algo: algorand;
@@ -34,6 +35,7 @@ export class MessageProcessor {
   private messageRouter: MessageRouter;
   private env: Environment;
   private ownPeerId: string;
+  private speculativeCache: SpeculativeInferenceCache;
 
   constructor(
     algo: algorand,
@@ -52,6 +54,9 @@ export class MessageProcessor {
     this.messageRouter = messageRouter;
     this.env = environment;
     this.ownPeerId = ownPeerId;
+    this.speculativeCache = new SpeculativeInferenceCache(
+      this.env.quoteEngine?.maxSpeculativeJobs ?? 2
+    );
   }
 
   /**
@@ -245,10 +250,18 @@ export class MessageProcessor {
       return;
     }
 
+    const optimistic = this.env.quoteEngine?.optimisticInference !== false;
+    if (optimistic) {
+      this.speculativeCache.start(msg.id, () =>
+        this.model.getResponse(msg.payload.model, msg.payload.inputs)
+      );
+    }
+
+    const createUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
     await this.algo.createQuote({
       quoteId: msg.id,
       customerAddress: msg.fromWalletAddr,
-      usdcAmount: BigInt(msg.payload.quote.totalPrice * 1_000_000),
+      usdcAmount: createUsdcAmount,
     });
 
     let response: ContractCreated = {
@@ -267,9 +280,10 @@ export class MessageProcessor {
 
   private async handleContractCreated(msg: ContractCreated, sourcePeerId: string) {
     if (!this.env.local?.enabled) {
+      const fundUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
       await this.algo.fundQuote({
         quoteId: msg.id,
-        usdcAmount: BigInt(msg.payload.quote.totalPrice * 1_000_000),
+        usdcAmount: fundUsdcAmount,
       });
     }
 
@@ -298,7 +312,8 @@ export class MessageProcessor {
   }
 
   private async executeInference(msg: { id: string; payload: any }, sourcePeerId: string) {
-    const completion = await this.model.getResponse(msg.payload.model, msg.payload.inputs);
+    const completion = await this.speculativeCache.resolve(msg.id)
+      ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs);
     let response: InferenceResponse = {
       role: 'inference-response',
       to: sourcePeerId,
@@ -318,17 +333,38 @@ export class MessageProcessor {
 
   private async handleInferenceResponse(msg: InferenceResponse, sourcePeerId: string) {
     logger.info(`📥 Received inference-response from ${sourcePeerId}`);
-    let payment: number | null = null;
-    if (!this.env.local?.enabled && sourcePeerId !== this.ownPeerId) {
-      payment = await this.algo.completeQuote({
-        quoteId: msg.id,
-        provider: Address.fromString(msg.fromWalletAddr)
-      });
-    }
+
+    // Emit immediately so the API can respond to the client without waiting for on-chain settlement.
     this.nodeEvents.emit(`inference-response-${msg.id}`, {
       ...msg,
-      payment: payment,
-      quote: msg.payload.quote
+      payment: null,
+      quote: msg.payload.quote,
     });
+
+    if (!this.env.local?.enabled && sourcePeerId !== this.ownPeerId) {
+      this.settleQuoteInBackground(msg);
+    }
+  }
+
+  private settleQuoteInBackground(msg: InferenceResponse): void {
+    const DELAYS_MS = [1000, 2000, 4000, 8000];
+
+    const attempt = (i: number): void => {
+      this.algo.completeQuote({
+        quoteId: msg.id,
+        provider: Address.fromString(msg.fromWalletAddr),
+      }).then(() => {
+        logger.info(`✅ Quote ${msg.id} settled (attempt ${i + 1})`);
+      }).catch((err: Error) => {
+        if (i < DELAYS_MS.length - 1) {
+          logger.warn(`⚠️ Settlement attempt ${i + 1} failed for ${msg.id}, retrying in ${DELAYS_MS[i]}ms: ${err.message}`);
+          setTimeout(() => attempt(i + 1), DELAYS_MS[i]);
+        } else {
+          logger.error(`💀 Settlement permanently failed for quote ${msg.id}: ${err.message}`, { quoteId: msg.id, provider: msg.fromWalletAddr });
+        }
+      });
+    };
+
+    attempt(0);
   }
 }
