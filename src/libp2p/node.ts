@@ -10,6 +10,7 @@ import { kadDHT } from '@libp2p/kad-dht';
 import { autoNAT } from '@libp2p/autonat';
 import { circuitRelayServer, circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { dcutr } from '@libp2p/dcutr';
+import { isPrivate } from '@libp2p/utils';
 import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
@@ -145,17 +146,18 @@ export const createLibp2pNode = async () => {
     logger.info(`📬 Other nodes can Connect at: "/dns4/${environment.node.url}/tcp/${environment.node?.port || 4242}/p2p/${node.peerId.toString()}"`);
   }
 
-  // Listen for AutoNAT reachability updates
-  node.addEventListener('self:peer:update', (evt: any) => {
-    const reachability = evt.detail.peer.metadata.get('autonat:reachability');
-    if (reachability) {
-      logger.info(`🔍 AutoNAT Reachability: ${reachability}`);
-
-      if (reachability === 'public' && relayConfig.enableRelayServer) {
+  // In libp2p v3, AutoNAT works by confirming/removing observed addresses rather than
+  // setting a reachability metadata key. We infer reachability by filtering getMultiaddrs()
+  // to non-private IPs — only AutoNAT-confirmed external addresses appear there.
+  node.addEventListener('self:peer:update', () => {
+    const publicAddrs = node.getMultiaddrs().filter((a: any) => !isPrivate(a));
+    if (publicAddrs.length > 0) {
+      logger.info(`🔍 AutoNAT confirmed public reachability: ${publicAddrs.map((a: any) => a.toString()).join(', ')}`);
+      if (relayConfig.enableRelayServer) {
         logger.info('🌐 Node is publicly accessible - relay server active');
-      } else if (reachability === 'private') {
-        logger.info('🔒 Node is behind NAT - using relay client only');
       }
+    } else {
+      logger.info('🔒 No public addresses confirmed — node is behind NAT, using relay client only');
     }
   });
 
