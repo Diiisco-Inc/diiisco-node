@@ -54,16 +54,12 @@ export const createLibp2pNode = async () => {
     }));
   }
 
-  // Prepare transports
-  const transports: any[] = [tcp()];
-  if (relayConfig.enableRelayClient) {
-    transports.push(circuitRelayTransport());
-  }
-
+  //Detect if Public Node
   const port = environment.node?.port || 4242;
   const publicUrl = environment.node?.url && !environment.node.url.includes('localhost') && environment.node.url !== '127.0.0.1'
-    ? environment.node.url
-    : null;
+  ? environment.node.url
+  : null;
+  const isPublicNode = publicUrl !== null;
 
   // Create the Libp2p Node with connection management and keep-alive
   const node = await createLibp2p({
@@ -74,13 +70,16 @@ export const createLibp2pNode = async () => {
         // Required for circuitRelayTransport to call reserveRelay() and make
         // relay reservations. Without this entry pendingReservations stays empty
         // and every discovered relay peer is immediately rejected.
-        ...(relayConfig.enableRelayClient ? ['/p2p-circuit'] : []),
+        ...(isPublicNode ? [] : ['/p2p-circuit']),
       ],
       // Announce the stable DNS name so relay circuit addresses returned to
       // clients carry the domain rather than a raw IP.
       ...(publicUrl ? { announce: [`/dns4/${publicUrl}/tcp/${port}`] } : {}),
     },
-    transports,
+    transports: [
+      tcp(),
+      ...(isPublicNode ? [] : [circuitRelayTransport()]), // Only add circuit relay transport if not a public node
+    ],
     connectionEncrypters: [noise()],
     peerDiscovery,
     streamMuxers: [yamux()],
@@ -127,7 +126,7 @@ export const createLibp2pNode = async () => {
       autoNAT: autoNAT(),
 
       // Circuit Relay Server (if enabled)
-      ...(relayConfig.enableRelayServer ? {
+      ...(isPublicNode ? {
         relay: circuitRelayServer({
           reservations: {
             maxReservations: relayConfig.maxRelayedConnections * 2,
@@ -150,6 +149,16 @@ export const createLibp2pNode = async () => {
   // Start the Libp2p Node
   await node.start()
   logger.info('✅ Node started with id:', node.peerId.toString());
+
+  // Log relay/client role so it's immediately clear on startup
+  if (relayConfig.enableRelayServer) {
+    logger.info('🛰️  Circuit relay server: ENABLED (will accept reservations from private nodes)');
+  } else {
+    logger.info('🛰️  Circuit relay server: DISABLED');
+  }
+  if (relayConfig.enableRelayClient) {
+    logger.info('🔗 Circuit relay client: ENABLED (will seek relay reservations if behind NAT)');
+  }
 
   // Show Connection Details
   logger.info('👂 Listening on:');
@@ -177,6 +186,15 @@ export const createLibp2pNode = async () => {
       logger.info('🔒 No public or relay addresses yet — waiting for relay reservation');
     }
   });
+
+  // After 30s, log address state so we can confirm relay reservations settled
+  setTimeout(() => {
+    const allAddrs = node.getMultiaddrs();
+    const relayAddrs = allAddrs.filter((a: any) => a.toString().includes('p2p-circuit'));
+    const publicAddrs = allAddrs.filter((a: any) => !isPrivate(a) && !a.toString().includes('p2p-circuit'));
+    logger.info(`📋 Address check (30s): ${allAddrs.length} total — ${publicAddrs.length} public, ${relayAddrs.length} relay circuit`);
+    allAddrs.forEach((a: any) => logger.info(`   ${a.toString()}`));
+  }, 30000);
 
   // Start keep-alive ping loop for connected peers
   startKeepAlive(node);
