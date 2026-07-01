@@ -66,11 +66,10 @@ export const createLibp2pNode = async () => {
     privateKey: peer.privateKey,
     addresses: {
       listen: [
-        `/ip4/0.0.0.0/tcp/${port}`,
         // Required for circuitRelayTransport to call reserveRelay() and make
         // relay reservations. Without this entry pendingReservations stays empty
         // and every discovered relay peer is immediately rejected.
-        ...(isPublicNode ? [] : ['/p2p-circuit']),
+        ...(isPublicNode ? [`/ip4/0.0.0.0/tcp/${port}`] : ['/p2p-circuit']),
       ],
       // Announce the stable DNS name so relay circuit addresses returned to
       // clients carry the domain rather than a raw IP.
