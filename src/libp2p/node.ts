@@ -16,7 +16,10 @@ import { PeerIdManager } from './peerIdManager';
 import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
 import environment from '../environment/environment';
 import { nfdToNodeAddress } from '../utils/algorand';
-import { DEFAULT_RELAY_CONFIG } from '../utils/defaults';
+
+// Maximum circuit-relay reservations a public relay node will accept from
+// NAT'd peers. Only relevant when this node runs the relay server.
+const MAX_RELAY_RESERVATIONS = 200;
 
 export const lookupBootstrapServers = async (): Promise<string[]> => {
   // No Bootstrap Servers Configured
@@ -37,9 +40,6 @@ export const lookupBootstrapServers = async (): Promise<string[]> => {
 };
 
 export const createLibp2pNode = async () => {
-  // Get relay config with defaults
-  const relayConfig = environment.relay || DEFAULT_RELAY_CONFIG;
-
   // Load or Create a Peer ID
   const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
 
@@ -124,19 +124,17 @@ export const createLibp2pNode = async () => {
       // AutoNAT for detecting reachability
       autoNAT: autoNAT(),
 
-      // Circuit Relay Server (if enabled)
+      // Circuit Relay Server — only public nodes accept reservations
       ...(isPublicNode ? {
         relay: circuitRelayServer({
           reservations: {
-            maxReservations: relayConfig.maxRelayedConnections * 2,
+            maxReservations: MAX_RELAY_RESERVATIONS,
           },
         })
       } : {}),
 
-      // DCUtR for connection upgrade (if enabled)
-      ...(relayConfig.enableDCUtR ? {
-        dcutr: dcutr()
-      } : {}),
+      // DCUtR — upgrade relayed connections to direct when possible
+      dcutr: dcutr(),
     }
   });
 
@@ -149,14 +147,11 @@ export const createLibp2pNode = async () => {
   await node.start()
   logger.info('✅ Node started with id:', node.peerId.toString());
 
-  // Log relay/client role so it's immediately clear on startup
-  if (relayConfig.enableRelayServer) {
+  // Log relay role so it's immediately clear on startup
+  if (isPublicNode) {
     logger.info('🛰️  Circuit relay server: ENABLED (will accept reservations from private nodes)');
   } else {
-    logger.info('🛰️  Circuit relay server: DISABLED');
-  }
-  if (relayConfig.enableRelayClient) {
-    logger.info('🔗 Circuit relay client: ENABLED (will seek relay reservations if behind NAT)');
+    logger.info('🔗 Circuit relay client: ENABLED (will seek relay reservations behind NAT)');
   }
 
   // Show Connection Details
@@ -175,7 +170,7 @@ export const createLibp2pNode = async () => {
 
     if (publicAddrs.length > 0) {
       logger.info(`🌐 Node is publicly reachable: ${publicAddrs.map((a: any) => a.toString()).join(', ')}`);
-      if (relayConfig.enableRelayServer) {
+      if (isPublicNode) {
         logger.info('🌐 Relay server active — accepting reservations from private nodes');
       }
     } else if (relayAddrs.length > 0) {
