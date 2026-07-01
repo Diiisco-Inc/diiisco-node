@@ -260,6 +260,10 @@ export const createLibp2pNode = async () => {
         relay: circuitRelayServer({
           reservations: {
             maxReservations: MAX_RELAY_RESERVATIONS,
+            // Lift the default 128KB / 2-minute cap on relayed connections —
+            // inference responses can be large and must survive the relay path
+            // (DCUtR still upgrades to a direct connection where it can).
+            applyDefaultLimit: false,
           },
         })
       } : {}),

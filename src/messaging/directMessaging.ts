@@ -56,6 +56,10 @@ export class DirectMessagingHandler {
         logger.error(`❌ Error handling direct stream: ${err.message}`);
         stream.abort(err);
       });
+    }, {
+      // Relayed (circuit) connections are "limited" in libp2p v3 — custom
+      // protocols are refused on them unless we opt in here and on the dial.
+      runOnLimitedConnection: true,
     });
 
     logger.info(`✅ Direct messaging protocol registered: ${this.protocol}`);
@@ -93,7 +97,9 @@ export class DirectMessagingHandler {
       const stream = await this.node.dialProtocol(
         peerIdObj,
         this.protocol,
-        { signal: AbortSignal.timeout(timeout) }
+        // runOnLimitedConnection lets the stream open over a relay circuit
+        // (a limited connection); without it the dial is refused.
+        { signal: AbortSignal.timeout(timeout), runOnLimitedConnection: true }
       );
 
       // Encode message
