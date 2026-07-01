@@ -10,9 +10,10 @@ import { kadDHT } from '@libp2p/kad-dht';
 import { autoNAT } from '@libp2p/autonat';
 import { circuitRelayServer, circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { dcutr } from '@libp2p/dcutr';
-import { isPrivate } from '@libp2p/utils';
+import { isPrivate, lpStream } from '@libp2p/utils';
 import { FaultTolerance } from '@libp2p/interface';
 import { logger } from '../utils/logger';
+import { enable as enableLibp2pLogs } from '@libp2p/logger';
 import { PeerIdManager } from './peerIdManager';
 import { bootstrap } from '@libp2p/bootstrap';
 import { peerIdFromString } from '@libp2p/peer-id';
@@ -26,6 +27,89 @@ const MAX_RELAY_RESERVATIONS = 200;
 // Protocol a relay server advertises when it can accept reservations. If a
 // bootstrap relay does not speak this, no reservation is possible.
 const RELAY_HOP_PROTOCOL = '/libp2p/circuit/relay/0.2.0/hop';
+
+// Circuit-relay-v2 HOP status codes (see the pb Status enum).
+const HOP_STATUS_NAMES: Record<number, string> = {
+  100: 'OK',
+  200: 'RESERVATION_REFUSED',
+  201: 'RESOURCE_LIMIT_EXCEEDED',
+  202: 'PERMISSION_DENIED',
+  203: 'CONNECTION_FAILED',
+  204: 'NO_RESERVATION',
+  400: 'MALFORMED_MESSAGE',
+  401: 'UNEXPECTED_MESSAGE',
+};
+
+// Read a protobuf varint from buf starting at pos; returns [value, nextPos].
+function readVarint(buf: Uint8Array, pos: number): [number, number] {
+  let result = 0;
+  let shift = 0;
+  let p = pos;
+  while (p < buf.length) {
+    const b = buf[p++];
+    result |= (b & 0x7f) << shift;
+    if ((b & 0x80) === 0) break;
+    shift += 7;
+  }
+  return [result >>> 0, p];
+}
+
+// Minimal top-level parse of a HopMessage response — we only need the status
+// (field 5, varint) and whether a reservation (field 3) was returned.
+function parseHopResponse(buf: Uint8Array): { status?: number; hasReservation: boolean } {
+  let pos = 0;
+  let status: number | undefined;
+  let hasReservation = false;
+  while (pos < buf.length) {
+    const [tag, p1] = readVarint(buf, pos);
+    pos = p1;
+    const field = tag >>> 3;
+    const wire = tag & 0x7;
+    if (wire === 0) {
+      const [val, p2] = readVarint(buf, pos);
+      pos = p2;
+      if (field === 5) status = val;
+    } else if (wire === 2) {
+      const [len, p2] = readVarint(buf, pos);
+      pos = p2 + len;
+      if (field === 3) hasReservation = true;
+    } else if (wire === 1) {
+      pos += 8;
+    } else if (wire === 5) {
+      pos += 4;
+    } else {
+      break;
+    }
+  }
+  return { status, hasReservation };
+}
+
+/**
+ * Directly ask a relay for a reservation and log the exact status via our own
+ * logger. Replicates what circuitRelayTransport does internally, but surfaces
+ * the relay's answer (which libp2p otherwise only reports through debug logs)
+ * so we can tell a relay-side refusal from a client-side wiring problem.
+ */
+async function probeRelayReservation(node: any, relayPeerId: any): Promise<void> {
+  const relayIdShort = relayPeerId.toString().slice(0, 16);
+  try {
+    const stream = await node.dialProtocol(relayPeerId, RELAY_HOP_PROTOCOL, { signal: AbortSignal.timeout(10000) });
+    const lp = lpStream(stream);
+    // HopMessage { type: RESERVE } — field 1 (tag 0x08), enum RESERVE = 0.
+    await lp.write(Uint8Array.from([0x08, 0x00]));
+    const data = await lp.read({ signal: AbortSignal.timeout(10000) });
+    const { status, hasReservation } = parseHopResponse(data.subarray());
+    const name = status != null ? (HOP_STATUS_NAMES[status] ?? `code ${status}`) : 'unknown';
+    if (status === 100) {
+      logger.info(`🔬 Reservation probe to ${relayIdShort}... → ${name}${hasReservation ? ' (reservation granted)' : ' (OK but no reservation body)'} — relay accepts us; issue is client-side wiring`);
+    } else {
+      logger.warn(`🔬 Reservation probe to ${relayIdShort}... → ${name} — the relay refused the reservation`);
+    }
+    await lp.unwrap().close().catch(() => {});
+  } catch (err: any) {
+    logger.warn(`🔬 Reservation probe to ${relayIdShort}... failed before a status was returned: ${err?.message ?? err}`);
+  }
+}
 
 export const lookupBootstrapServers = async (): Promise<string[]> => {
   // No Bootstrap Servers Configured
@@ -46,6 +130,18 @@ export const lookupBootstrapServers = async (): Promise<string[]> => {
 };
 
 export const createLibp2pNode = async () => {
+  // Surface libp2p's own circuit-relay *errors* (only the :error namespaces, so
+  // no trace spam) via stderr. On a private node these show why a reservation
+  // failed; on the relay, `…:server:error` prints "failed to send confirmation
+  // response … - <err>" — the reason a RESERVE gets no reply. These bypass our
+  // logger, so check stderr (PM2 error log / `npm run node:logs`).
+  enableLibp2pLogs([
+    'libp2p:circuit-relay:transport:reservation-store:error',
+    'libp2p:circuit-relay:transport:listener:error',
+    'libp2p:circuit-relay:server:error',
+    'libp2p:circuit-relay:server:reservation-store:error',
+  ].join(','));
+
   // Load or Create a Peer ID
   const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
 
@@ -237,6 +333,11 @@ export const createLibp2pNode = async () => {
 
           if (hasHop) {
             logger.info(`🛰️  Relay ${relayId.slice(0, 16)}... advertises HOP [connected: ${connected}, reservation: ${reserved ? 'established' : 'pending'}]`);
+            // Reservation hasn't landed via the transport — ask the relay
+            // ourselves to capture the exact status.
+            if (!reserved && connected) {
+              await probeRelayReservation(node, peerIdObj);
+            }
           } else {
             logger.warn(`⚠️ Relay ${relayId.slice(0, 16)}... does NOT advertise circuit-relay HOP [connected: ${connected}] — it is not running as a relay server, so no reservation is possible`);
           }
