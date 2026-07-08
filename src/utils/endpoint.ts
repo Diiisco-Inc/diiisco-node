@@ -1,7 +1,15 @@
 import environment from "../environment/environment";
 
-/** Parse "Authorization: Bearer <token>" */
-function parseBearer(req: any) {
+/**
+ * Extract the API key from a request. Supports the Anthropic-style
+ * `x-api-key` header (so the stock Anthropic SDK works as a drop-in) and the
+ * existing `Authorization: Bearer <token>` scheme.
+ */
+function parseApiKey(req: any) {
+  const apiKeyHeader = req.headers["x-api-key"];
+  if (apiKeyHeader) {
+    return Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
+  }
   const h = req.headers.authorization || "";
   const [scheme, token] = h.split(" ");
   return scheme?.toLowerCase() === "bearer" ? token : undefined;
@@ -12,7 +20,7 @@ const allowed = new Set(environment.api.keys.map((s: string) => s.trim()).filter
 
 /** Bearer auth middleware */
 export function requireBearer(req: any, res: any, next: any) {
-  const token = parseBearer(req);
+  const token = parseApiKey(req);
   if (!token) return res.status(401).json({
     "error": {
       "message": "You must provide an API key.",
