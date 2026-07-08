@@ -25,6 +25,8 @@ import { RawQuote } from "../types/quotes";
 import { Address } from "algosdk";
 import { MessageRouter } from './messageRouter';
 import { SpeculativeInferenceCache } from './speculativeInferenceCache';
+import { peerIdFromString } from '@libp2p/peer-id';
+import { multiaddr } from '@multiformats/multiaddr';
 
 export class MessageProcessor {
   private algo: algorand;
@@ -35,6 +37,7 @@ export class MessageProcessor {
   private messageRouter: MessageRouter;
   private env: Environment;
   private ownPeerId: string;
+  private node: any;
   private speculativeCache: SpeculativeInferenceCache;
 
   constructor(
@@ -44,7 +47,8 @@ export class MessageProcessor {
     availableModels: string[],
     nodeEvents: EventEmitter,
     messageRouter: MessageRouter,
-    ownPeerId: string
+    ownPeerId: string,
+    node: any
   ) {
     this.algo = algo;
     this.model = model;
@@ -54,6 +58,7 @@ export class MessageProcessor {
     this.messageRouter = messageRouter;
     this.env = environment;
     this.ownPeerId = ownPeerId;
+    this.node = node;
     this.speculativeCache = new SpeculativeInferenceCache(
       this.env.quoteEngine?.maxSpeculativeJobs ?? 2
     );
@@ -86,6 +91,11 @@ export class MessageProcessor {
       return false;
     }
     logger.info("🔐 Signature of incoming message has been successfully verified.");
+
+    // Learn how to reach the sender directly. The signed message carries the
+    // sender's current multiaddrs (incl. relay-circuit addresses), so we can
+    // populate the peerstore and later dial them without a DHT lookup.
+    await this.ingestSenderAddresses(msg, sourcePeerId);
 
     // Route to specific handler based on message role
     try {
@@ -128,6 +138,28 @@ export class MessageProcessor {
     } catch (err: any) {
       logger.error(`❌ Error processing ${msg.role} message: ${err.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Merge the sender's advertised multiaddrs into the peerstore so that
+   * subsequent direct messages can dial them (over a relay circuit if needed)
+   * without relying on the DHT. Only called after the signature is verified, so
+   * the addresses are authenticated as belonging to the sending wallet.
+   */
+  private async ingestSenderAddresses(msg: PubSubMessage, sourcePeerId: string): Promise<void> {
+    const addrs = msg.multiaddrs;
+    if (!addrs || addrs.length === 0) return;
+    // GossipSub echoes our own messages back (emitSelf) — nothing to learn.
+    if (sourcePeerId === this.ownPeerId) return;
+
+    try {
+      const peerId = peerIdFromString(sourcePeerId);
+      const multiaddrs = addrs.map((a) => multiaddr(a));
+      await this.node.peerStore.merge(peerId, { multiaddrs });
+      logger.debug(`📍 Learned ${multiaddrs.length} address(es) for ${sourcePeerId.slice(0, 16)}... from ${msg.role}`);
+    } catch (err: any) {
+      logger.debug(`Could not ingest addresses from ${sourcePeerId.slice(0, 16)}...: ${err.message}`);
     }
   }
 

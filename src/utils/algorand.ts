@@ -7,6 +7,7 @@ import { NfdClient } from '@txnlab/nfd-sdk';
 import { verify } from 'crypto';
 import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
+import { getLocalMultiaddrs } from '../libp2p/localAddresses';
 import { diiiscoContract } from './contract';
 import { QuoteDetails, VerifyQuoteFundedResult } from '../types/algorand';
 import { ApplicationLocalState } from 'algosdk/client/algod';
@@ -155,6 +156,15 @@ export default class algorand {
   }
 
   async signObject(obj: any){
+    // Stamp our current multiaddrs (incl. relay-circuit addresses) onto the
+    // message so recipients can dial us over a relay without a DHT lookup. We
+    // mutate the caller's object in place so the transmitted message matches
+    // exactly what we sign here — otherwise verification would fail.
+    const addrs = getLocalMultiaddrs();
+    if (addrs.length > 0) {
+      obj.multiaddrs = addrs;
+    }
+
     // Remove signature field if it exists to avoid signing the signature itself
     if ('signature' in obj) {
       const { signature, ...objWithoutSignature } = obj;

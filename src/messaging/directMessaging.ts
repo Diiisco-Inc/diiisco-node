@@ -56,6 +56,10 @@ export class DirectMessagingHandler {
         logger.error(`❌ Error handling direct stream: ${err.message}`);
         stream.abort(err);
       });
+    }, {
+      // Relayed (circuit) connections are "limited" in libp2p v3 — custom
+      // protocols are refused on them unless we opt in here and on the dial.
+      runOnLimitedConnection: true,
     });
 
     logger.info(`✅ Direct messaging protocol registered: ${this.protocol}`);
@@ -75,20 +79,15 @@ export class DirectMessagingHandler {
       knownAddrs = knownPeer.addresses.map((a: any) => a.multiaddr.toString());
     } catch { /* peer not yet in peerstore */ }
 
-    // If no addresses are known, query the DHT so relay circuit addrs can be discovered
-    // before we attempt to dial — otherwise dialProtocol times out doing the same thing.
-    if (knownAddrs.length === 0) {
-      try {
-        logger.info(`🔍 No addresses for ${peerId.slice(0, 16)}..., querying DHT...`);
-        const found = await this.node.peerRouting.findPeer(peerIdObj, { signal: AbortSignal.timeout(timeout) });
-        knownAddrs = found.multiaddrs.map((a: any) => a.toString());
-        logger.info(`🔍 DHT found ${knownAddrs.length} address(es) for ${peerId.slice(0, 16)}...: ${knownAddrs.join(', ')}`);
-        if (found.multiaddrs.length > 0) {
-          await this.node.peerStore.merge(peerIdObj, { multiaddrs: found.multiaddrs });
-        }
-      } catch (e: any) {
-        logger.info(`🔍 DHT lookup failed for ${peerId.slice(0, 16)}...: ${e.message}`);
-      }
+    // We deliberately do NOT query the DHT here. NATed peers are DHT clients and
+    // are unresolvable via findPeer, so the lookup only stalls for the timeout
+    // before failing. Instead we rely on addresses learned from the peer's
+    // signed messages (stamped multiaddrs). If we still have no way to reach the
+    // peer, bail out immediately and let the caller fall back to GossipSub.
+    const isConnected = this.node.getConnections(peerIdObj).length > 0;
+    if (knownAddrs.length === 0 && !isConnected) {
+      logger.debug(`🔀 No known addresses for ${peerId.slice(0, 16)}... — deferring to GossipSub`);
+      return false;
     }
 
     try {
@@ -98,7 +97,9 @@ export class DirectMessagingHandler {
       const stream = await this.node.dialProtocol(
         peerIdObj,
         this.protocol,
-        { signal: AbortSignal.timeout(timeout) }
+        // runOnLimitedConnection lets the stream open over a relay circuit
+        // (a limited connection); without it the dial is refused.
+        { signal: AbortSignal.timeout(timeout), runOnLimitedConnection: true }
       );
 
       // Encode message

@@ -11,12 +11,16 @@ import { autoNAT } from '@libp2p/autonat';
 import { circuitRelayServer, circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { dcutr } from '@libp2p/dcutr';
 import { isPrivate } from '@libp2p/utils';
+import { FaultTolerance } from '@libp2p/interface';
 import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
-import { bootstrap, BootstrapInit } from '@libp2p/bootstrap';
+import { bootstrap } from '@libp2p/bootstrap';
 import environment from '../environment/environment';
 import { nfdToNodeAddress } from '../utils/algorand';
-import { DEFAULT_RELAY_CONFIG } from '../utils/defaults';
+
+// Maximum circuit-relay reservations a public relay node will accept from
+// NAT'd peers. Only relevant when this node runs the relay server.
+const MAX_RELAY_RESERVATIONS = 200;
 
 export const lookupBootstrapServers = async (): Promise<string[]> => {
   // No Bootstrap Servers Configured
@@ -37,50 +41,74 @@ export const lookupBootstrapServers = async (): Promise<string[]> => {
 };
 
 export const createLibp2pNode = async () => {
-  // Get relay config with defaults
-  const relayConfig = environment.relay || DEFAULT_RELAY_CONFIG;
-
   // Load or Create a Peer ID
   const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
+
+  // Resolve bootstrap servers once — reused for both peer discovery and for
+  // building explicit circuit-relay listen addresses.
+  const parsedBootstrapServers = await lookupBootstrapServers();
 
   // Prepare Peer Discovery Modules
   const peerDiscovery: any[] = [mdns()];
 
-  if (environment.libp2pBootstrapServers && environment.libp2pBootstrapServers.length > 0) {
-    const parsedBootstrapServers = await lookupBootstrapServers();
-
+  if (parsedBootstrapServers.length > 0) {
     peerDiscovery.push(bootstrap({
       list: parsedBootstrapServers,
     }));
   }
 
-  // Prepare transports
-  const transports: any[] = [tcp()];
-  if (relayConfig.enableRelayClient) {
-    transports.push(circuitRelayTransport());
-  }
-
+  //Detect if Public Node
   const port = environment.node?.port || 4242;
   const publicUrl = environment.node?.url && !environment.node.url.includes('localhost') && environment.node.url !== '127.0.0.1'
-    ? environment.node.url
-    : null;
+  ? environment.node.url
+  : null;
+  const isPublicNode = publicUrl !== null;
+
+  // For private nodes, listen on an explicit circuit address per bootstrap
+  // relay (e.g. /dns4/relay/tcp/4242/p2p/<relayId>/p2p-circuit). This forces a
+  // reservation on each known relay ('configured' path) instead of relying on
+  // auto-discovery, which is what leaves NAT'd nodes with zero relay addresses.
+  // A bare '/p2p-circuit' is also kept so additional relays can be discovered.
+  const relayListenAddrs = parsedBootstrapServers
+    .filter((addr) => addr.includes('/p2p/'))
+    .map((addr) => `${addr}/p2p-circuit`);
+
+  // Surface which relays we'll try to reserve on — makes it obvious in the logs
+  // whether a private node has a usable relay to fall back on.
+  if (!isPublicNode) {
+    if (relayListenAddrs.length > 0) {
+      logger.info(`🛰️  Requesting relay reservations on ${relayListenAddrs.length} relay(s):`);
+      relayListenAddrs.forEach((addr) => logger.info(`   ${addr}`));
+    } else {
+      logger.warn('⚠️ No bootstrap relays with a /p2p/ peer id — cannot reserve a relay, only bare /p2p-circuit discovery will be attempted');
+    }
+  }
 
   // Create the Libp2p Node with connection management and keep-alive
   const node = await createLibp2p({
     privateKey: peer.privateKey,
     addresses: {
       listen: [
-        `/ip4/0.0.0.0/tcp/${port}`,
         // Required for circuitRelayTransport to call reserveRelay() and make
         // relay reservations. Without this entry pendingReservations stays empty
         // and every discovered relay peer is immediately rejected.
-        ...(relayConfig.enableRelayClient ? ['/p2p-circuit'] : []),
+        ...(isPublicNode ? [`/ip4/0.0.0.0/tcp/${port}`] : [...relayListenAddrs, '/p2p-circuit']),
       ],
       // Announce the stable DNS name so relay circuit addresses returned to
       // clients carry the domain rather than a raw IP.
       ...(publicUrl ? { announce: [`/dns4/${publicUrl}/tcp/${port}`] } : {}),
     },
-    transports,
+    // Private nodes listen on explicit relay-circuit addresses that may fail if
+    // a relay is momentarily unreachable at startup — tolerate that and run
+    // dial-only, letting relay discovery retry. Public nodes keep fatal
+    // behaviour so a failed TCP bind surfaces loudly.
+    transportManager: {
+      faultTolerance: isPublicNode ? FaultTolerance.FATAL_ALL : FaultTolerance.NO_FATAL,
+    },
+    transports: [
+      tcp(),
+      ...(isPublicNode ? [] : [circuitRelayTransport()]), // Only add circuit relay transport if not a public node
+    ],
     connectionEncrypters: [noise()],
     peerDiscovery,
     streamMuxers: [yamux()],
@@ -126,19 +154,26 @@ export const createLibp2pNode = async () => {
       // AutoNAT for detecting reachability
       autoNAT: autoNAT(),
 
-      // Circuit Relay Server (if enabled)
-      ...(relayConfig.enableRelayServer ? {
+      // Circuit Relay Server — only public nodes accept reservations
+      ...(isPublicNode ? {
         relay: circuitRelayServer({
           reservations: {
-            maxReservations: relayConfig.maxRelayedConnections * 2,
+            maxReservations: MAX_RELAY_RESERVATIONS,
+            // Bound relayed connections to the OpenAI API envelope rather than
+            // libp2p's tiny 128KB / 2-min default (which truncates real
+            // completions) or an unlimited relay (which invites abuse):
+            //  - 10 min: the OpenAI SDK default request timeout.
+            //  - 25 MB: OpenAI's documented max content size (26,214,400 bytes),
+            //    ample for any completion while capping relay abuse.
+            // DCUtR still upgrades heavy traffic to a direct connection off the relay.
+            defaultDurationLimit: 10 * 60 * 1000,
+            defaultDataLimit: BigInt(25 * 1024 * 1024),
           },
         })
       } : {}),
 
-      // DCUtR for connection upgrade (if enabled)
-      ...(relayConfig.enableDCUtR ? {
-        dcutr: dcutr()
-      } : {}),
+      // DCUtR — upgrade relayed connections to direct when possible
+      dcutr: dcutr(),
     }
   });
 
@@ -151,6 +186,13 @@ export const createLibp2pNode = async () => {
   await node.start()
   logger.info('✅ Node started with id:', node.peerId.toString());
 
+  // Log relay role so it's immediately clear on startup
+  if (isPublicNode) {
+    logger.info('🛰️  Circuit relay server: ENABLED (will accept reservations from private nodes)');
+  } else {
+    logger.info('🔗 Circuit relay client: ENABLED (will seek relay reservations behind NAT)');
+  }
+
   // Show Connection Details
   logger.info('👂 Listening on:');
   node.getMultiaddrs().forEach(addr => logger.info(`   ${addr.toString()}`));
@@ -161,20 +203,9 @@ export const createLibp2pNode = async () => {
   // In libp2p v3, AutoNAT works by confirming/removing observed addresses rather than
   // setting a reachability metadata key. We infer reachability by filtering getMultiaddrs().
   node.addEventListener('self:peer:update', () => {
-    const allAddrs = node.getMultiaddrs();
-    const publicAddrs = allAddrs.filter((a: any) => !isPrivate(a) && !a.toString().includes('p2p-circuit'));
-    const relayAddrs = allAddrs.filter((a: any) => a.toString().includes('p2p-circuit'));
-
-    if (publicAddrs.length > 0) {
+    const publicAddrs = node.getMultiaddrs().filter((a: any) => !isPrivate(a) && !a.toString().includes('p2p-circuit'));
+    if (publicAddrs.length > 0 && isPublicNode) {
       logger.info(`🌐 Node is publicly reachable: ${publicAddrs.map((a: any) => a.toString()).join(', ')}`);
-      if (relayConfig.enableRelayServer) {
-        logger.info('🌐 Relay server active — accepting reservations from private nodes');
-      }
-    } else if (relayAddrs.length > 0) {
-      logger.info(`🔗 Relay reservation established — reachable via:`);
-      relayAddrs.forEach((a: any) => logger.info(`   ${a.toString()}`));
-    } else {
-      logger.info('🔒 No public or relay addresses yet — waiting for relay reservation');
     }
   });
 
