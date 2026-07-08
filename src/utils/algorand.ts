@@ -7,6 +7,7 @@ import { NfdClient } from '@txnlab/nfd-sdk';
 import { verify } from 'crypto';
 import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
+import { getLocalMultiaddrs } from '../libp2p/localAddresses';
 import { diiiscoContract } from './contract';
 import { QuoteDetails, VerifyQuoteFundedResult } from '../types/algorand';
 import { ApplicationLocalState } from 'algosdk/client/algod';
@@ -44,6 +45,8 @@ function makeSigner(acct: algosdk.Account): algosdk.TransactionSigner {
   return algosdk.makeBasicAccountTransactionSigner(acct);
 }
 
+const SUGGESTED_PARAMS_TTL_MS = 4500;
+
 export default class algorand {
   mnemonic: string;
   account: algosdk.Account;
@@ -53,6 +56,7 @@ export default class algorand {
   private algod: algosdk.Algodv2;
   private contract: algosdk.ABIContract;
   private signer: algosdk.TransactionSigner;
+  private suggestedParamsCache: { params: algosdk.SuggestedParams; fetchedAt: number } | null = null;
 
   constructor() {
     this.env = environment;
@@ -152,6 +156,15 @@ export default class algorand {
   }
 
   async signObject(obj: any){
+    // Stamp our current multiaddrs (incl. relay-circuit addresses) onto the
+    // message so recipients can dial us over a relay without a DHT lookup. We
+    // mutate the caller's object in place so the transmitted message matches
+    // exactly what we sign here — otherwise verification would fail.
+    const addrs = getLocalMultiaddrs();
+    if (addrs.length > 0) {
+      obj.multiaddrs = addrs;
+    }
+
     // Remove signature field if it exists to avoid signing the signature itself
     if ('signature' in obj) {
       const { signature, ...objWithoutSignature } = obj;
@@ -184,15 +197,9 @@ export default class algorand {
   }
 
   async checkIfOptedInToAsset(address: string, assetId: number): Promise<{ optedIn: boolean; balance: BigInt }> {
-    const algod = new algosdk.Algodv2(
-      this.env.algorand!.client.token,
-      this.env.algorand!.client.address,
-      this.env.algorand!.client.port
-    );
-    
     try {
       // Fetch full account info
-      const accountInfo = await algod.accountInformation(address).do();
+      const accountInfo = await this.algod.accountInformation(address).do();
 
       // Look for this ASA in their assets list
       const asset = accountInfo.assets?.find((a) => a.assetId === BigInt(assetId));
@@ -215,14 +222,9 @@ export default class algorand {
   }
 
   async optInToAsset(address: string, assetId: number) {
-    const algod = new algosdk.Algodv2(
-      this.env.algorand!.client.token,
-      this.env.algorand!.client.address,
-      this.env.algorand!.client.port
-    );
     const sk = algosdk.mnemonicToSecretKey(this.mnemonic).sk;
 
-    const sp = await algod.getTransactionParams().do()
+    const sp = await this.getSuggestedParams();
     const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       receiver: address,
       sender: this.account.addr,
@@ -233,9 +235,10 @@ export default class algorand {
     });
 
     const signed = txn.signTxn(sk)
-    const txId = await algod.sendRawTransaction(signed).do();
+    const txId = await this.algod.sendRawTransaction(signed).do();
     logger.info(`⏳ Waiting for confirmation of opt-in transaction ID: ${txId.txid}...`);
-    const transactionCompletion = await algosdk.waitForConfirmation(algod, txId.txid, 5);
+    const transactionCompletion = await algosdk.waitForConfirmation(this.algod, txId.txid, 5);
+    this.suggestedParamsCache = null;
     logger.info(`✅ Opted in to asset ID ${assetId} for address ${address}. Transaction ID: ${txId.txid}`);
     return transactionCompletion;
   }
@@ -293,9 +296,13 @@ export default class algorand {
   }
 
   private async getSuggestedParams(): Promise<algosdk.SuggestedParams> {
-    const sp = await this.algod.getTransactionParams().do();
-    sp.flatFee = false;
-    return sp;
+    const now = Date.now();
+    if (!this.suggestedParamsCache || now - this.suggestedParamsCache.fetchedAt > SUGGESTED_PARAMS_TTL_MS) {
+      const sp = await this.algod.getTransactionParams().do();
+      sp.flatFee = false;
+      this.suggestedParamsCache = { params: sp, fetchedAt: now };
+    }
+    return { ...this.suggestedParamsCache.params };
   }
 
   async checkIfRegistered(address: string, app: number): Promise<boolean> {
@@ -337,6 +344,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 
@@ -383,6 +391,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 
@@ -406,7 +415,6 @@ export default class algorand {
     const quoteIdBytes = toBytes(quoteId);
     const boxName = toBytes('quotes' + quoteId);
 
-    console.log("Funding quote:", { quoteId, usdcAmount, appAddress });
     const usdcTx = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
       sender: this.account.addr,
       receiver: appAddress,
@@ -438,6 +446,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 
@@ -470,7 +479,7 @@ export default class algorand {
       ],
     });
 
-    const res = await atc.execute(this.algod, 4);
+    const res = await atc.simulate(this.algod);
     const tup = res.methodResults[0].returnValue as [
       Uint8Array,
       Uint8Array,
@@ -523,7 +532,7 @@ export default class algorand {
       ],
     });
 
-    const res = await atc.execute(this.algod, 4);
+    const res = await atc.simulate(this.algod);
     const value = res.methodResults[0].returnValue as [bigint, bigint, bigint];
     const [funded, status, usdcAmount] = value;
 
@@ -576,6 +585,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 
@@ -611,6 +621,7 @@ export default class algorand {
     });
 
     const res = await atc.execute(this.algod, 4);
+    this.suggestedParamsCache = null;
     return Number(res.confirmedRound);
   }
 

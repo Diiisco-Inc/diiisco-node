@@ -45,6 +45,8 @@ export interface QuoteEngineConfig {
   preferSelf?: boolean;
   quoteSelectionFunction?: (quotes: QuoteEvent[]) => Promise<QuoteEvent>;
   quoteCreationFunction?: QuoteCreationFunction | QuoteCreationFunction[];
+  optimisticInference?: boolean;  // default true — provider starts inference in parallel with createQuote
+  maxSpeculativeJobs?: number;    // default 2 — max concurrent speculative inference jobs
 }
 
 export interface PeerIdStorageConfig {
@@ -52,16 +54,6 @@ export interface PeerIdStorageConfig {
 }
 
 export interface PeerIdConfig extends PeerId.JSONPeerId {}
-
-export interface RelayConfig {
-  enableRelayServer: boolean;
-  autoEnableRelay: boolean;
-  maxRelayedConnections: number;
-  enableRelayClient: boolean;
-  enableDCUtR: boolean;
-  maxDataPerConnection: number;
-  maxRelayDuration: number;
-}
 
 export interface DirectMessagingConfig {
   enabled: boolean;
@@ -90,6 +82,5 @@ export interface Environment {
     port?: number;
     displayName?: string;
   };
-  relay?: RelayConfig;  // Optional: uses defaults if not provided
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
 }

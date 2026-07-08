@@ -1,6 +1,6 @@
 {
   "name": "diiisco-node",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Run a Diiisco Node in Node.JS!",
   "main": "dist/index.js",
   "type": "module",
@@ -55,7 +55,7 @@
     "it-pushable": "^3.2.3",
     "js-sha256": "^0.11.1",
     "json-canonicalize": "^2.0.0",
-    "libp2p": "^3.0.6",
+    "libp2p": "^3.3.5",
     "libp2p-tcp": "^0.17.2",
     "llama-tokenizer-js": "^1.2.2",
     "msgpack-lite": "^0.1.26",

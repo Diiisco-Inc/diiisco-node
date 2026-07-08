@@ -56,6 +56,10 @@ export class DirectMessagingHandler {
         logger.error(`❌ Error handling direct stream: ${err.message}`);
         stream.abort(err);
       });
+    }, {
+      // Relayed (circuit) connections are "limited" in libp2p v3 — custom
+      // protocols are refused on them unless we opt in here and on the dial.
+      runOnLimitedConnection: true,
     });
 
     logger.info(`✅ Direct messaging protocol registered: ${this.protocol}`);
@@ -67,17 +71,35 @@ export class DirectMessagingHandler {
    */
   async sendDirect(peerId: string, message: PubSubMessage): Promise<boolean> {
     const timeout = directMessagingConfig.timeout;
+    const peerIdObj = peerIdFromString(peerId);
+
+    let knownAddrs: string[] = [];
+    try {
+      const knownPeer = await this.node.peerStore.get(peerIdObj);
+      knownAddrs = knownPeer.addresses.map((a: any) => a.multiaddr.toString());
+    } catch { /* peer not yet in peerstore */ }
+
+    // We deliberately do NOT query the DHT here. NATed peers are DHT clients and
+    // are unresolvable via findPeer, so the lookup only stalls for the timeout
+    // before failing. Instead we rely on addresses learned from the peer's
+    // signed messages (stamped multiaddrs). If we still have no way to reach the
+    // peer, bail out immediately and let the caller fall back to GossipSub.
+    const isConnected = this.node.getConnections(peerIdObj).length > 0;
+    if (knownAddrs.length === 0 && !isConnected) {
+      logger.debug(`🔀 No known addresses for ${peerId.slice(0, 16)}... — deferring to GossipSub`);
+      return false;
+    }
 
     try {
-      // Convert string peerId to PeerId object
-      const peerIdObj = peerIdFromString(peerId);
 
       // Dial protocol and get stream
       logger.debug(`🔌 Dialing protocol ${this.protocol} to ${peerId.slice(0, 16)}...`);
       const stream = await this.node.dialProtocol(
         peerIdObj,
         this.protocol,
-        { signal: AbortSignal.timeout(timeout) }
+        // runOnLimitedConnection lets the stream open over a relay circuit
+        // (a limited connection); without it the dial is refused.
+        { signal: AbortSignal.timeout(timeout), runOnLimitedConnection: true }
       );
 
       // Encode message
@@ -93,7 +115,9 @@ export class DirectMessagingHandler {
       logger.info(`✅ Direct message sent (${message.role}) to ${peerId.slice(0, 16)}...`);
       return true;
     } catch (err: any) {
-      logger.warn(`⚠️ Direct message failed to ${peerId.slice(0, 16)}...: ${err.message}`);
+      const addrList = knownAddrs.length > 0 ? knownAddrs.join(', ') : 'none known';
+      const isConnected = this.node.getConnections(peerIdObj).length > 0;
+      logger.warn(`⚠️ Direct message failed to ${peerId.slice(0, 16)}... [connected: ${isConnected}, addresses: ${addrList}]: ${err.message}`);
       return false;
     }
   }

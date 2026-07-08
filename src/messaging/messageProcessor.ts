@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
 import environment from "../environment/environment";
-import { OpenAIInferenceModel } from "../utils/models";
+import { OpenAIInferenceModel, pickGenerationParams } from "../utils/models";
 import quoteEngine from "../utils/quoteEngine";
 import {
   PubSubMessage,
@@ -24,6 +24,9 @@ import { verifyNFD } from '../utils/algorand';
 import { RawQuote } from "../types/quotes";
 import { Address } from "algosdk";
 import { MessageRouter } from './messageRouter';
+import { SpeculativeInferenceCache } from './speculativeInferenceCache';
+import { peerIdFromString } from '@libp2p/peer-id';
+import { multiaddr } from '@multiformats/multiaddr';
 
 export class MessageProcessor {
   private algo: algorand;
@@ -34,6 +37,8 @@ export class MessageProcessor {
   private messageRouter: MessageRouter;
   private env: Environment;
   private ownPeerId: string;
+  private node: any;
+  private speculativeCache: SpeculativeInferenceCache;
 
   constructor(
     algo: algorand,
@@ -42,7 +47,8 @@ export class MessageProcessor {
     availableModels: string[],
     nodeEvents: EventEmitter,
     messageRouter: MessageRouter,
-    ownPeerId: string
+    ownPeerId: string,
+    node: any
   ) {
     this.algo = algo;
     this.model = model;
@@ -52,6 +58,10 @@ export class MessageProcessor {
     this.messageRouter = messageRouter;
     this.env = environment;
     this.ownPeerId = ownPeerId;
+    this.node = node;
+    this.speculativeCache = new SpeculativeInferenceCache(
+      this.env.quoteEngine?.maxSpeculativeJobs ?? 2
+    );
   }
 
   /**
@@ -81,6 +91,11 @@ export class MessageProcessor {
       return false;
     }
     logger.info("🔐 Signature of incoming message has been successfully verified.");
+
+    // Learn how to reach the sender directly. The signed message carries the
+    // sender's current multiaddrs (incl. relay-circuit addresses), so we can
+    // populate the peerstore and later dial them without a DHT lookup.
+    await this.ingestSenderAddresses(msg, sourcePeerId);
 
     // Route to specific handler based on message role
     try {
@@ -123,6 +138,28 @@ export class MessageProcessor {
     } catch (err: any) {
       logger.error(`❌ Error processing ${msg.role} message: ${err.message}`);
       return false;
+    }
+  }
+
+  /**
+   * Merge the sender's advertised multiaddrs into the peerstore so that
+   * subsequent direct messages can dial them (over a relay circuit if needed)
+   * without relying on the DHT. Only called after the signature is verified, so
+   * the addresses are authenticated as belonging to the sending wallet.
+   */
+  private async ingestSenderAddresses(msg: PubSubMessage, sourcePeerId: string): Promise<void> {
+    const addrs = msg.multiaddrs;
+    if (!addrs || addrs.length === 0) return;
+    // GossipSub echoes our own messages back (emitSelf) — nothing to learn.
+    if (sourcePeerId === this.ownPeerId) return;
+
+    try {
+      const peerId = peerIdFromString(sourcePeerId);
+      const multiaddrs = addrs.map((a) => multiaddr(a));
+      await this.node.peerStore.merge(peerId, { multiaddrs });
+      logger.debug(`📍 Learned ${multiaddrs.length} address(es) for ${sourcePeerId.slice(0, 16)}... from ${msg.role}`);
+    } catch (err: any) {
+      logger.debug(`Could not ingest addresses from ${sourcePeerId.slice(0, 16)}...: ${err.message}`);
     }
   }
 
@@ -245,10 +282,18 @@ export class MessageProcessor {
       return;
     }
 
+    const optimistic = this.env.quoteEngine?.optimisticInference !== false;
+    if (optimistic) {
+      this.speculativeCache.start(msg.id, () =>
+        this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload))
+      );
+    }
+
+    const createUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
     await this.algo.createQuote({
       quoteId: msg.id,
       customerAddress: msg.fromWalletAddr,
-      usdcAmount: BigInt(msg.payload.quote.totalPrice * 1_000_000),
+      usdcAmount: createUsdcAmount,
     });
 
     let response: ContractCreated = {
@@ -267,9 +312,10 @@ export class MessageProcessor {
 
   private async handleContractCreated(msg: ContractCreated, sourcePeerId: string) {
     if (!this.env.local?.enabled) {
+      const fundUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
       await this.algo.fundQuote({
         quoteId: msg.id,
-        usdcAmount: BigInt(msg.payload.quote.totalPrice * 1_000_000),
+        usdcAmount: fundUsdcAmount,
       });
     }
 
@@ -298,7 +344,8 @@ export class MessageProcessor {
   }
 
   private async executeInference(msg: { id: string; payload: any }, sourcePeerId: string) {
-    const completion = await this.model.getResponse(msg.payload.model, msg.payload.inputs);
+    const completion = await this.speculativeCache.resolve(msg.id)
+      ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload));
     let response: InferenceResponse = {
       role: 'inference-response',
       to: sourcePeerId,
@@ -318,17 +365,38 @@ export class MessageProcessor {
 
   private async handleInferenceResponse(msg: InferenceResponse, sourcePeerId: string) {
     logger.info(`📥 Received inference-response from ${sourcePeerId}`);
-    let payment: number | null = null;
-    if (!this.env.local?.enabled && sourcePeerId !== this.ownPeerId) {
-      payment = await this.algo.completeQuote({
-        quoteId: msg.id,
-        provider: Address.fromString(msg.fromWalletAddr)
-      });
-    }
+
+    // Emit immediately so the API can respond to the client without waiting for on-chain settlement.
     this.nodeEvents.emit(`inference-response-${msg.id}`, {
       ...msg,
-      payment: payment,
-      quote: msg.payload.quote
+      payment: null,
+      quote: msg.payload.quote,
     });
+
+    if (!this.env.local?.enabled && sourcePeerId !== this.ownPeerId) {
+      this.settleQuoteInBackground(msg);
+    }
+  }
+
+  private settleQuoteInBackground(msg: InferenceResponse): void {
+    const DELAYS_MS = [1000, 2000, 4000, 8000];
+
+    const attempt = (i: number): void => {
+      this.algo.completeQuote({
+        quoteId: msg.id,
+        provider: Address.fromString(msg.fromWalletAddr),
+      }).then(() => {
+        logger.info(`✅ Quote ${msg.id} settled (attempt ${i + 1})`);
+      }).catch((err: Error) => {
+        if (i < DELAYS_MS.length - 1) {
+          logger.warn(`⚠️ Settlement attempt ${i + 1} failed for ${msg.id}, retrying in ${DELAYS_MS[i]}ms: ${err.message}`);
+          setTimeout(() => attempt(i + 1), DELAYS_MS[i]);
+        } else {
+          logger.error(`💀 Settlement permanently failed for quote ${msg.id}: ${err.message}`, { quoteId: msg.id, provider: msg.fromWalletAddr });
+        }
+      });
+    };
+
+    attempt(0);
   }
 }

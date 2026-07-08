@@ -1,18 +1,4 @@
-import type { RelayConfig, DirectMessagingConfig } from '../environment/environment.types';
-
-/**
- * Default relay configuration
- * Used when relay config is not specified in environment
- */
-export const DEFAULT_RELAY_CONFIG: RelayConfig = {
-  enableRelayServer: true,        // Auto-disabled by AutoNAT if behind NAT
-  autoEnableRelay: true,
-  maxRelayedConnections: 100,
-  enableRelayClient: true,
-  enableDCUtR: true,              // Upgrade relayed connections to direct when possible
-  maxDataPerConnection: 104857600,  // 100 MB
-  maxRelayDuration: 300000,       // 5 minutes
-};
+import type { DirectMessagingConfig } from '../environment/environment.types';
 
 /**
  * Default direct messaging configuration

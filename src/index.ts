@@ -1,4 +1,5 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
+import { setLocalAddressProvider } from './libp2p/localAddresses';
 import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck, stopConnectionHealthCheck } from './libp2p/reconnection';
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
@@ -84,7 +85,11 @@ class Application extends EventEmitter {
     
     // Create and Start the Libp2p Node
     this.node = await createLibp2pNode();
-    
+
+    // Expose our current multiaddrs to the message signer so every outgoing
+    // message advertises how to reach us (incl. relay-circuit addresses).
+    setLocalAddressProvider(() => this.node.getMultiaddrs().map((a: any) => a.toString()));
+
     // Initialize Algorand for DSCO Payments
     await this.algo.initialize(this.node.peerId.toString());
 
@@ -130,7 +135,8 @@ class Application extends EventEmitter {
       this.availableModels,
       this,
       this.messageRouter,
-      this.node.peerId.toString()
+      this.node.peerId.toString(),
+      this.node
     );
 
     // Create a Relay PubSub Topic

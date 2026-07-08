@@ -133,7 +133,26 @@ export interface ListNetworkResponse {
   signature?: string;
 }
 
-export type PubSubMessage = QuoteRequest | QuoteResponse | QuoteAccepted | ContractCreated | ContractSigned | InferenceResponse | ListModelsRequest | ListModelsResponse | ListNetworkRequest | ListNetworkResponse;
+export type PubSubMessage = (
+  | QuoteRequest
+  | QuoteResponse
+  | QuoteAccepted
+  | ContractCreated
+  | ContractSigned
+  | InferenceResponse
+  | ListModelsRequest
+  | ListModelsResponse
+  | ListNetworkRequest
+  | ListNetworkResponse
+) & {
+  /**
+   * Sender's current libp2p multiaddrs (including relay-circuit addresses),
+   * stamped onto every message at sign time. Lets peers dial the sender over a
+   * relay without a DHT lookup — NATed peers are DHT clients and so are not
+   * resolvable via findPeer. Part of the signed payload, so it is authenticated.
+   */
+  multiaddrs?: string[];
+};
 
 export interface QuoteEvent {
   msg: QuoteResponse;
