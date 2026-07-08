@@ -7,6 +7,31 @@ import { Environment } from "../environment/environment.types";
 import { Model } from "openai/resources/index";
 import EventEmitter from "events";
 
+/**
+ * Optional generation params forwarded to the backend chat/completions call.
+ * Kept OpenAI-shaped so both the OpenAI and Anthropic API layers can supply them.
+ */
+export interface GenerationParams {
+  max_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  stop?: string | string[];
+}
+
+/**
+ * Pick the supported generation params out of an arbitrary request/payload
+ * object, omitting undefined keys. Used by the API layer and by the provider
+ * side (which reconstructs the call from the mesh payload).
+ */
+export function pickGenerationParams(obj: any): GenerationParams {
+  const params: GenerationParams = {};
+  if (obj?.max_tokens !== undefined) params.max_tokens = obj.max_tokens;
+  if (obj?.temperature !== undefined) params.temperature = obj.temperature;
+  if (obj?.top_p !== undefined) params.top_p = obj.top_p;
+  if (obj?.stop !== undefined) params.stop = obj.stop;
+  return params;
+}
+
 export class OpenAIInferenceModel {
   openai: OpenAI;
   private env: Environment;
@@ -22,11 +47,12 @@ export class OpenAIInferenceModel {
     this.nodeEventEmitter = nodeEvents;
   }
 
-  async getResponse(model: string, messages: ChatCompletionMessageParam[]): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+  async getResponse(model: string, messages: ChatCompletionMessageParam[], params?: GenerationParams): Promise<OpenAI.Chat.Completions.ChatCompletion> {
     try {
       const resp = await this.openai.chat.completions.create({
         model: model,
-        messages: messages
+        messages: messages,
+        ...(params || {}),
       });
       return resp;
     } catch (error) {

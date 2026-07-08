@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
 import environment from "../environment/environment";
-import { OpenAIInferenceModel } from "../utils/models";
+import { OpenAIInferenceModel, pickGenerationParams } from "../utils/models";
 import quoteEngine from "../utils/quoteEngine";
 import {
   PubSubMessage,
@@ -285,7 +285,7 @@ export class MessageProcessor {
     const optimistic = this.env.quoteEngine?.optimisticInference !== false;
     if (optimistic) {
       this.speculativeCache.start(msg.id, () =>
-        this.model.getResponse(msg.payload.model, msg.payload.inputs)
+        this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload))
       );
     }
 
@@ -345,7 +345,7 @@ export class MessageProcessor {
 
   private async executeInference(msg: { id: string; payload: any }, sourcePeerId: string) {
     const completion = await this.speculativeCache.resolve(msg.id)
-      ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs);
+      ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload));
     let response: InferenceResponse = {
       role: 'inference-response',
       to: sourcePeerId,
