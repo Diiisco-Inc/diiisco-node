@@ -159,10 +159,15 @@ export const createLibp2pNode = async () => {
         relay: circuitRelayServer({
           reservations: {
             maxReservations: MAX_RELAY_RESERVATIONS,
-            // Lift the default 128KB / 2-minute cap on relayed connections —
-            // inference responses can be large and must survive the relay path
-            // (DCUtR still upgrades to a direct connection where it can).
-            applyDefaultLimit: false,
+            // Bound relayed connections to the OpenAI API envelope rather than
+            // libp2p's tiny 128KB / 2-min default (which truncates real
+            // completions) or an unlimited relay (which invites abuse):
+            //  - 10 min: the OpenAI SDK default request timeout.
+            //  - 25 MB: OpenAI's documented max content size (26,214,400 bytes),
+            //    ample for any completion while capping relay abuse.
+            // DCUtR still upgrades heavy traffic to a direct connection off the relay.
+            defaultDurationLimit: 10 * 60 * 1000,
+            defaultDataLimit: BigInt(25 * 1024 * 1024),
           },
         })
       } : {}),
