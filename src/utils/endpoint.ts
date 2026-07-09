@@ -15,8 +15,16 @@ function parseApiKey(req: any) {
   return scheme?.toLowerCase() === "bearer" ? token : undefined;
 }
 
-/** In-memory allowlist (use DB/Redis in prod if you need dynamic control) */
-const allowed = new Set(environment.api.keys.map((s: string) => s.trim()).filter(Boolean));
+/**
+ * Build the allowlist from the current environment. Computed per request rather
+ * than once at module load: when the node is embedded (e.g. the desktop app),
+ * `api.keys` is populated via `configureEnvironment` AFTER this module is
+ * imported, so an allowlist frozen at import time would be empty and reject
+ * every key. Reading it per request keeps it in sync with the live config.
+ */
+function allowedKeys(): Set<string> {
+  return new Set(environment.api.keys.map((s: string) => s.trim()).filter(Boolean));
+}
 
 /** Bearer auth middleware */
 export function requireBearer(req: any, res: any, next: any) {
@@ -30,7 +38,7 @@ export function requireBearer(req: any, res: any, next: any) {
     }
   });
 
-  if (!allowed.has(token)) return res.status(401).json({
+  if (!allowedKeys().has(token)) return res.status(401).json({
     "error": {
       "message": "Incorrect API key provided: " + token,
       "type": "authentication_error",
