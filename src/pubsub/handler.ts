@@ -7,6 +7,7 @@ import quoteEngine from "../utils/quoteEngine";
 import { PubSubMessage, QuoteRequest, QuoteResponse, QuoteAccepted, InferenceResponse, ContractSigned, ContractCreated, ListModelsResponse } from "../types/messages";
 import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
+import { getMeshTopic } from "../utils/topic";
 import diiiscoContract from "../utils/contract";
 import { RawQuote } from "../types/quotes";
 import { Address } from "algosdk";
@@ -59,7 +60,7 @@ export const handlePubSubMessage = async (
         }
       };
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(getMeshTopic(), encode(response));
       logger.info(`📤 Sent list-models-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
@@ -104,7 +105,7 @@ export const handlePubSubMessage = async (
       };
 
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(getMeshTopic(), encode(response));
       logger.info(`📤 Sent quote-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
@@ -130,7 +131,7 @@ export const handlePubSubMessage = async (
         fromWalletAddr: algo.account.addr.toString(),
       };
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(getMeshTopic(), encode(response));
       logger.info(`📤 Sent contract-created to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
@@ -150,7 +151,7 @@ export const handlePubSubMessage = async (
         fromWalletAddr: algo.account.addr.toString(),
       };
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(getMeshTopic(), encode(response));
       logger.info(`📤 Sent contract-signed to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
     
@@ -177,7 +178,7 @@ export const handlePubSubMessage = async (
       };
 
       response.signature = await algo.signObject(response);
-      node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encode(response));
+      node.services.pubsub.publish(getMeshTopic(), encode(response));
       logger.info(`📤 Sent inference-response to ${evt.detail.from.toString()}: ${JSON.stringify(response)}`);
     }
 
