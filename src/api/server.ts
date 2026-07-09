@@ -22,6 +22,7 @@ import {
   anthropicError,
   AnthropicMessagesRequest,
 } from './anthropicAdapter';
+import { getMeshTopic } from '../utils/topic';
 
 export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, availableModels?: string[]) => {
   const app = express();
@@ -85,7 +86,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       networkListMessage.signature = await algo.signObject(networkListMessage);
 
       meshQueue.enqueue(networkListMessage).then(() => {
-        logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${networkListMessage.id}`);
+        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${networkListMessage.id}`);
 
         setTimeout(() => {
           nodeEvents.off('network-node-received', onNodeReceived);
@@ -124,7 +125,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       modelListMessage.signature = await algo.signObject(modelListMessage);
 
       meshQueue.enqueue(modelListMessage).then(() => {
-        logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${modelListMessage.id}`);
+        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${modelListMessage.id}`);
       }).catch((err: Error) => {
         logger.error(`❌ Error dispatching model list message: ${err}`);
         return res.status(500).send({ error: "No peers available to handle the request." });
@@ -192,7 +193,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       });
 
       meshQueue.enqueue(quoteMessage).then(() => {
-        logger.info(`📤 Published message to 'diiisco/models/1.0.0'. ID: ${quoteMessage.id}`);
+        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${quoteMessage.id}`);
       }).catch((err: Error) => {
         logger.error(`❌ Error dispatching quote request: ${err}`);
         nodeEvents.removeAllListeners(`inference-response-${quoteMessage.id}`);

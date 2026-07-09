@@ -4,6 +4,7 @@ import { DirectMessagingHandler } from './directMessaging';
 import environment from '../environment/environment';
 import { encode } from 'msgpackr';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from '../utils/defaults';
+import { getMeshTopic } from '../utils/topic';
 
 // Get direct messaging config with defaults
 const directMessagingConfig = environment.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;
@@ -70,7 +71,7 @@ export class MessageRouter {
    */
   private async sendViaGossipsub(message: PubSubMessage): Promise<void> {
     const encoded = encode(message);
-    await this.node.services.pubsub.publish(environment.local?.privateTopic ?? 'diiisco/models/1.0.0', encoded);
+    await this.node.services.pubsub.publish(getMeshTopic(), encoded);
     logger.info(`📡 Sent ${message.role} via GossipSub`);
   }
 }

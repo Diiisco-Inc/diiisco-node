@@ -18,6 +18,7 @@ import { MeshMessageQueue } from './messaging/meshMessageQueue';
 import { decode } from 'msgpackr';
 import { PubSubMessage } from './types/messages';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
+import { getMeshTopic } from './utils/topic';
 import type { Server } from 'http';
 
 class Application extends EventEmitter {
@@ -140,7 +141,7 @@ class Application extends EventEmitter {
     );
 
     // Create a Relay PubSub Topic
-    const topic = this.env.local?.privateTopic ?? 'diiisco/models/1.0.0';
+    const topic = getMeshTopic();
     this.node.services.pubsub.subscribe(topic);
     this.topics.push(topic);
 
