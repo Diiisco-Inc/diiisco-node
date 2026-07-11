@@ -135,6 +135,13 @@ a:hover {
   color: var(--off);
 }
 
+.badge-host {
+  color: var(--background);
+  background: var(--foreground);
+  border-color: var(--foreground);
+  margin-left: 0.5rem;
+}
+
 .badge-nfd {
   color: var(--foreground);
   border-color: var(--foreground);

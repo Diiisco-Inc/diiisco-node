@@ -190,7 +190,22 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       entries.set(peerId, entry);
     }
 
-    return [...entries.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || b.lastSeen - a.lastSeen);
+    const sorted = [...entries.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || b.lastSeen - a.lastSeen);
+
+    // The serving node itself, pinned to the top.
+    const own = buildOwnProfile(node, algo, availableModels);
+    sorted.unshift({
+      peerId: ownPeerId,
+      displayName: own.displayName,
+      nfd: own.nfd,
+      walletAddr: own.walletAddr,
+      connected: true,
+      role: own.role,
+      lastSeen: Date.now(),
+      host: true,
+    });
+
+    return sorted;
   };
 
   // ---- Rate limiting ---------------------------------------------------------

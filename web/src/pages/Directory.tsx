@@ -48,6 +48,7 @@ export function Directory() {
                   <Link to={`/nodes/${encodeURIComponent(e.peerId)}`}>
                     {e.displayName || shortPeerId(e.peerId)}
                   </Link>
+                  {e.host ? <span className="badge badge-host">Host</span> : null}
                   {e.nfd ? <span className="muted"> {e.nfd}</span> : null}
                 </td>
                 <td className="mono">{shortPeerId(e.peerId)}</td>

@@ -41,4 +41,5 @@ export interface DirectoryEntry {
   connected: boolean;
   role?: 'relay' | 'relayed' | 'direct';
   lastSeen: number;
+  host?: boolean; // true on the entry describing the node serving the directory
 }
