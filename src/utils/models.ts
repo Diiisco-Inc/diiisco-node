@@ -17,7 +17,9 @@ export class OpenAIInferenceModel {
     this.env = environment;
     this.openai = new OpenAI({
       baseURL: baseURL,
-      apiKey: this.env.models.apiKey
+      // Local backends (Ollama, LM Studio) don't require a key, but the OpenAI
+      // SDK rejects a missing/empty one at construction time.
+      apiKey: this.env.models.apiKey || 'not-needed'
     });
     this.nodeEventEmitter = nodeEvents;
   }
