@@ -18,14 +18,6 @@ export function NavChip() {
         Docs
       </a>
       <div className="chip-divider" />
-      <a
-        href="https://app.tinyman.org/analytics/assets/detail/3303055052"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="chip-item"
-      >
-        Get DSCO
-      </a>
     </div>
   );
 }
