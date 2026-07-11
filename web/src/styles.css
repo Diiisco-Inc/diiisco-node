@@ -1,31 +1,27 @@
+/* Styling follows diiisco.com: League Spartan display font, white background,
+   monochrome palette (shadcn-style neutral scale). The font is bundled locally
+   because the node's CSP blocks external origins. */
+
+@font-face {
+  font-family: 'League Spartan';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./assets/league-spartan-700.woff2') format('woff2');
+}
+
 :root {
-  --bg: #f7f7f8;
-  --surface: #ffffff;
-  --text: #1a1a1e;
-  --muted: #6b7280;
-  --border: #e5e7eb;
-  --accent: #4f46e5;
+  --background: #ffffff;
+  --foreground: #0a0a0a;
+  --muted: #737373;
+  --secondary: #f5f5f5;
+  --border: #e5e5e5;
   --ok: #16a34a;
-  --off: #9ca3af;
+  --off: #a3a3a3;
   --error: #dc2626;
   --notice-bg: #fef3c7;
   --notice-text: #92400e;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #101014;
-    --surface: #1a1a20;
-    --text: #ececf0;
-    --muted: #9ca3af;
-    --border: #2c2c34;
-    --accent: #818cf8;
-    --ok: #4ade80;
-    --off: #6b7280;
-    --error: #f87171;
-    --notice-bg: #3a2e10;
-    --notice-text: #fcd34d;
-  }
+  --radius: 0.5rem;
 }
 
 * {
@@ -34,10 +30,19 @@
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+  font-family: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  background: var(--background);
+  color: var(--foreground);
   line-height: 1.55;
+}
+
+h1,
+h2,
+h3,
+.brand {
+  font-family: 'League Spartan', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 #root {
@@ -47,8 +52,9 @@ body {
 }
 
 a {
-  color: var(--accent);
+  color: var(--foreground);
   text-decoration: none;
+  font-weight: 500;
 }
 
 a:hover {
@@ -57,18 +63,24 @@ a:hover {
 
 .site-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  padding: 1.25rem 0;
+  padding: 1.5rem 0;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 1.5rem;
+  margin-bottom: 2rem;
 }
 
-.brand {
-  font-size: 1.35rem;
+.brand-logo {
+  height: 34px;
+  display: block;
+}
+
+.site-header nav a {
+  font-family: 'League Spartan', sans-serif;
   font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--text);
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .site-footer {
@@ -83,9 +95,9 @@ a:hover {
 }
 
 .card {
-  background: var(--surface);
+  background: var(--background);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   padding: 1.25rem 1.5rem;
 }
 
@@ -99,7 +111,7 @@ a:hover {
 
 .card-header h2 {
   margin: 0;
-  font-size: 1.15rem;
+  font-size: 1.3rem;
   overflow-wrap: anywhere;
 }
 
@@ -114,8 +126,9 @@ a:hover {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  padding: 0.15rem 0.55rem;
+  padding: 0.2rem 0.6rem;
   border-radius: 999px;
+  background: var(--secondary);
   border: 1px solid var(--border);
   color: var(--muted);
 }
@@ -123,16 +136,17 @@ a:hover {
 .badge-ok {
   color: var(--ok);
   border-color: var(--ok);
+  background: var(--background);
 }
 
 .badge-off {
   color: var(--off);
-  border-color: var(--off);
 }
 
 .badge-nfd {
-  color: var(--accent);
-  border-color: var(--accent);
+  color: var(--foreground);
+  border-color: var(--foreground);
+  background: var(--background);
   text-transform: none;
 }
 
@@ -154,7 +168,7 @@ a:hover {
 }
 
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
   font-size: 0.85em;
 }
 
@@ -169,13 +183,13 @@ a:hover {
 .notice {
   background: var(--notice-bg);
   color: var(--notice-text);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 0.6rem 1rem;
 }
 
 .stats h3 {
-  margin: 1.25rem 0 0.5rem;
-  font-size: 0.95rem;
+  margin: 1.5rem 0 0.6rem;
+  font-size: 1rem;
 }
 
 .stat-grid {
@@ -187,15 +201,16 @@ a:hover {
 .stat {
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: var(--secondary);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 0.6rem 0.8rem;
 }
 
 .stat-value {
-  font-size: 1.15rem;
-  font-weight: 600;
+  font-family: 'League Spartan', sans-serif;
+  font-weight: 700;
+  font-size: 1.2rem;
 }
 
 .stat-label {
@@ -206,9 +221,9 @@ a:hover {
 table {
   width: 100%;
   border-collapse: collapse;
-  background: var(--surface);
+  background: var(--background);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   overflow: hidden;
 }
 
@@ -226,6 +241,7 @@ th {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  background: var(--secondary);
 }
 
 tr:last-child td {

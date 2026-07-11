@@ -15,5 +15,22 @@ export function formatLastSeen(ts: number): string {
   if (delta < 60_000) return 'just now';
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
-  return new Date(ts).toLocaleString();
+  return formatDate(ts);
+}
+
+const ordinal = (day: number): string => {
+  if (day >= 11 && day <= 13) return `${day}th`;
+  switch (day % 10) {
+    case 1: return `${day}st`;
+    case 2: return `${day}nd`;
+    case 3: return `${day}rd`;
+    default: return `${day}th`;
+  }
+};
+
+/** e.g. "11th July 2026" */
+export function formatDate(input: string | number | Date): string {
+  const d = new Date(input);
+  const month = d.toLocaleString('en-GB', { month: 'long' });
+  return `${ordinal(d.getDate())} ${month} ${d.getFullYear()}`;
 }

@@ -26,7 +26,7 @@ const getVersion = (): string | undefined => {
 
 /**
  * Build this node's own public profile. Identity fields are always included;
- * the stats block only when the operator has opted in via `node.publicStats`.
+ * the stats block too, unless the operator opts out with `node.publicStats: false`.
  * Shared by the status page routes (serving `/node.json`) and the
  * `node-profile` message handler (answering queries from relays).
  */
@@ -54,7 +54,7 @@ export const buildOwnProfile = (node: any, algo: algorand, availableModels: stri
     version: getVersion(),
   };
 
-  if (environment.node?.publicStats === true) {
+  if (environment.node?.publicStats !== false) {
     const rates = environment.models.chargePer1MTokens;
     profile.stats = {
       models: availableModels.map((id) => ({

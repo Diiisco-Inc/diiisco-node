@@ -83,7 +83,7 @@ export interface Environment {
     url?: string;
     port?: number;
     displayName?: string;
-    publicStats?: boolean;  // default false — opt in to publishing detailed stats on status pages
+    publicStats?: boolean;  // default true — set false to stop publishing detailed stats on status pages
     statusPages?: boolean;  // default true — set false to disable the public status page routes
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided

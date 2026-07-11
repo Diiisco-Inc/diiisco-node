@@ -2,6 +2,7 @@ import { RouterProvider, usePath, Link } from './router';
 import { Home } from './pages/Home';
 import { Directory } from './pages/Directory';
 import { Profile } from './pages/Profile';
+import logoUrl from './assets/diiisco-logo.png';
 
 function Routes() {
   const path = usePath();
@@ -20,7 +21,7 @@ export function App() {
     <RouterProvider>
       <header className="site-header">
         <Link to="/" className="brand">
-          DIIISCO
+          <img src={logoUrl} alt="DIIISCO" className="brand-logo" />
         </Link>
         <nav>
           <Link to="/nodes">Nodes</Link>

@@ -2,7 +2,8 @@
  * Public profile of a node, served unauthenticated on the status pages
  * (`/node.json`, `/nodes/{peerId}.json`) and exchanged over the mesh via the
  * `node-profile` message pair. Identity fields are always present; `stats` is
- * only included when the node has opted in via `node.publicStats`.
+ * included by default and omitted when the node opts out via
+ * `node.publicStats: false`.
  */
 export interface NodeProfileStats {
   models: { id: string; pricePer1MTokens?: number }[];
