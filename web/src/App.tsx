@@ -35,7 +35,7 @@ export function App() {
       </main>
       <footer className="site-footer">
         <span className="muted">
-          Powered by <a href="https://diiisco.com">DIIISCO</a> — peer-to-peer LLM inference
+          Powered by <a href="https://diiisco.com">DIIISCO</a>. Peer-to-peer LLM Inference made easy.
         </span>
       </footer>
     </RouterProvider>

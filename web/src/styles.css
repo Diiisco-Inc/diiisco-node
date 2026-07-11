@@ -1,7 +1,8 @@
-/* Styling follows diiisco.com: League Spartan display font (loaded from
-   Google Fonts in index.html), white background, monochrome palette
-   (shadcn-style neutral scale). The node's CSP allowlists the font and
-   asset.diiisco.com origins — see src/api/statusPages.ts. */
+/* Styling follows diiisco.com: white background, monochrome palette
+   (shadcn-style neutral scale). The brand font (League Spartan) appears only
+   inside the logo image; everything else uses the system sans stack. The
+   node's CSP allowlists asset.diiisco.com for the logo — see
+   src/api/statusPages.ts. */
 
 :root {
   --background: #ffffff;
@@ -31,9 +32,7 @@ body {
 
 h1,
 h2,
-h3,
-.brand {
-  font-family: 'League Spartan', sans-serif;
+h3 {
   font-weight: 700;
   letter-spacing: -0.01em;
 }
@@ -69,8 +68,7 @@ a:hover {
 }
 
 .site-header nav a {
-  font-family: 'League Spartan', sans-serif;
-  font-weight: 700;
+  font-weight: 600;
   font-size: 0.95rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -81,6 +79,7 @@ a:hover {
   padding-top: 1rem;
   border-top: 1px solid var(--border);
   font-size: 0.85rem;
+  text-align: center;
 }
 
 .intro {
@@ -201,7 +200,6 @@ a:hover {
 }
 
 .stat-value {
-  font-family: 'League Spartan', sans-serif;
   font-weight: 700;
   font-size: 1.2rem;
 }
