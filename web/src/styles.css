@@ -261,3 +261,57 @@ tr:last-child td {
 .dot-off {
   background: var(--off);
 }
+
+/* Wide content scrolls inside its own container rather than the page. */
+.table-wrap {
+  overflow-x: auto;
+}
+
+/* On narrow screens the directory table becomes a stack of cards, one per
+   node, with each cell labelled via its data-label attribute. */
+@media (max-width: 640px) {
+  .node-table {
+    border: none;
+    background: none;
+  }
+
+  .node-table,
+  .node-table tbody,
+  .node-table tr,
+  .node-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .node-table thead {
+    display: none;
+  }
+
+  .node-table tr {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.9rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .node-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    border-bottom: none;
+    padding: 0.25rem 0;
+    overflow-wrap: anywhere;
+  }
+
+  .node-table td::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+}

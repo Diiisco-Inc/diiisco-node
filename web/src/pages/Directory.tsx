@@ -31,37 +31,43 @@ export function Directory() {
         <p className="muted">This node hasn't seen any other nodes yet.</p>
       ) : null}
       {entries !== null && entries.length > 0 ? (
-        <table>
-          <thead>
-            <tr>
-              <th>Node</th>
-              <th>Peer ID</th>
-              <th>Status</th>
-              <th>Role</th>
-              <th>Last seen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => (
-              <tr key={e.peerId}>
-                <td>
-                  <Link to={`/nodes/${encodeURIComponent(e.peerId)}`}>
-                    {e.displayName || shortPeerId(e.peerId)}
-                  </Link>
-                  {e.host ? <span className="badge badge-host">Host</span> : null}
-                  {e.nfd ? <span className="muted"> {e.nfd}</span> : null}
-                </td>
-                <td className="mono">{shortPeerId(e.peerId)}</td>
-                <td>
-                  <span className={`dot ${e.connected ? 'dot-ok' : 'dot-off'}`} />
-                  {e.connected ? 'connected' : 'seen'}
-                </td>
-                <td>{e.role ?? '—'}</td>
-                <td>{formatLastSeen(e.lastSeen)}</td>
+        <div className="table-wrap">
+          <table className="node-table">
+            <thead>
+              <tr>
+                <th>Node</th>
+                <th>Peer ID</th>
+                <th>Status</th>
+                <th>Role</th>
+                <th>Last seen</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {entries.map((e) => (
+                <tr key={e.peerId}>
+                  <td data-label="Node">
+                    <span>
+                      <Link to={`/nodes/${encodeURIComponent(e.peerId)}`}>
+                        {e.displayName || shortPeerId(e.peerId)}
+                      </Link>
+                      {e.host ? <span className="badge badge-host">Host</span> : null}
+                      {e.nfd ? <span className="muted"> {e.nfd}</span> : null}
+                    </span>
+                  </td>
+                  <td data-label="Peer ID" className="mono">{shortPeerId(e.peerId)}</td>
+                  <td data-label="Status">
+                    <span>
+                      <span className={`dot ${e.connected ? 'dot-ok' : 'dot-off'}`} />
+                      {e.connected ? 'connected' : 'seen'}
+                    </span>
+                  </td>
+                  <td data-label="Role">{e.role ?? '—'}</td>
+                  <td data-label="Last seen">{formatLastSeen(e.lastSeen)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       ) : null}
     </>
   );

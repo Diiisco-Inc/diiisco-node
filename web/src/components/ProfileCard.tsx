@@ -70,22 +70,24 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
           {profile.stats.models.length === 0 ? (
             <p className="muted">No models offered.</p>
           ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Model</th>
-                  <th>Price / 1M tokens</th>
-                </tr>
-              </thead>
-              <tbody>
-                {profile.stats.models.map((m) => (
-                  <tr key={m.id}>
-                    <td className="mono">{m.id}</td>
-                    <td>{m.pricePer1MTokens != null ? `$${m.pricePer1MTokens}` : '—'}</td>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>Price / 1M tokens</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {profile.stats.models.map((m) => (
+                    <tr key={m.id}>
+                      <td className="mono">{m.id}</td>
+                      <td>{m.pricePer1MTokens != null ? `$${m.pricePer1MTokens}` : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       ) : (
