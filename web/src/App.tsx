@@ -2,7 +2,10 @@ import { RouterProvider, usePath, Link } from './router';
 import { Home } from './pages/Home';
 import { Directory } from './pages/Directory';
 import { Profile } from './pages/Profile';
-import logoUrl from './assets/diiisco-logo.png';
+
+// Served from the DIIISCO asset host (allowed in the node's CSP) so branding
+// is controlled centrally rather than shipped with every node build.
+const LOGO_URL = 'https://asset.diiisco.com/diiisco-logo.png';
 
 function Routes() {
   const path = usePath();
@@ -21,7 +24,7 @@ export function App() {
     <RouterProvider>
       <header className="site-header">
         <Link to="/" className="brand">
-          <img src={logoUrl} alt="DIIISCO" className="brand-logo" />
+          <img src={LOGO_URL} alt="DIIISCO" className="brand-logo" />
         </Link>
         <nav>
           <Link to="/nodes">Nodes</Link>

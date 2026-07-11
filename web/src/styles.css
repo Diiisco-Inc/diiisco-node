@@ -1,14 +1,7 @@
-/* Styling follows diiisco.com: League Spartan display font, white background,
-   monochrome palette (shadcn-style neutral scale). The font is bundled locally
-   because the node's CSP blocks external origins. */
-
-@font-face {
-  font-family: 'League Spartan';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('./assets/league-spartan-700.woff2') format('woff2');
-}
+/* Styling follows diiisco.com: League Spartan display font (loaded from
+   Google Fonts in index.html), white background, monochrome palette
+   (shadcn-style neutral scale). The node's CSP allowlists the font and
+   asset.diiisco.com origins — see src/api/statusPages.ts. */
 
 :root {
   --background: #ffffff;

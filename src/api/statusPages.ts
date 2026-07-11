@@ -229,7 +229,16 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     app.use(express.static(webDist, { index: false, maxAge: '1y', immutable: true }));
   }
 
-  const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'";
+  // Scripts stay locked to 'self' (the XSS backstop); brand assets load from
+  // the DIIISCO asset host and Google Fonts, so those origins are allowlisted.
+  const CSP = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src https://fonts.gstatic.com",
+    "img-src 'self' data: https://asset.diiisco.com",
+    "connect-src 'self'",
+  ].join('; ');
 
   const sendShell = (res: Response) => {
     res.setHeader('Content-Security-Policy', CSP);
