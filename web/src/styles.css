@@ -58,7 +58,6 @@ a:hover {
   align-items: center;
   justify-content: space-between;
   padding: 1.5rem 0;
-  border-bottom: 1px solid var(--border);
   margin-bottom: 2rem;
 }
 
@@ -67,13 +66,10 @@ a:hover {
   display: block;
 }
 
-/* Top-right nav chip, mirroring diiisco.com's SocialLinksChip styling
-   (bg-background/80 + blur, border, rounded-full, shadow, divided segments). */
+/* Nav chip in the header, mirroring diiisco.com's SocialLinksChip styling
+   (bg-background/80 + blur, border, rounded-full, shadow, divided segments)
+   but sitting in the page flow rather than fixed to the viewport. */
 .chip {
-  position: fixed;
-  top: 1rem;
-  right: 1rem;
-  z-index: 50;
   display: flex;
   align-items: center;
   background: rgba(255, 255, 255, 0.8);
@@ -109,7 +105,6 @@ a:hover {
 .site-footer {
   margin-top: 3rem;
   padding-top: 1rem;
-  border-top: 1px solid var(--border);
   font-size: 0.85rem;
   text-align: center;
 }

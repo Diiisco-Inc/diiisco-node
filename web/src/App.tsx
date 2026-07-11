@@ -27,8 +27,8 @@ export function App() {
         <Link to="/" className="brand">
           <img src={LOGO_URL} alt="DIIISCO" className="brand-logo" />
         </Link>
+        <NavChip />
       </header>
-      <NavChip />
       <main>
         <Routes />
       </main>
