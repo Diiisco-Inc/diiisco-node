@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import type { NodeProfile } from '../types';
-import { formatDate, formatUptime, shortPeerId } from '../format';
+import { formatDateTime, formatUptime, shortPeerId } from '../format';
 
 function Badge({ kind, children }: { kind: string; children: ReactNode }) {
   return <span className={`badge badge-${kind}`}>{children}</span>;
@@ -37,7 +37,7 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
           </>
         ) : null}
         <dt>{profile.online ? 'Observed' : 'Last seen'}</dt>
-        <dd>{formatDate(profile.observedAt)}</dd>
+        <dd>{formatDateTime(profile.observedAt)}</dd>
       </dl>
 
       {profile.stats ? (

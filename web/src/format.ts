@@ -34,3 +34,10 @@ export function formatDate(input: string | number | Date): string {
   const month = d.toLocaleString('en-GB', { month: 'long' });
   return `${ordinal(d.getDate())} ${month} ${d.getFullYear()}`;
 }
+
+/** e.g. "11th July 2026, 14:32:05" */
+export function formatDateTime(input: string | number | Date): string {
+  const d = new Date(input);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${formatDate(d)}, ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
