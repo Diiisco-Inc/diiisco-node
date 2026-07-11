@@ -40,6 +40,20 @@ export const lookupBootstrapServers = async (): Promise<string[]> => {
   return parsedBootstrapServers;
 };
 
+/**
+ * The announced public URL of this node, or null when it has none (localhost
+ * and 127.0.0.1 don't count). A node with a public URL runs the circuit-relay
+ * server and is a "relay" on the status pages; without one it connects out
+ * through relays.
+ */
+export const getPublicUrl = (): string | null => {
+  return environment.node?.url && !environment.node.url.includes('localhost') && environment.node.url !== '127.0.0.1'
+    ? environment.node.url
+    : null;
+};
+
+export const isPublicNode = (): boolean => getPublicUrl() !== null;
+
 export const createLibp2pNode = async () => {
   // Load or Create a Peer ID
   const peer = await PeerIdManager.loadOrCreate('diiisco-peer-id.protobuf');
@@ -59,9 +73,7 @@ export const createLibp2pNode = async () => {
 
   //Detect if Public Node
   const port = environment.node?.port || 4242;
-  const publicUrl = environment.node?.url && !environment.node.url.includes('localhost') && environment.node.url !== '127.0.0.1'
-  ? environment.node.url
-  : null;
+  const publicUrl = getPublicUrl();
   const isPublicNode = publicUrl !== null;
 
   // For private nodes, listen on an explicit circuit address per bootstrap

@@ -30,6 +30,8 @@ export class MessageRouter {
       'contract-created',
       'contract-signed',
       'inference-response',
+      'node-profile',
+      'node-profile-response',
     ];
 
     return directMessageTypes.includes(message.role);

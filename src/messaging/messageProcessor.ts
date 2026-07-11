@@ -16,7 +16,11 @@ import {
   ListNetworkRequest,
   ListNetworkResponse,
   NetworkNode,
+  NodeProfileRequest,
+  NodeProfileResponse,
 } from "../types/messages";
+import { buildOwnProfile } from "../utils/nodeProfile";
+import { nodeStats } from "../utils/nodeStats";
 import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
 import diiiscoContract from "../utils/contract";
@@ -111,6 +115,12 @@ export class MessageProcessor {
           break;
         case 'list-network-response':
           await this.handleListNetworkResponse(msg as ListNetworkResponse, sourcePeerId);
+          break;
+        case 'node-profile':
+          await this.handleNodeProfile(msg as NodeProfileRequest, sourcePeerId);
+          break;
+        case 'node-profile-response':
+          await this.handleNodeProfileResponse(msg as NodeProfileResponse, sourcePeerId);
           break;
         case 'quote-request':
           await this.handleQuoteRequest(msg as QuoteRequest, sourcePeerId);
@@ -221,6 +231,52 @@ export class MessageProcessor {
       if (isValid) verifiedNfd = node.nfd;
     }
     this.nodeEvents.emit('network-node-received', { ...node, nfd: verifiedNfd });
+  }
+
+  private async handleNodeProfile(msg: NodeProfileRequest, sourcePeerId: string) {
+    // A node that disabled its status pages also doesn't answer profile queries.
+    if (this.env.node?.statusPages === false) {
+      return;
+    }
+
+    const response: NodeProfileResponse = {
+      role: 'node-profile-response',
+      timestamp: Date.now(),
+      id: msg.id,
+      to: sourcePeerId,
+      fromWalletAddr: this.algo.account.addr.toString(),
+      payload: {
+        profile: buildOwnProfile(this.node, this.algo, this.availableModels),
+      }
+    };
+    response.signature = await this.algo.signObject(response);
+    await this.messageRouter.sendMessage(response, sourcePeerId);
+    logger.info(`📤 Sent node-profile-response to ${sourcePeerId}`);
+  }
+
+  private async handleNodeProfileResponse(msg: NodeProfileResponse, sourcePeerId: string) {
+    const profile = msg.payload?.profile;
+    if (!profile || typeof profile.peerId !== 'string') {
+      return;
+    }
+
+    // A profile is self-reported — only accept it from the peer it claims to
+    // describe, so a node can't impersonate another's profile.
+    if (profile.peerId !== sourcePeerId) {
+      logger.warn(`❌ Dropping node-profile-response: profile claims ${profile.peerId.slice(0, 16)}... but came from ${sourcePeerId.slice(0, 16)}...`);
+      return;
+    }
+
+    let nfdVerified = false;
+    if (profile.nfd && profile.walletAddr) {
+      nfdVerified = await verifyNFD(profile.peerId, profile.walletAddr, profile.nfd).catch(() => false);
+    }
+
+    this.nodeEvents.emit(`node-profile-received-${msg.id}`, {
+      ...profile,
+      nfd: nfdVerified ? profile.nfd : undefined,
+      nfdVerified: nfdVerified || undefined,
+    });
   }
 
   private async handleQuoteRequest(msg: QuoteRequest, sourcePeerId: string) {
@@ -346,6 +402,7 @@ export class MessageProcessor {
   private async executeInference(msg: { id: string; payload: any }, sourcePeerId: string) {
     const completion = await this.speculativeCache.resolve(msg.id)
       ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload));
+    nodeStats.inferencesServed++;
     let response: InferenceResponse = {
       role: 'inference-response',
       to: sourcePeerId,
