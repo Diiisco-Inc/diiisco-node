@@ -67,11 +67,43 @@ a:hover {
   display: block;
 }
 
-.site-header nav a {
-  font-weight: 600;
-  font-size: 0.95rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+/* Top-right nav chip, mirroring diiisco.com's SocialLinksChip styling
+   (bg-background/80 + blur, border, rounded-full, shadow, divided segments). */
+.chip {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  overflow: hidden;
+}
+
+.chip-item {
+  display: flex;
+  align-items: center;
+  padding: 0.65rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 0.15s ease-out;
+}
+
+.chip-item:hover {
+  background: var(--secondary);
+  text-decoration: none;
+}
+
+.chip-divider {
+  height: 2rem;
+  width: 1px;
+  background: var(--border);
 }
 
 .site-footer {

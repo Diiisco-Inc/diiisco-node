@@ -2,6 +2,7 @@ import { RouterProvider, usePath, Link } from './router';
 import { Home } from './pages/Home';
 import { Directory } from './pages/Directory';
 import { Profile } from './pages/Profile';
+import { NavChip } from './components/NavChip';
 
 // Served from the DIIISCO asset host (allowed in the node's CSP) so branding
 // is controlled centrally rather than shipped with every node build.
@@ -26,10 +27,8 @@ export function App() {
         <Link to="/" className="brand">
           <img src={LOGO_URL} alt="DIIISCO" className="brand-logo" />
         </Link>
-        <nav>
-          <Link to="/nodes">Nodes</Link>
-        </nav>
       </header>
+      <NavChip />
       <main>
         <Routes />
       </main>
