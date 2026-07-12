@@ -42,6 +42,11 @@ class Application extends EventEmitter {
   private knownPeers: Map<string, { lastSeen: number; multiaddrs: string[] }> = new Map();
   private reconnectAttempts: Map<string, { count: number; lastAttempt: number }> = new Map();
   private bootstrapAddresses: string[] = [];
+
+  // Bootstrap relay peerId → hostname, so we can print this node's public
+  // status page URL when the relay connection comes up (once per relay).
+  private bootstrapHosts: Map<string, string> = new Map();
+  private statusPageUrlLogged: Set<string> = new Set();
   
   // Configuration
   private readonly MAX_RECONNECT_ATTEMPTS = 5;
@@ -83,6 +88,14 @@ class Application extends EventEmitter {
     // Load bootstrap server addresses for reconnection
     this.bootstrapAddresses = await lookupBootstrapServers();
     logger.info(`🌐 Loaded ${this.bootstrapAddresses.length} bootstrap server(s)`);
+
+    // Index relay hosts by peer id (e.g. /dns4/lon.diiisco.com/tcp/4242/p2p/<id>)
+    // so peer:connect can announce where this node's status page is served.
+    const bootstrapAddrPattern = /^\/(?:dns4|dns6|dnsaddr|dns|ip4|ip6)\/([^/]+)\/.*\/p2p\/([^/]+)/;
+    for (const addr of this.bootstrapAddresses) {
+      const match = addr.match(bootstrapAddrPattern);
+      if (match) this.bootstrapHosts.set(match[2], match[1]);
+    }
     
     // Create and Start the Libp2p Node
     this.node = await createLibp2pNode();
@@ -195,6 +208,8 @@ class Application extends EventEmitter {
     this.node.addEventListener('peer:connect', (evt: any) => {
       const peerId = evt.detail.toString();
       logger.info(`💚 Connected to peer: ${peerId}`);
+
+      this.announceRelayStatusPage(peerId);
       
       // Reset reconnect attempts on successful connection
       this.reconnectAttempts.delete(peerId);
@@ -221,6 +236,13 @@ class Application extends EventEmitter {
       await scheduleReconnect(peerId, this.createReconnectionDependencies());
     });
 
+    // The bootstrap relay connection is usually established during libp2p
+    // startup, before the peer:connect listener above exists — announce any
+    // relay we're already connected to.
+    this.node.getConnections().forEach((conn: any) =>
+      this.announceRelayStatusPage(conn.remotePeer.toString())
+    );
+
     // Start periodic connection health check
     startConnectionHealthCheck(this.createReconnectionDependencies());
 
@@ -233,6 +255,21 @@ class Application extends EventEmitter {
     if (process.send) {
       process.send('ready');
     }
+  }
+
+  /**
+   * When connected to a bootstrap relay, tell the operator where their node's
+   * public status page can be viewed (once per relay). Relays serve the pages
+   * behind TLS on their domain (see .claude/docs/node-status-pages.md §8);
+   * bare IPs (local/test setups) get plain http.
+   */
+  private announceRelayStatusPage(peerId: string) {
+    const relayHost = this.bootstrapHosts.get(peerId);
+    if (!relayHost || this.statusPageUrlLogged.has(peerId)) return;
+    this.statusPageUrlLogged.add(peerId);
+    const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(relayHost) || relayHost.includes(':');
+    const url = `${isIp ? 'http' : 'https'}://${relayHost}/nodes/${this.node.peerId.toString()}`;
+    logger.info(`🌐 Connected to bootstrap relay ${relayHost} — view this node at ${url}`);
   }
 
   /**

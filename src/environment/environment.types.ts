@@ -37,6 +37,8 @@ export interface ApiConfig {
   keys: string[];
   port: number;
   networkWaitTime?: number;
+  profileWaitTime?: number;  // ms to wait for a remote node-profile response (default 3000)
+  profileCacheTtl?: number;  // ms to cache fetched profiles (default 45000)
 }
 
 
@@ -81,6 +83,8 @@ export interface Environment {
     url?: string;
     port?: number;
     displayName?: string;
+    publicStats?: boolean;  // default true — set false to stop publishing detailed stats on status pages
+    statusPages?: boolean;  // default true — set false to disable the public status page routes
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
 }

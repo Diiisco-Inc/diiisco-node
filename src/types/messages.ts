@@ -1,4 +1,5 @@
 import { Model } from "openai/resources/models";
+import { NodeProfile } from "./profile";
 
 export interface QuoteRequestPayload {
   model: string;
@@ -133,6 +134,30 @@ export interface ListNetworkResponse {
   signature?: string;
 }
 
+export interface NodeProfileRequest {
+  role: "node-profile";
+  to: string;
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  payload: {
+    peerId: string;
+  };
+  signature?: string;
+}
+
+export interface NodeProfileResponse {
+  role: "node-profile-response";
+  to: string;
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  payload: {
+    profile: NodeProfile;
+  };
+  signature?: string;
+}
+
 export type PubSubMessage = (
   | QuoteRequest
   | QuoteResponse
@@ -144,6 +169,8 @@ export type PubSubMessage = (
   | ListModelsResponse
   | ListNetworkRequest
   | ListNetworkResponse
+  | NodeProfileRequest
+  | NodeProfileResponse
 ) & {
   /**
    * Sender's current libp2p multiaddrs (including relay-circuit addresses),

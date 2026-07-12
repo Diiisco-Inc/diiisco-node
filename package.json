@@ -13,7 +13,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsup src/index.ts --format=esm --dts --out-dir=dist",
-    "serve": "npm run build && node dist/index.js",
+    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "serve": "npm run build:web && npm run build && node dist/index.js",
     "node:start": "npm run build && pm2 start pm2.config.cjs",
     "node:stop": "pm2 stop diiisco-node",
     "node:restart": "npm run build && pm2 restart diiisco-node",
