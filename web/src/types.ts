@@ -24,6 +24,14 @@ export interface NodeProfile {
   stats?: NodeProfileStats;
 }
 
+export interface ModelStats {
+  model: string;
+  nodes: number;
+  minPrice: number | null;
+  maxPrice: number | null;
+  meanPrice: number | null;
+}
+
 export interface DirectoryEntry {
   peerId: string;
   displayName?: string;

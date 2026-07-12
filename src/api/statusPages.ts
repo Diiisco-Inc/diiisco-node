@@ -10,7 +10,7 @@ import environment from '../environment/environment';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
 import { buildOwnProfile } from '../utils/nodeProfile';
-import { NodeProfile, DirectoryEntry } from '../types/profile';
+import { NodeProfile, DirectoryEntry, ModelStats } from '../types/profile';
 import { NodeProfileRequest, NetworkNode } from '../types/messages';
 import { logger } from '../utils/logger';
 
@@ -208,6 +208,47 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     return sorted;
   };
 
+  /**
+   * Aggregate model pricing across the host and every currently connected
+   * peer. Profiles come through getProfile, so the per-peer cache and
+   * single-flight de-dup bound the mesh traffic; peers that don't publish
+   * stats (or are unreachable) simply contribute nothing.
+   */
+  const getModelStats = async (): Promise<ModelStats[]> => {
+    const peerIds = new Set<string>(
+      node.getConnections().map((c: any) => c.remotePeer.toString())
+    );
+    peerIds.delete(ownPeerId);
+
+    const remote = await Promise.all(
+      [...peerIds].map((peerId) => getProfile(peerId).catch(() => null))
+    );
+    const profiles: NodeProfile[] = [
+      buildOwnProfile(node, algo, availableModels),
+      ...remote.filter((p): p is NodeProfile => p !== null),
+    ];
+
+    const byModel = new Map<string, { nodes: number; prices: number[] }>();
+    for (const profile of profiles) {
+      for (const m of profile.stats?.models ?? []) {
+        const entry = byModel.get(m.id) ?? { nodes: 0, prices: [] };
+        entry.nodes += 1;
+        if (typeof m.pricePer1MTokens === 'number') entry.prices.push(m.pricePer1MTokens);
+        byModel.set(m.id, entry);
+      }
+    }
+
+    return [...byModel.entries()]
+      .map(([model, { nodes, prices }]) => ({
+        model,
+        nodes,
+        minPrice: prices.length ? Math.min(...prices) : null,
+        maxPrice: prices.length ? Math.max(...prices) : null,
+        meanPrice: prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null,
+      }))
+      .sort((a, b) => b.nodes - a.nodes || a.model.localeCompare(b.model));
+  };
+
   // ---- Rate limiting ---------------------------------------------------------
   // Simple per-IP token bucket on the proxy-lookup route so an HTTP crawler
   // can't turn this node into a mesh-query amplifier.
@@ -281,6 +322,17 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
 
   app.get('/nodes.json', (_req, res) => {
     sendJson(res, { object: 'list', data: getDirectory() });
+  });
+
+  // Rate-limited because a cold call fans node-profile queries out to every
+  // connected peer (bounded by the per-peer profile cache once warm).
+  app.get('/models.json', rateLimit, async (_req, res) => {
+    try {
+      sendJson(res, { object: 'list', data: await getModelStats() });
+    } catch (err: any) {
+      logger.error(`Error aggregating model stats: ${err.message}`);
+      res.status(500).json({ error: 'Error aggregating model stats' });
+    }
   });
 
   app.get('/nodes', (req, res) => {

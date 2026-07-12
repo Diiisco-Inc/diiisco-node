@@ -29,6 +29,19 @@ export interface NodeProfile {
 }
 
 /**
+ * Aggregate pricing for one model across the host and its connected nodes,
+ * served at `/models.json`. Price fields are null when no serving node
+ * publishes a price.
+ */
+export interface ModelStats {
+  model: string;
+  nodes: number;
+  minPrice: number | null;
+  maxPrice: number | null;
+  meanPrice: number | null;
+}
+
+/**
  * A row in the `/nodes` directory. Identity-only regardless of the remote
  * node's `publicStats` setting — stats appear only on the individual profile
  * page after a live `node-profile` query.

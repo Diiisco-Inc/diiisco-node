@@ -1,4 +1,4 @@
-import type { NodeProfile, DirectoryEntry } from './types';
+import type { NodeProfile, DirectoryEntry, ModelStats } from './types';
 
 export class NotFoundError extends Error {}
 
@@ -18,3 +18,8 @@ export const getDirectory = async (): Promise<DirectoryEntry[]> => {
 
 export const getNodeProfile = (peerId: string) =>
   getJson<NodeProfile>(`/nodes/${encodeURIComponent(peerId)}.json`);
+
+export const getModelStats = async (): Promise<ModelStats[]> => {
+  const body = await getJson<{ object: string; data: ModelStats[] }>('/models.json');
+  return body.data;
+};
