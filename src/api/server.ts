@@ -23,6 +23,8 @@ import {
   AnthropicMessagesRequest,
 } from './anthropicAdapter';
 import { getMeshTopic } from '../utils/topic';
+import { registerStatusPages } from './statusPages';
+import { nodeStats } from '../utils/nodeStats';
 
 export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, availableModels?: string[]) => {
   const app = express();
@@ -35,6 +37,11 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     app.use("/peers", requireBearer);
     app.use("/network", requireBearer);
     app.use("/health/algorand", requireBearer);
+  }
+
+  // Public status pages (unauthenticated by design — see src/api/statusPages.ts)
+  if (environment.node?.statusPages !== false) {
+    registerStatusPages({ app, node, nodeEvents, algo, messageRouter, availableModels: availableModels ?? [] });
   }
 
   app.get('/health', (req, res) => {
@@ -148,6 +155,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
    */
   const runInference = async (body: any): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
     const params = pickGenerationParams(body);
+    nodeStats.inferencesRequested++;
 
     const preferSelf = environment.quoteEngine.preferSelf !== false;
     if (preferSelf && model && availableModels?.includes(body.model)) {
