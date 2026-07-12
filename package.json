@@ -1,6 +1,6 @@
 {
   "name": "diiisco-node",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Run a Diiisco Node in Node.JS!",
   "main": "dist/index.js",
   "type": "module",
