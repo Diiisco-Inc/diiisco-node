@@ -26,9 +26,7 @@ export function Home() {
     <>
       <section className="intro">
         <p>
-          This is a <strong>DIIISCO</strong> node — part of a peer-to-peer LLM inference marketplace.
-          Nodes broadcast inference requests as quote auctions over libp2p, settle on Algorand, and
-          expose an OpenAI-compatible API.
+          Welcome to <strong>DIIISCO</strong>, a community-powered platform where independent nodes collaborate to bring AI inference to everyone. We believe in decentralized intelligence connecting peers across the world to democratize access to powerful language models, fairly compensating contributors, and building the future of AI together.
         </p>
         <p>
           <Link to="/nodes">Browse known nodes →</Link>
