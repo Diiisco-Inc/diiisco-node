@@ -1,37 +1,12 @@
-import { sha256 } from 'js-sha256';
 import environment from '../environment/environment';
 import algosdk from 'algosdk';
 import { logger } from './logger';
 import { Environment } from '../environment/environment.types';
 import { NfdClient } from '@txnlab/nfd-sdk';
-import { verify } from 'crypto';
 import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
 import { getLocalMultiaddrs } from '../libp2p/localAddresses';
 import { diiiscoAssets } from './diiiscoAssets';
-
-/**
- * Recursively sorts object keys and stringifies to ensure a canonical representation.
- * This is crucial for consistent signing and verification of objects.
- * @param obj The object to stringify.
- * @returns A canonical JSON string representation of the object.
- */
-function canonicalStringify(obj: any): string {
-  if (obj === null || typeof obj !== 'object') {
-    return JSON.stringify(obj);
-  }
-
-  if (Array.isArray(obj)) {
-    return '[' + obj.map(item => canonicalStringify(item)).join(',') + ']';
-  }
-
-  const sortedKeys = Object.keys(obj).sort();
-  const parts: string[] = [];
-  for (const key of sortedKeys) {
-    parts.push(JSON.stringify(key) + ':' + canonicalStringify(obj[key]));
-  }
-  return '{' + parts.join(',') + '}';
-}
 
 function makeSigner(acct: algosdk.Account): algosdk.TransactionSigner {
   return algosdk.makeBasicAccountTransactionSigner(acct);
@@ -207,53 +182,6 @@ export default class algorand {
     return transactionCompletion;
   }
 
-  /**
-   * Converts a decimal amount to Algorand's microAlgos (or other asset's base units)
-   * with proper handling for decimals and rounding.
-   * @param amount The decimal amount as a number or string.
-   * @param decimals The number of decimal places for the asset.
-   * @returns The amount in base units as a BigInt.
-   */
-  parseUnits(amount: number | string, decimals: number): bigint {
-    if (typeof amount === 'number') amount = String(amount); // avoid float ops where possible
-    amount = amount.trim();
-    if (!/^-?\d+(\.\d+)?$/.test(amount)) {
-      throw new Error('Invalid decimal amount format');
-    }
-
-    const negative = amount.startsWith('-');
-    if (negative) amount = amount.slice(1);
-
-    const [intPartRaw, fracPartRaw = ''] = amount.split('.');
-    let intPart = intPartRaw.replace(/^0+/, '') || '0';
-    let fracPart = fracPartRaw.replace(/[^0-9]/g, ''); // keep only digits
-
-    // If fractional digits <= decimals: pad right
-    if (fracPart.length <= decimals) {
-      const padded = fracPart + '0'.repeat(decimals - fracPart.length);
-      const whole = BigInt(intPart) * 10n ** BigInt(decimals) + BigInt(padded || '0');
-      return negative ? -whole : whole;
-    }
-
-    // If fractional digits > decimals: round half-up
-    const keep = fracPart.slice(0, decimals);            // digits to keep
-    const nextDigit = Number(fracPart[decimals]);       // digit after kept digits
-    let fracBig = BigInt(keep || '0');
-
-    if (nextDigit >= 5) {
-      fracBig = fracBig + 1n;
-      // handle carry if fracBig == 10^decimals
-      const maxFrac = 10n ** BigInt(decimals);
-      if (fracBig >= maxFrac) {
-        fracBig = 0n;
-        const whole = (BigInt(intPart) + 1n) * maxFrac + fracBig;
-        return negative ? -whole : whole;
-      }
-    }
-
-    const whole = BigInt(intPart) * 10n ** BigInt(decimals) + fracBig;
-    return negative ? -whole : whole;
-  }
   private async getSuggestedParams(): Promise<algosdk.SuggestedParams> {
     const now = Date.now();
     if (!this.suggestedParamsCache || now - this.suggestedParamsCache.fetchedAt > SUGGESTED_PARAMS_TTL_MS) {
