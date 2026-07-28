@@ -26,14 +26,16 @@ import { Environment } from "../environment/environment.types";
 import diiiscoAssets from "../utils/diiiscoAssets";
 import { verifyNFD } from '../utils/algorand';
 import { RawQuote } from "../types/quotes";
-import { Address } from "algosdk";
+import { priceFromUsage } from "../utils/quoteCreationMethods";
 import { MessageRouter } from './messageRouter';
 import { SpeculativeInferenceCache } from './speculativeInferenceCache';
 import { SettlementRegistry, SettlementProvider, SettlementMethod } from '../settlement/settlementProvider';
+import { X402Settlement } from '../settlement/x402Settlement';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 
-const QUOTE_TTL_MS = 120_000; // validity window advertised on quotes (x402 requires one)
+const QUOTE_TTL_MS = 120_000;      // validity window advertised on quotes (x402 requires one)
+const COMPLETION_TTL_MS = 120_000; // how long a withheld completion is held awaiting payment
 
 export class MessageProcessor {
   private algo: algorand;
@@ -47,6 +49,9 @@ export class MessageProcessor {
   private node: any;
   private speculativeCache: SpeculativeInferenceCache;
   private settlement: SettlementRegistry;
+  // Completions computed on quote-accepted and withheld until the requester's
+  // x402 payment verifies (see the choreography in handleQuoteAccepted).
+  private pendingCompletions: Map<string, { completion: any; timer: NodeJS.Timeout }> = new Map();
 
   constructor(
     algo: algorand,
@@ -70,9 +75,32 @@ export class MessageProcessor {
     this.speculativeCache = new SpeculativeInferenceCache(
       this.env.quoteEngine?.maxSpeculativeJobs ?? 2
     );
-    // Settlement seam. Escrow has been retired; x402 is registered here in M3.
-    // Until then the registry is empty and public-network quoting is disabled.
+    // Settlement seam. Escrow has been retired; x402 is the only method.
     this.settlement = new SettlementRegistry();
+    this.registerSettlementProviders();
+  }
+
+  /**
+   * Register the settlement providers this node offers. x402 needs an Algorand
+   * wallet and network, so it is skipped in local mode (payments bypassed) and
+   * when no `algorand` block is configured — such a node simply won't quote.
+   */
+  private registerSettlementProviders(): void {
+    if (this.env.local?.enabled || !this.env.algorand) return;
+    const settlementCfg = this.env.algorand.settlement;
+    const methods = settlementCfg?.methods ?? ['x402'];
+    if (methods.includes('x402')) {
+      this.settlement.register(new X402Settlement({
+        account: this.algo.account,
+        network: this.env.algorand.network ?? 'mainnet',
+        usdcAssetId: diiiscoAssets.usdc,
+        facilitatorUrl: settlementCfg?.x402?.facilitatorUrl ?? 'https://facilitator.goplausible.xyz/',
+        algodUrl: this.env.algorand.client.address,
+        algodToken: this.env.algorand.client.token,
+        quoteTtlSeconds: Math.round(QUOTE_TTL_MS / 1000),
+      }));
+      logger.info('⚙️ x402 settlement provider registered');
+    }
   }
 
   /**
@@ -378,25 +406,33 @@ export class MessageProcessor {
     this.quoteMgr.addQuote({ msg: msg, from: sourcePeerId });
   }
 
+  /**
+   * Provider side. Optimistic-inference-then-pay-to-unlock (x402):
+   * run inference now, withhold the result, and challenge the requester to pay
+   * the actual metered charge before the answer is released.
+   */
   private async handleQuoteAccepted(msg: QuoteAccepted, sourcePeerId: string) {
+    // Local mode / self-served quotes settle nothing — answer immediately.
     if (this.env.local?.enabled || sourcePeerId === this.ownPeerId) {
-      await this.executeInference(msg, sourcePeerId);
+      const completion = await this.runInference(msg);
+      await this.sendInferenceResponse(msg, sourcePeerId, completion);
       return;
     }
 
-    const optimistic = this.env.quoteEngine?.optimisticInference !== false;
-    if (optimistic) {
+    // Optimistic inference: start as soon as the quote is accepted.
+    if (this.env.quoteEngine?.optimisticInference !== false) {
       this.speculativeCache.start(msg.id, () =>
         this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload))
       );
     }
 
-    const createUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
-    await this.settlementFor(msg).createPaymentRequest({
-      quoteId: msg.id,
-      customerAddress: msg.fromWalletAddr,
-      amount: createUsdcAmount,
-    });
+    // Compute the answer, hold it, and bill the actual usage (capped at maxCharge).
+    const completion = await this.runInference(msg);
+    this.stashCompletion(msg.id, completion);
+
+    const charge = this.chargeForCompletion(msg.payload.quote, completion);
+    const amount = BigInt(Math.round(charge * 1_000_000));
+    const paymentRequirements = await this.settlementFor(msg).createPaymentRequest({ quoteId: msg.id, amount });
 
     let response: ContractCreated = {
       ...msg,
@@ -404,23 +440,33 @@ export class MessageProcessor {
       timestamp: Date.now(),
       to: sourcePeerId,
       fromWalletAddr: this.algo.account.addr.toString(),
+      payload: { ...msg.payload, paymentRequirements },
     };
     response.signature = await this.algo.signObject(response);
 
-    // Send via router (will use direct messaging for post-selection)
     await this.messageRouter.sendMessage(response, sourcePeerId);
-    logger.info(`📤 Sent contract-created to ${sourcePeerId}`);
+    logger.info(`📤 Sent contract-created (payment challenge) to ${sourcePeerId}`);
   }
 
+  /**
+   * Requester side. The answer is ready; pay to unlock it. Enforce the ceiling
+   * we were quoted before signing, then return proof-of-payment.
+   */
   private async handleContractCreated(msg: ContractCreated, sourcePeerId: string) {
-    if (!this.env.local?.enabled) {
-      const fundUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
-      await this.settlementFor(msg).pay({
-        quoteId: msg.id,
-        amount: fundUsdcAmount,
-        request: msg.payload,
-      });
+    const request = msg.payload?.paymentRequirements;
+    if (!request) {
+      logger.warn(`❌ contract-created for ${msg.id} carried no payment requirements.`);
+      return;
     }
+
+    const maxCharge = msg.payload?.quote?.maxCharge ?? msg.payload?.quote?.totalPrice;
+    const requestedAmount = BigInt(request.amount);
+    if (typeof maxCharge === 'number' && requestedAmount > BigInt(Math.round(maxCharge * 1_000_000))) {
+      logger.warn(`❌ Payment request for ${msg.id} (${requestedAmount}) exceeds quoted maxCharge; refusing.`);
+      return;
+    }
+
+    const paymentPayload = await this.settlementFor(msg).pay({ quoteId: msg.id, amount: requestedAmount, request });
 
     let response: ContractSigned = {
       ...msg,
@@ -428,32 +474,49 @@ export class MessageProcessor {
       timestamp: Date.now(),
       to: sourcePeerId,
       fromWalletAddr: this.algo.account.addr.toString(),
+      payload: { ...msg.payload, paymentPayload },
     };
     response.signature = await this.algo.signObject(response);
 
-    // Send via router (will use direct messaging for post-selection)
     await this.messageRouter.sendMessage(response, sourcePeerId);
-    logger.info(`📤 Sent contract-signed to ${sourcePeerId}`);
+    logger.info(`📤 Sent contract-signed (proof-of-payment) to ${sourcePeerId}`);
   }
 
+  /**
+   * Provider side. Verify the payment off-chain (facilitator verify); on success
+   * release the withheld answer and settle on-chain in the background.
+   */
   private async handleContractSigned(msg: ContractSigned, sourcePeerId: string) {
-    const expectedAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
-    const verified = await this.settlementFor(msg).verifyPayment({
+    const evidence = msg.payload?.paymentPayload;
+    const maxCharge = msg.payload?.quote?.maxCharge ?? msg.payload?.quote?.totalPrice ?? 0;
+    const settlement = this.settlementFor(msg);
+
+    const verified = await settlement.verifyPayment({
       quoteId: msg.id,
-      expectedAmount,
-      evidence: msg.payload,
+      expectedAmount: BigInt(Math.round(maxCharge * 1_000_000)),
+      evidence,
     });
     if (!verified.ok) {
-      logger.warn(`❌ Contract ${msg.id} is not funded. Cannot proceed with inference.`);
+      logger.warn(`❌ Payment for ${msg.id} did not verify (${verified.reason ?? 'unknown'}). Withholding result.`);
+      this.discardCompletion(msg.id);
       return;
     }
 
-    await this.executeInference(msg, sourcePeerId);
+    const completion = this.takeCompletion(msg.id) ?? await this.runInference(msg);
+    await this.sendInferenceResponse(msg, sourcePeerId, completion);
+
+    // Settlement (the on-chain txn) is off the critical path — the requester
+    // already has the answer. Retry with backoff on facilitator hiccups.
+    this.settleInBackground(settlement, msg.id, evidence);
   }
 
-  private async executeInference(msg: { id: string; payload: any }, sourcePeerId: string) {
-    const completion = await this.speculativeCache.resolve(msg.id)
+  /** Resolve a (possibly speculative) inference result for a quote. */
+  private async runInference(msg: { id: string; payload: any }): Promise<any> {
+    return (await this.speculativeCache.resolve(msg.id))
       ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload));
+  }
+
+  private async sendInferenceResponse(msg: { id: string; payload: any }, sourcePeerId: string, completion: any) {
     nodeStats.inferencesServed++;
     let response: InferenceResponse = {
       role: 'inference-response',
@@ -461,47 +524,68 @@ export class MessageProcessor {
       timestamp: Date.now(),
       id: msg.id,
       fromWalletAddr: this.algo.account.addr.toString(),
-      payload: {
-        ...msg.payload,
-        completion: completion,
-      }
+      payload: { ...msg.payload, completion },
     };
-
     response.signature = await this.algo.signObject(response);
     await this.messageRouter.sendMessage(response, sourcePeerId);
     logger.info(`📤 Sent inference-response to ${sourcePeerId}`);
   }
 
+  /** Actual charge = metered from real usage, capped at the quoted maxCharge. */
+  private chargeForCompletion(quote: any, completion: any): number {
+    const rates = {
+      input: quote?.pricePerInputToken1M ?? quote?.pricePer1M ?? 0,
+      output: quote?.pricePerOutputToken1M ?? quote?.pricePer1M ?? 0,
+    };
+    const maxCharge = quote?.maxCharge ?? quote?.totalPrice ?? 0;
+    return priceFromUsage(completion?.usage, rates, maxCharge);
+  }
+
+  private stashCompletion(id: string, completion: any): void {
+    this.discardCompletion(id);
+    const timer = setTimeout(() => this.pendingCompletions.delete(id), COMPLETION_TTL_MS);
+    timer.unref?.();
+    this.pendingCompletions.set(id, { completion, timer });
+  }
+
+  private takeCompletion(id: string): any | undefined {
+    const entry = this.pendingCompletions.get(id);
+    if (!entry) return undefined;
+    clearTimeout(entry.timer);
+    this.pendingCompletions.delete(id);
+    return entry.completion;
+  }
+
+  private discardCompletion(id: string): void {
+    const entry = this.pendingCompletions.get(id);
+    if (entry) {
+      clearTimeout(entry.timer);
+      this.pendingCompletions.delete(id);
+    }
+  }
+
+  /** Requester side. The answer arrived; surface it to the API. */
   private async handleInferenceResponse(msg: InferenceResponse, sourcePeerId: string) {
     logger.info(`📥 Received inference-response from ${sourcePeerId}`);
-
-    // Emit immediately so the API can respond to the client without waiting for on-chain settlement.
     this.nodeEvents.emit(`inference-response-${msg.id}`, {
       ...msg,
       payment: null,
       quote: msg.payload.quote,
     });
-
-    if (!this.env.local?.enabled && sourcePeerId !== this.ownPeerId) {
-      this.settleQuoteInBackground(msg);
-    }
   }
 
-  private settleQuoteInBackground(msg: InferenceResponse): void {
+  private settleInBackground(settlement: SettlementProvider, quoteId: string, evidence: any): void {
     const DELAYS_MS = [1000, 2000, 4000, 8000];
 
     const attempt = (i: number): void => {
-      this.settlementFor(msg).complete({
-        quoteId: msg.id,
-        providerAddress: Address.fromString(msg.fromWalletAddr),
-      }).then(() => {
-        logger.info(`✅ Quote ${msg.id} settled (attempt ${i + 1})`);
+      settlement.settle({ quoteId, evidence }).then((result) => {
+        logger.info(`✅ Quote ${quoteId} settled (attempt ${i + 1})${result.txid ? ` — txid ${result.txid}` : ''}`);
       }).catch((err: Error) => {
         if (i < DELAYS_MS.length - 1) {
-          logger.warn(`⚠️ Settlement attempt ${i + 1} failed for ${msg.id}, retrying in ${DELAYS_MS[i]}ms: ${err.message}`);
+          logger.warn(`⚠️ Settlement attempt ${i + 1} failed for ${quoteId}, retrying in ${DELAYS_MS[i]}ms: ${err.message}`);
           setTimeout(() => attempt(i + 1), DELAYS_MS[i]);
         } else {
-          logger.error(`💀 Settlement permanently failed for quote ${msg.id}: ${err.message}`, { quoteId: msg.id, provider: msg.fromWalletAddr });
+          logger.error(`💀 Settlement permanently failed for quote ${quoteId}: ${err.message}`, { quoteId });
         }
       });
     };

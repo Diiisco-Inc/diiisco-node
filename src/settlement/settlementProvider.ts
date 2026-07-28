@@ -1,5 +1,3 @@
-import { Address } from "algosdk";
-
 /**
  * Settlement abstraction. Settlement was previously inlined in the four
  * `MessageProcessor` handlers against the concrete `algorand` class (escrow).
@@ -9,12 +7,19 @@ import { Address } from "algosdk";
  */
 export type SettlementMethod = "x402";
 
-/** Opaque payload attached to `contract-created` (provider → requester). x402: payment requirements. */
+/**
+ * Payment requirements attached to `contract-created` (provider → requester):
+ * what to pay, in which asset, to whom. x402: the `PaymentRequirements` object.
+ */
 export interface PaymentRequest {
   [key: string]: any;
 }
 
-/** Opaque proof attached to `contract-signed` (requester → provider). x402: proof-of-payment. */
+/**
+ * Proof-of-payment attached to `contract-signed` (requester → provider): the
+ * signed payment authorization. x402: the `PaymentPayload` (carries the accepted
+ * requirements inside it, so verify/settle need no separate state).
+ */
 export interface PaymentEvidence {
   [key: string]: any;
 }
@@ -22,6 +27,12 @@ export interface PaymentEvidence {
 export interface VerifyResult {
   ok: boolean;
   amount: bigint;
+  reason?: string;
+}
+
+export interface SettlementResult {
+  txid?: string;
+  amount?: bigint;
 }
 
 export interface SettlementProvider {
@@ -31,8 +42,7 @@ export interface SettlementProvider {
   /** Turn an accepted quote into a payment request. x402: build the payment requirements. */
   createPaymentRequest(args: {
     quoteId: string;
-    customerAddress: string;
-    amount: bigint; // micro-USDC
+    amount: bigint; // atomic units (micro-USDC)
   }): Promise<PaymentRequest>;
 
   /** Confirm the requester has paid before serving. x402: facilitator `verify`. */
@@ -42,8 +52,8 @@ export interface SettlementProvider {
     evidence: PaymentEvidence;
   }): Promise<VerifyResult>;
 
-  /** Finalize settlement. x402: facilitator `settle` (submits the on-chain txn). */
-  settle(args: { quoteId: string; providerAddress: Address }): Promise<void>;
+  /** Finalize settlement, provider-side and off the critical path. x402: facilitator `settle`. */
+  settle(args: { quoteId: string; evidence: PaymentEvidence }): Promise<SettlementResult>;
 
   // --- Requester side ---
   /** Satisfy a payment request. x402: sign the ASA transfer group. */
@@ -52,9 +62,6 @@ export interface SettlementProvider {
     amount: bigint;
     request: PaymentRequest;
   }): Promise<PaymentEvidence>;
-
-  /** Finalize on the requester side. x402: no-op (the provider settles). */
-  complete(args: { quoteId: string; providerAddress: Address }): Promise<void>;
 }
 
 /** Registry of available settlement providers, keyed by method. */
