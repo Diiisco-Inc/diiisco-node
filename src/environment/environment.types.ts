@@ -9,11 +9,11 @@ export interface AlgorandClientConfig {
 }
 
 export interface AlgorandConfig {
-  addr: string;
-  mnemonic: string;
+  mnemonic: string;                   // wallet identity + signing key; the address is derived from this
   client: AlgorandClientConfig;
-  network?: 'mainnet' | 'testnet';
+  network?: 'mainnet' | 'testnet';    // selects the USDC ASA + CAIP-2 id used by x402 settlement
   nfd?: string;
+  settlement?: SettlementConfig;      // x402 settlement; omit → node cannot settle on the public network
 }
 
 /**
@@ -75,6 +75,18 @@ export interface DirectMessagingConfig {
 export interface LocalConfig {
   enabled: boolean;
   privateTopic?: string;
+}
+
+export interface X402Config {
+  facilitatorUrl?: string;            // default https://facilitator.goplausible.xyz/
+  selfSubmitFallback?: boolean;       // default true — submit signed group to algod if facilitator settle fails
+}
+
+export interface SettlementConfig {
+  // Accepted/offered settlement methods, preference-ordered. Default ['x402'].
+  // Network + USDC asset are taken from the parent `algorand.network`.
+  methods?: 'x402'[];
+  x402?: X402Config;
 }
 
 export interface Environment {

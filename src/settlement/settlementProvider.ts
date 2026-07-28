@@ -1,20 +1,20 @@
 import { Address } from "algosdk";
-import algorand from "../utils/algorand";
 
 /**
  * Settlement abstraction. Settlement was previously inlined in the four
- * `MessageProcessor` handlers against the concrete `algorand` class; this seam
- * lets escrow and x402 coexist (negotiated per quote) and lets escrow be
- * removed at release by simply unregistering its provider.
+ * `MessageProcessor` handlers against the concrete `algorand` class (escrow).
+ * Escrow has been retired; this seam is now the integration point for x402 and
+ * any future settlement method. A node with no registered provider cannot
+ * settle and therefore does not quote (public network) — see `MessageProcessor`.
  */
-export type SettlementMethod = "escrow" | "x402";
+export type SettlementMethod = "x402";
 
-/** Opaque payload attached to `contract-created` (provider → requester). Escrow carries none — on-chain state is the source of truth. */
+/** Opaque payload attached to `contract-created` (provider → requester). x402: payment requirements. */
 export interface PaymentRequest {
   [key: string]: any;
 }
 
-/** Opaque proof attached to `contract-signed` (requester → provider). Escrow carries none. */
+/** Opaque proof attached to `contract-signed` (requester → provider). x402: proof-of-payment. */
 export interface PaymentEvidence {
   [key: string]: any;
 }
@@ -28,80 +28,33 @@ export interface SettlementProvider {
   readonly method: SettlementMethod;
 
   // --- Provider side ---
-  /** Turn an accepted quote into a payment request. Escrow: on-chain `createQuote`. */
+  /** Turn an accepted quote into a payment request. x402: build the payment requirements. */
   createPaymentRequest(args: {
     quoteId: string;
     customerAddress: string;
     amount: bigint; // micro-USDC
   }): Promise<PaymentRequest>;
 
-  /** Confirm the requester has paid before serving. Escrow: `verifyQuoteFunded`. */
+  /** Confirm the requester has paid before serving. x402: facilitator `verify`. */
   verifyPayment(args: {
     quoteId: string;
     expectedAmount: bigint;
     evidence: PaymentEvidence;
   }): Promise<VerifyResult>;
 
-  /** Finalize settlement. Escrow: no-op (the requester completes via `complete`). */
+  /** Finalize settlement. x402: facilitator `settle` (submits the on-chain txn). */
   settle(args: { quoteId: string; providerAddress: Address }): Promise<void>;
 
   // --- Requester side ---
-  /** Satisfy a payment request. Escrow: `fundQuote`. */
+  /** Satisfy a payment request. x402: sign the ASA transfer group. */
   pay(args: {
     quoteId: string;
     amount: bigint;
     request: PaymentRequest;
   }): Promise<PaymentEvidence>;
 
-  /** Finalize on the requester side. Escrow: `completeQuote`; x402: no-op (provider settles). */
+  /** Finalize on the requester side. x402: no-op (the provider settles). */
   complete(args: { quoteId: string; providerAddress: Address }): Promise<void>;
-}
-
-/**
- * Escrow settlement — wraps the existing `algorand` methods verbatim. Behavior
- * of the original inlined flow is preserved; this is a pure refactor.
- */
-export class EscrowSettlement implements SettlementProvider {
-  readonly method = "escrow" as const;
-
-  constructor(private algo: algorand) {}
-
-  async createPaymentRequest(args: {
-    quoteId: string;
-    customerAddress: string;
-    amount: bigint;
-  }): Promise<PaymentRequest> {
-    await this.algo.createQuote({
-      quoteId: args.quoteId,
-      customerAddress: args.customerAddress,
-      usdcAmount: args.amount,
-    });
-    return {};
-  }
-
-  async verifyPayment(args: {
-    quoteId: string;
-    expectedAmount: bigint;
-  }): Promise<VerifyResult> {
-    const funded = await this.algo.verifyQuoteFunded(args.quoteId);
-    return {
-      ok: funded.funded !== 0n && funded.usdcAmount >= args.expectedAmount,
-      amount: funded.usdcAmount,
-    };
-  }
-
-  async settle(): Promise<void> {
-    // No-op: under escrow the requester finalizes via `complete` (completeQuote).
-  }
-
-  async pay(args: { quoteId: string; amount: bigint }): Promise<PaymentEvidence> {
-    await this.algo.fundQuote({ quoteId: args.quoteId, usdcAmount: args.amount });
-    return {};
-  }
-
-  async complete(args: { quoteId: string; providerAddress: Address }): Promise<void> {
-    await this.algo.completeQuote({ quoteId: args.quoteId, provider: args.providerAddress });
-  }
 }
 
 /** Registry of available settlement providers, keyed by method. */

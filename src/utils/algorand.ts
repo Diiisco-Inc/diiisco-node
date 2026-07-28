@@ -8,9 +8,7 @@ import { verify } from 'crypto';
 import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
 import { getLocalMultiaddrs } from '../libp2p/localAddresses';
-import { diiiscoContract } from './contract';
-import { QuoteDetails, VerifyQuoteFundedResult } from '../types/algorand';
-import { ApplicationLocalState } from 'algosdk/client/algod';
+import { diiiscoAssets } from './diiiscoAssets';
 
 /**
  * Recursively sorts object keys and stringifies to ensure a canonical representation.
@@ -35,12 +33,6 @@ function canonicalStringify(obj: any): string {
   return '{' + parts.join(',') + '}';
 }
 
-const encoder = new TextEncoder();
-
-function toBytes(s: string): Uint8Array {
-  return encoder.encode(s);
-}
-
 function makeSigner(acct: algosdk.Account): algosdk.TransactionSigner {
   return algosdk.makeBasicAccountTransactionSigner(acct);
 }
@@ -54,7 +46,6 @@ export default class algorand {
   nfdVerified: boolean = false;
   private env: Environment;
   private algod: algosdk.Algodv2;
-  private contract: algosdk.ABIContract;
   private signer: algosdk.TransactionSigner;
   private suggestedParamsCache: { params: algosdk.SuggestedParams; fetchedAt: number } | null = null;
 
@@ -67,9 +58,8 @@ export default class algorand {
       this.mnemonic = algosdk.secretKeyToMnemonic(this.account.sk);
       this.nfdAddr = null;
       this.signer = makeSigner(this.account);
-      // algod client and contract are not used in local mode; assign placeholders to satisfy TS.
+      // algod client is not used in local mode; assign a placeholder to satisfy TS.
       this.algod = null as unknown as algosdk.Algodv2;
-      this.contract = null as unknown as algosdk.ABIContract;
       return;
     }
 
@@ -79,7 +69,6 @@ export default class algorand {
     this.signer = makeSigner(this.account);
 
     this.algod = new algosdk.Algodv2(this.env.algorand!.client.token, this.env.algorand!.client.address, this.env.algorand!.client.port);
-    this.contract = new algosdk.ABIContract(diiiscoContract.abiSpec as algosdk.ABIContractParams);
   }
 
   async initialize(nodeId: string) {
@@ -88,21 +77,16 @@ export default class algorand {
       return;
     }
 
-    // validate that address is valid
+    // Sanity-check the derived address (guards against a malformed mnemonic).
     if (!algosdk.isValidAddress(this.account.addr.toString())) {
-      throw new Error("❌ Invalid Algorand address provided in environment.");
-    }
-
-    // Validate address and mnemonic
-    if (!this.mnemonicMatchesAddress(this.mnemonic, this.account.addr.toString())) {
-      throw new Error("❌ Algorand mnemonic does not match the provided address.");
+      throw new Error("❌ Invalid Algorand mnemonic provided in environment.");
     }
 
     // Check the Address is opted in to the Diiisco ASA (Asset ID)
     try {
-      const { optedIn } = await this.checkIfOptedInToAsset(this.account.addr.toString(), diiiscoContract.asset);
+      const { optedIn } = await this.checkIfOptedInToAsset(this.account.addr.toString(), diiiscoAssets.asset);
       if (!optedIn) {
-        await this.optInToAsset(this.account.addr.toString(), diiiscoContract.asset);
+        await this.optInToAsset(this.account.addr.toString(), diiiscoAssets.asset);
         logger.info("✅ Opted in to Diiisco ASA");
       }
     } catch (err) {
@@ -111,24 +95,13 @@ export default class algorand {
 
     // Check the Address is Opted into USDC ASA (Asset ID)
     try {
-      const { optedIn } = await this.checkIfOptedInToAsset(this.account.addr.toString(), diiiscoContract.usdc);
+      const { optedIn } = await this.checkIfOptedInToAsset(this.account.addr.toString(), diiiscoAssets.usdc);
       if (!optedIn) {
-        await this.optInToAsset(this.account.addr.toString(), diiiscoContract.usdc);
+        await this.optInToAsset(this.account.addr.toString(), diiiscoAssets.usdc);
         logger.info("✅ Opted in to USDC ASA");
       }
     } catch (err) {
       logger.error("❌ Failed to opt-in to USDC ASA:", err);
-    }
-
-    // Check if the Address is registered in the Diiisco Contract
-    try {
-      const registered = await this.checkIfRegistered(this.account.addr.toString(), diiiscoContract.app);
-      if (!registered) {
-        await this.registerAddressForContract();
-        logger.info("✅ Registered address in Diiisco Contract");
-      }
-    } catch (err) {
-      logger.error("❌ Failed to register address in Diiisco Contract:", err);
     }
 
     //Verify the NFD if Provided
@@ -143,15 +116,6 @@ export default class algorand {
       }).catch((err) => {
         logger.error(`❌ Error verifying NFD ${this.nfdAddr}:`, err);
       });
-    }
-  }
-
-  mnemonicMatchesAddress(mnemonic: string, address: string) {
-    try {
-      const { addr } = algosdk.mnemonicToSecretKey(mnemonic.trim());
-      return algosdk.encodeAddress(algosdk.decodeAddress(addr.toString()).publicKey) === address;
-    } catch {
-      return false; // bad mnemonic or bad address format
     }
   }
 
@@ -290,11 +254,6 @@ export default class algorand {
     const whole = BigInt(intPart) * 10n ** BigInt(decimals) + fracBig;
     return negative ? -whole : whole;
   }
-  private getAppAddress(): algosdk.Address {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    return algosdk.getApplicationAddress(diiiscoContract.app);
-  }
-
   private async getSuggestedParams(): Promise<algosdk.SuggestedParams> {
     const now = Date.now();
     if (!this.suggestedParamsCache || now - this.suggestedParamsCache.fetchedAt > SUGGESTED_PARAMS_TTL_MS) {
@@ -305,326 +264,6 @@ export default class algorand {
     return { ...this.suggestedParamsCache.params };
   }
 
-  async checkIfRegistered(address: string, app: number): Promise<boolean> {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    try {
-      const accountInfo = await this.algod.accountInformation(address).do();
-      const appOptInState: ApplicationLocalState | undefined = accountInfo.appsLocalState?.find(
-        (localState: any) => localState.id === BigInt(app)
-      );
-      return appOptInState !== undefined ;
-    } catch(error) {
-      return false;
-    }
-  }
-
-  async registerAddressForContract(): Promise<number> {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    const sc = diiiscoContract;
-
-    const sp = await this.getSuggestedParams();
-    const atc = new algosdk.AtomicTransactionComposer();
-    const method = this.contract.getMethodByName('optInToApplication');
-    const providerAddressBytes = new Uint8Array([...toBytes('userBalance'), ...this.account.addr.publicKey]);
-
-    atc.addMethodCall({
-      appID: sc.app,
-      method,
-      methodArgs: [],
-      sender: this.account.addr,
-      suggestedParams: sp,
-      signer: this.signer,
-      boxes: [
-        {
-          appIndex: sc.app,
-          name: providerAddressBytes,
-        },
-      ],
-      onComplete: algosdk.OnApplicationComplete.OptInOC,
-    });
-
-    const res = await atc.execute(this.algod, 4);
-    this.suggestedParamsCache = null;
-    return Number(res.confirmedRound);
-  }
-
-  async createQuote(options: {
-    quoteId: string;
-    customerAddress: string;
-    usdcAmount: bigint;
-  }): Promise<number> {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    const sc = diiiscoContract;
-
-    const quoteId = options.quoteId;
-    if (!quoteId) throw new Error('quoteId is required');
-
-    const customerAddressBytes = algosdk.decodeAddress(options.customerAddress).publicKey;
-    const usdcAmount = options.usdcAmount;
-    if (usdcAmount === undefined) throw new Error('usdcAmount is required');
-
-    const sp = await this.getSuggestedParams();
-    const atc = new algosdk.AtomicTransactionComposer();
-    const method = this.contract.getMethodByName('createQuote');
-
-    const quoteIdBytes = toBytes(quoteId);
-    const boxName = toBytes('quotes' + quoteId);
-    const providerAddressBytes = new Uint8Array([...toBytes('userBalance'), ...this.account.addr.publicKey]);
-
-    atc.addMethodCall({
-      appID: sc.app,
-      method,
-      methodArgs: [quoteIdBytes, customerAddressBytes, usdcAmount],
-      sender: this.account.addr,
-      suggestedParams: sp,
-      signer: this.signer,
-      boxes: [
-        {
-          appIndex: sc.app,
-          name: boxName,
-        },
-        {
-          appIndex: sc.app,
-          name: providerAddressBytes,
-        },
-      ],
-    });
-
-    const res = await atc.execute(this.algod, 4);
-    this.suggestedParamsCache = null;
-    return Number(res.confirmedRound);
-  }
-
-  async fundQuote(options: {
-    quoteId: string;
-    usdcAmount: bigint;
-  }): Promise<number> {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    const sc = diiiscoContract;
-
-    const quoteId = options.quoteId;
-    if (!quoteId) throw new Error('quoteId is required');
-
-    const usdcAmount = options.usdcAmount;
-    if (usdcAmount === undefined) throw new Error('usdcAmount is required');
-
-    const sp = await this.getSuggestedParams();
-    const atc = new algosdk.AtomicTransactionComposer();
-
-    const appAddress = this.getAppAddress();
-    const quoteIdBytes = toBytes(quoteId);
-    const boxName = toBytes('quotes' + quoteId);
-
-    const usdcTx = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
-      sender: this.account.addr,
-      receiver: appAddress,
-      assetIndex: sc.usdc,
-      amount: usdcAmount,
-      suggestedParams: sp,
-    });
-
-    atc.addTransaction({
-      txn: usdcTx,
-      signer: this.signer,
-    });
-
-    const method = this.contract.getMethodByName('fundQuote');
-
-    atc.addMethodCall({
-      appID: sc.app,
-      method,
-      methodArgs: [quoteIdBytes],
-      sender: this.account.addr,
-      suggestedParams: sp,
-      signer: this.signer,
-      boxes: [
-        {
-          appIndex: sc.app,
-          name: boxName,
-        },
-      ],
-    });
-
-    const res = await atc.execute(this.algod, 4);
-    this.suggestedParamsCache = null;
-    return Number(res.confirmedRound);
-  }
-
-  async getQuote(quoteId: string): Promise<QuoteDetails> {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    const sc = diiiscoContract;
-
-    const qid = quoteId;
-    if (!qid) throw new Error('quoteId is required');
-
-    const sp = await this.getSuggestedParams();
-    const atc = new algosdk.AtomicTransactionComposer();
-    const method = this.contract.getMethodByName('getQuote');
-
-    const quoteIdBytes = toBytes(qid);
-    const boxName = toBytes('quotes' + qid);
-
-    atc.addMethodCall({
-      appID: sc.app,
-      method,
-      methodArgs: [quoteIdBytes],
-      sender: this.account.addr,
-      suggestedParams: sp,
-      signer: this.signer,
-      boxes: [
-        {
-          appIndex: sc.app,
-          name: boxName,
-        },
-      ],
-    });
-
-    const res = await atc.simulate(this.algod);
-    const tup = res.methodResults[0].returnValue as [
-      Uint8Array,
-      Uint8Array,
-      Uint8Array,
-      bigint,
-      bigint,
-      bigint,
-      bigint,
-    ];
-
-    const [qidBytes, provider, customer, usdcAmount, dscoAmount, status, lastUpdatedAt] = tup;
-
-    return {
-      quoteId: qidBytes,
-      provider,
-      customer,
-      usdcAmount,
-      dscoAmount,
-      status,
-      lastUpdatedAt,
-    };
-  }
-
-  async verifyQuoteFunded(quoteId: string): Promise<VerifyQuoteFundedResult> {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    const sc = diiiscoContract;
-
-    const qid = quoteId;
-    if (!qid) throw new Error('quoteId is required');
-
-    const sp = await this.getSuggestedParams();
-    const atc = new algosdk.AtomicTransactionComposer();
-    const method = this.contract.getMethodByName('verifyQuoteFunded');
-
-    const quoteIdBytes = toBytes(qid);
-    const boxName = toBytes('quotes' + qid);
-
-    atc.addMethodCall({
-      appID: sc.app,
-      method,
-      methodArgs: [quoteIdBytes],
-      sender: this.account.addr,
-      suggestedParams: sp,
-      signer: this.signer,
-      boxes: [
-        {
-          appIndex: sc.app,
-          name: boxName,
-        },
-      ],
-    });
-
-    const res = await atc.simulate(this.algod);
-    const value = res.methodResults[0].returnValue as [bigint, bigint, bigint];
-    const [funded, status, usdcAmount] = value;
-
-    return { funded, status, usdcAmount };
-  }
-
-  async completeQuote(options: {
-    quoteId: string;
-    provider: algosdk.Address;
-    minDscoOut?: bigint;
-  }): Promise<number> {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    const sc = diiiscoContract;
-
-    const quoteId = options.quoteId;
-    if (!quoteId) throw new Error('quoteId is required');
-
-    const minDscoOut = options.minDscoOut ?? 1n;
-
-    const sp = await this.getSuggestedParams();
-    const atc = new algosdk.AtomicTransactionComposer();
-    const method = this.contract.getMethodByName('completeQuote');
-
-    const quoteIdBytes = toBytes(quoteId);
-    const boxName = toBytes('quotes' + quoteId);
-
-    const spFlat: algosdk.SuggestedParams = { ...sp, flatFee: true, fee: 5000 };
-    const providerAddressBytes = new Uint8Array([...toBytes('userBalance'), ...options.provider.publicKey]);
-    
-    atc.addMethodCall({
-      appID: sc.app,
-      method,
-      methodArgs: [quoteIdBytes, minDscoOut],
-      sender: this.account.addr,
-      suggestedParams: spFlat,
-      signer: this.signer,
-      boxes: [
-        {
-          appIndex: sc.app,
-          name: boxName,
-        },
-        {
-          appIndex: sc.app,
-          name: providerAddressBytes,
-        }
-      ],
-      appAccounts: [sc.tinymanPoolAddress, options.provider],
-      appForeignAssets: [sc.usdc, sc.asset],
-      appForeignApps: [sc.tinymanApp],
-    });
-
-    const res = await atc.execute(this.algod, 4);
-    this.suggestedParamsCache = null;
-    return Number(res.confirmedRound);
-  }
-
-  async refundQuote(options: {
-    quoteId: string 
-  }): Promise<number> {
-    if (!diiiscoContract) throw new Error("Smart contract configuration is missing.");
-    const sc = diiiscoContract;
-
-    const quoteId = options.quoteId;
-    if (!quoteId) throw new Error('quoteId is required');
-
-    const sp = await this.getSuggestedParams();
-    const atc = new algosdk.AtomicTransactionComposer();
-    const method = this.contract.getMethodByName('refundQuote');
-
-    const quoteIdBytes = toBytes(quoteId);
-    const boxName = toBytes('quotes' + quoteId);
-
-    atc.addMethodCall({
-      appID: sc.app,
-      method,
-      methodArgs: [quoteIdBytes],
-      sender: this.account.addr,
-      suggestedParams: sp,
-      signer: this.signer,
-      boxes: [
-        {
-          appIndex: sc.app,
-          name: boxName,
-        },
-      ],
-    });
-
-    const res = await atc.execute(this.algod, 4);
-    this.suggestedParamsCache = null;
-    return Number(res.confirmedRound);
-  }
-
   isValidAddress(addr: string): boolean {
     return algosdk.isValidAddress(addr);
   }
@@ -632,12 +271,10 @@ export default class algorand {
   async getDiagnostics(): Promise<{
     localMode: boolean;
     address?: string;
-    appId?: number;
     algodReachable: boolean;
     algoBalance?: string;
     dsco?: { optedIn: boolean; balance: string };
     usdc?: { optedIn: boolean; balance: string };
-    contractRegistered?: boolean;
     error?: string;
   }> {
     if (this.env.local?.enabled) {
@@ -648,7 +285,6 @@ export default class algorand {
     const result: Awaited<ReturnType<algorand['getDiagnostics']>> = {
       localMode: false,
       address,
-      appId: diiiscoContract.app,
       algodReachable: false,
     };
 
@@ -657,13 +293,11 @@ export default class algorand {
       result.algodReachable = true;
       result.algoBalance = (Number(accountInfo.amount) / 1_000_000).toFixed(6) + ' ALGO';
 
-      const dsco = await this.checkIfOptedInToAsset(address, diiiscoContract.asset);
+      const dsco = await this.checkIfOptedInToAsset(address, diiiscoAssets.asset);
       result.dsco = { optedIn: dsco.optedIn, balance: dsco.balance.toString() };
 
-      const usdc = await this.checkIfOptedInToAsset(address, diiiscoContract.usdc);
+      const usdc = await this.checkIfOptedInToAsset(address, diiiscoAssets.usdc);
       result.usdc = { optedIn: usdc.optedIn, balance: (Number(usdc.balance) / 1_000_000).toFixed(6) + ' USDC' };
-
-      result.contractRegistered = await this.checkIfRegistered(address, diiiscoContract.app);
     } catch (err: any) {
       result.error = err.message ?? String(err);
     }

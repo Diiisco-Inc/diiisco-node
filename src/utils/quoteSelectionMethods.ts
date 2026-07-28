@@ -1,7 +1,7 @@
 import { QuoteEvent } from "../types/messages";
 import environment from '../environment/environment'
 import algorand from "./algorand";
-import diiiscoContract from "./contract";
+import diiiscoAssets from "./diiiscoAssets";
 
 // Select the Cheapest Quote
 export function selectCheapestQuote(quotes: QuoteEvent[]): QuoteEvent {
@@ -23,7 +23,7 @@ export function selectRandomQuote(quotes: QuoteEvent[]): QuoteEvent {
 export async function selectHighestStakeQuote(quotes: QuoteEvent[]): Promise<QuoteEvent> {
   const algo = new algorand();
   const balances = await Promise.all(quotes.map(async (quote) => {
-    const balance = await algo.checkIfOptedInToAsset(quote.msg.fromWalletAddr, diiiscoContract.asset);
+    const balance = await algo.checkIfOptedInToAsset(quote.msg.fromWalletAddr, diiiscoAssets.asset);
     return { quote, balance };
   }));
 

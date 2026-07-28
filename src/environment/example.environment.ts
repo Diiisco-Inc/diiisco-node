@@ -21,15 +21,23 @@ const environment: Environment = {
     }
   },
   algorand: {
-    addr: "YOUR_ALGORAND_ADDRESS_HERE",
-    mnemonic: "YOUR_ALGORAND_MNEMONIC_HERE",
-    network: "mainnet",
+    mnemonic: "YOUR_ALGORAND_MNEMONIC_HERE", // Wallet identity + signing key; the address is derived from this
+    network: "mainnet",                     // Selects the USDC ASA + CAIP-2 id used by x402 settlement
     client: {
       address: "https://mainnet-api.algonode.cloud/",
       port: 443,
       token: ""
     },
     nfd: "your-name.diiisco.algo",          // Optional: .diiisco.algo NFD domain for verified identity
+    settlement: {
+      // Settlement methods offered/accepted, in preference order. x402 is the
+      // only method (escrow has been retired). Omit to disable public settlement.
+      methods: ["x402"],
+      x402: {
+        facilitatorUrl: "https://facilitator.goplausible.xyz/",
+        selfSubmitFallback: true,           // Submit the signed group to algod if the facilitator is down
+      },
+    },
   },
   api: {
     enabled: true,

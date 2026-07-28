@@ -23,13 +23,15 @@ import { buildOwnProfile } from "../utils/nodeProfile";
 import { nodeStats } from "../utils/nodeStats";
 import { logger } from '../utils/logger';
 import { Environment } from "../environment/environment.types";
-import diiiscoContract from "../utils/contract";
+import diiiscoAssets from "../utils/diiiscoAssets";
 import { verifyNFD } from '../utils/algorand';
 import { RawQuote } from "../types/quotes";
 import { Address } from "algosdk";
 import { MessageRouter } from './messageRouter';
 import { SpeculativeInferenceCache } from './speculativeInferenceCache';
-import { SettlementRegistry, EscrowSettlement } from '../settlement/settlementProvider';
+import { SettlementRegistry, SettlementProvider, SettlementMethod } from '../settlement/settlementProvider';
+
+const QUOTE_TTL_MS = 120_000; // validity window advertised on quotes (x402 requires one)
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 
@@ -68,18 +70,35 @@ export class MessageProcessor {
     this.speculativeCache = new SpeculativeInferenceCache(
       this.env.quoteEngine?.maxSpeculativeJobs ?? 2
     );
-    // Settlement seam. M1 registers escrow only (behavior-preserving); x402 is
-    // registered here in M3, and escrow is unregistered at release.
+    // Settlement seam. Escrow has been retired; x402 is registered here in M3.
+    // Until then the registry is empty and public-network quoting is disabled.
     this.settlement = new SettlementRegistry();
-    this.settlement.register(new EscrowSettlement(this.algo));
   }
 
   /**
-   * Settlement provider for a given quote. M1 always resolves to escrow; M2
-   * reads the method negotiated into the quote-accepted payload.
+   * Settlement provider for a given quote, from the method the requester
+   * negotiated into the `quote-accepted` payload (which propagates onto the
+   * later contract and inference-response messages via payload spread). Falls
+   * back to the first registered provider when unset. Throws if none are
+   * registered — but this is unreachable, since a node with no provider never
+   * quotes (see `handleQuoteRequest`).
    */
-  private settlementFor(_msg: { payload?: any }): ReturnType<SettlementRegistry['get']> {
-    return this.settlement.get('escrow');
+  private settlementFor(msg: { payload?: any }): SettlementProvider {
+    const method = msg?.payload?.settlementMethod as SettlementMethod | undefined;
+    if (method && this.settlement.has(method)) {
+      return this.settlement.get(method);
+    }
+    return this.settlement.get(this.settlement.methods()[0]);
+  }
+
+  /**
+   * Settlement methods this node offers on a quote: its configured preference
+   * order intersected with the providers actually registered. May be empty
+   * (a node with no settlement provider cannot sell).
+   */
+  private offeredSettlementMethods(): SettlementMethod[] {
+    const preference = this.env.algorand?.settlement?.methods ?? this.settlement.methods();
+    return preference.filter((m) => this.settlement.has(m));
   }
 
   /**
@@ -298,9 +317,14 @@ export class MessageProcessor {
       return;
     }
 
-    // Check If Opted In to DSCO (skipped in local mode)
+    // On the public network a node must have a settlement method to sell.
+    // (Local mode bypasses settlement entirely.)
     if (!this.env.local?.enabled) {
-      const x = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoContract.asset);
+      if (this.offeredSettlementMethods().length === 0) {
+        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - no settlement provider registered.`);
+        return;
+      }
+      const x = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoAssets.asset);
       if (!x.optedIn) {
         logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
         return;
@@ -334,6 +358,10 @@ export class MessageProcessor {
           pricePerOutputToken1M: rawQuote.pricePerOutputToken1M,
           maxOutputTokens: rawQuote.maxOutputTokens,
           maxCharge: rawQuote.maxCharge,
+          // Settlement negotiation: the requester picks one of these methods.
+          settlementMethods: this.offeredSettlementMethods(),
+          assetId: diiiscoAssets.usdc,
+          quoteExpiresAt: Date.now() + QUOTE_TTL_MS,
         },
       }
     };

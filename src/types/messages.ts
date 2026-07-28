@@ -30,7 +30,7 @@ export interface QuoteResponsePayload {
   pricePerOutputToken1M?: number;
   maxOutputTokens?: number;
   maxCharge?: number;
-  settlementMethods?: ('escrow' | 'x402')[];
+  settlementMethods?: 'x402'[];
   assetId?: number;
   quoteExpiresAt?: number;
 }
