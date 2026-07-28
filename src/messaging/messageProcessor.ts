@@ -30,10 +30,10 @@ import { Address } from "algosdk";
 import { MessageRouter } from './messageRouter';
 import { SpeculativeInferenceCache } from './speculativeInferenceCache';
 import { SettlementRegistry, SettlementProvider, SettlementMethod } from '../settlement/settlementProvider';
-
-const QUOTE_TTL_MS = 120_000; // validity window advertised on quotes (x402 requires one)
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
+
+const QUOTE_TTL_MS = 120_000; // validity window advertised on quotes (x402 requires one)
 
 export class MessageProcessor {
   private algo: algorand;
