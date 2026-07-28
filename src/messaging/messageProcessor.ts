@@ -29,6 +29,7 @@ import { RawQuote } from "../types/quotes";
 import { Address } from "algosdk";
 import { MessageRouter } from './messageRouter';
 import { SpeculativeInferenceCache } from './speculativeInferenceCache';
+import { SettlementRegistry, EscrowSettlement } from '../settlement/settlementProvider';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 
@@ -43,6 +44,7 @@ export class MessageProcessor {
   private ownPeerId: string;
   private node: any;
   private speculativeCache: SpeculativeInferenceCache;
+  private settlement: SettlementRegistry;
 
   constructor(
     algo: algorand,
@@ -66,6 +68,18 @@ export class MessageProcessor {
     this.speculativeCache = new SpeculativeInferenceCache(
       this.env.quoteEngine?.maxSpeculativeJobs ?? 2
     );
+    // Settlement seam. M1 registers escrow only (behavior-preserving); x402 is
+    // registered here in M3, and escrow is unregistered at release.
+    this.settlement = new SettlementRegistry();
+    this.settlement.register(new EscrowSettlement(this.algo));
+  }
+
+  /**
+   * Settlement provider for a given quote. M1 always resolves to escrow; M2
+   * reads the method negotiated into the quote-accepted payload.
+   */
+  private settlementFor(_msg: { payload?: any }): ReturnType<SettlementRegistry['get']> {
+    return this.settlement.get('escrow');
   }
 
   /**
@@ -316,6 +330,10 @@ export class MessageProcessor {
           pricePer1M: rawQuote.rate,
           totalPrice: rawQuote.price,
           addr: this.algo.account.addr.toString(),
+          pricePerInputToken1M: rawQuote.pricePerInputToken1M,
+          pricePerOutputToken1M: rawQuote.pricePerOutputToken1M,
+          maxOutputTokens: rawQuote.maxOutputTokens,
+          maxCharge: rawQuote.maxCharge,
         },
       }
     };
@@ -346,10 +364,10 @@ export class MessageProcessor {
     }
 
     const createUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
-    await this.algo.createQuote({
+    await this.settlementFor(msg).createPaymentRequest({
       quoteId: msg.id,
       customerAddress: msg.fromWalletAddr,
-      usdcAmount: createUsdcAmount,
+      amount: createUsdcAmount,
     });
 
     let response: ContractCreated = {
@@ -369,9 +387,10 @@ export class MessageProcessor {
   private async handleContractCreated(msg: ContractCreated, sourcePeerId: string) {
     if (!this.env.local?.enabled) {
       const fundUsdcAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
-      await this.algo.fundQuote({
+      await this.settlementFor(msg).pay({
         quoteId: msg.id,
-        usdcAmount: fundUsdcAmount,
+        amount: fundUsdcAmount,
+        request: msg.payload,
       });
     }
 
@@ -390,8 +409,13 @@ export class MessageProcessor {
   }
 
   private async handleContractSigned(msg: ContractSigned, sourcePeerId: string) {
-    const funded = await this.algo.verifyQuoteFunded(msg.id);
-    if (!funded.funded || funded.usdcAmount < BigInt(msg.payload.quote.totalPrice * 1_000_000)) {
+    const expectedAmount = BigInt(Math.round(msg.payload.quote.totalPrice * 1_000_000));
+    const verified = await this.settlementFor(msg).verifyPayment({
+      quoteId: msg.id,
+      expectedAmount,
+      evidence: msg.payload,
+    });
+    if (!verified.ok) {
       logger.warn(`❌ Contract ${msg.id} is not funded. Cannot proceed with inference.`);
       return;
     }
@@ -439,9 +463,9 @@ export class MessageProcessor {
     const DELAYS_MS = [1000, 2000, 4000, 8000];
 
     const attempt = (i: number): void => {
-      this.algo.completeQuote({
+      this.settlementFor(msg).complete({
         quoteId: msg.id,
-        provider: Address.fromString(msg.fromWalletAddr),
+        providerAddress: Address.fromString(msg.fromWalletAddr),
       }).then(() => {
         logger.info(`✅ Quote ${msg.id} settled (attempt ${i + 1})`);
       }).catch((err: Error) => {

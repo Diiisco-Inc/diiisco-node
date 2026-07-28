@@ -13,8 +13,11 @@ const environment: Environment = {
     port: 11434,                            // Default Ollama port
     apiKey: "YOUR_LOCAL_LLM_API_KEY_HERE_OFTEN_NOT_NEEDED",
     chargePer1MTokens: {
-      default: 0.01703,                     // Price per 1M tokens in USDC
-      "gpt-oss:20b": 0.02,                  // Per-model override
+      // Price per 1M tokens in USDC. A bare number sets equal input/output
+      // rates; use { input, output } to price them separately (x402 meters the
+      // actual charge from real token usage, capped at the quoted maximum).
+      default: 0.01703,
+      "gpt-oss:20b": { input: 0.02, output: 0.06 }, // Per-model split-rate override
     }
   },
   algorand: {
@@ -43,6 +46,7 @@ const environment: Environment = {
     quoteSelectionFunction: selectHighestStakeQuote,
     quoteCreationFunction: [createQuoteFromInputTokens],
     preferSelf: true,                       // Serve requests locally when the model is available, bypassing the network
+    defaultMaxOutputTokens: 4096,           // Output-token cap used to size the quote ceiling when a request omits max_tokens
   },
   libp2pBootstrapServers: [
     "lon.diiisco.algo",

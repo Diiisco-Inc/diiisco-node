@@ -23,6 +23,16 @@ export interface QuoteResponsePayload {
   pricePer1M: number;
   totalPrice: number;
   addr: string;
+  // Split pricing + settlement negotiation (additive; older nodes omit these).
+  // totalPrice == maxCharge; the x402 path meters the actual charge from usage,
+  // capped at maxCharge (the ceiling the requester is promised at quote time).
+  pricePerInputToken1M?: number;
+  pricePerOutputToken1M?: number;
+  maxOutputTokens?: number;
+  maxCharge?: number;
+  settlementMethods?: ('escrow' | 'x402')[];
+  assetId?: number;
+  quoteExpiresAt?: number;
 }
 
 export interface QuoteResponse {

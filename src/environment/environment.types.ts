@@ -16,14 +16,20 @@ export interface AlgorandConfig {
   nfd?: string;
 }
 
+/**
+ * Per-1M-token rate. A bare `number` is shorthand for equal input/output rates
+ * (`{ input: n, output: n }`) — keeps existing scalar configs working unchanged.
+ */
+export type TokenRate = number | { input: number; output: number };
+
 export interface ModelsConfig {
   enabled: boolean;
   baseURL: string;
   port: number;
   apiKey: string;
   chargePer1MTokens?: {
-    default: number;
-    [key: string]: number;
+    default: TokenRate;
+    [key: string]: TokenRate;
   };
   chargePer1KTokens?: {
     default: number;
@@ -49,6 +55,7 @@ export interface QuoteEngineConfig {
   quoteCreationFunction?: QuoteCreationFunction | QuoteCreationFunction[];
   optimisticInference?: boolean;  // default true — provider starts inference in parallel with createQuote
   maxSpeculativeJobs?: number;    // default 2 — max concurrent speculative inference jobs
+  defaultMaxOutputTokens?: number; // cap used for maxCharge when a request omits max_tokens (default 4096)
 }
 
 export interface PeerIdStorageConfig {
