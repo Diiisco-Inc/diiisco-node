@@ -29,10 +29,13 @@ export interface QuoteResponsePayload {
   pricePerInputToken1M?: number;
   pricePerOutputToken1M?: number;
   maxOutputTokens?: number;
-  maxCharge?: number;
+  maxCharge?: number;              // the max price for this request (ceiling)
   settlementMethods?: 'x402'[];
   assetId?: number;
   quoteExpiresAt?: number;
+  requestTimestamp?: number;       // echo of the quote-request timestamp, for measuring response latency
+  nfd?: string;                    // provider's NFD name, so the requester can verify it
+  providerPeerId?: string;         // provider's own peer id (NFD verification needs it; GossipSub `from` may be a relay)
 }
 
 export interface QuoteResponse {
@@ -194,9 +197,24 @@ export type PubSubMessage = (
 export interface QuoteEvent {
   msg: QuoteResponse;
   from: string;
+  receivedAt: number; // when this node received the quote (for response-latency)
 }
 
 export interface QuoteQueueEntry {
   quotes: QuoteEvent[];
   timeout: NodeJS.Timeout;
+}
+
+/**
+ * A quote enriched with everything a selection strategy needs, computed once by
+ * the quote engine before selection so the strategies stay pure and synchronous.
+ */
+export interface QuoteCandidate {
+  quote: QuoteResponsePayload;   // quote attributes (maxCharge, per-input/output token price, model, …)
+  from: string;                  // provider peer id
+  fromWalletAddr: string;        // provider wallet address
+  dscoBalance: bigint;           // DSCO held by the provider wallet (0 if none / local mode)
+  nfdAuthenticated: boolean;     // provider wallet has a verified NFD
+  responseLatencyMs: number;     // how quickly the quote arrived after the request was issued
+  msg: QuoteResponse;            // raw response (needed to build quote-accepted)
 }

@@ -1,6 +1,5 @@
 import PeerId from 'peer-id';
-import { QuoteEvent } from '../types/messages';
-import { QuoteCreationFunction } from '../types/quotes';
+import { QuoteCreationFunction, QuoteSelectionFunction } from '../types/quotes';
 
 export interface AlgorandClientConfig {
   address: string;
@@ -51,7 +50,7 @@ export interface ApiConfig {
 export interface QuoteEngineConfig {
   waitTime: number;
   preferSelf?: boolean;
-  quoteSelectionFunction?: (quotes: QuoteEvent[]) => Promise<QuoteEvent>;
+  quoteSelectionFunction?: QuoteSelectionFunction;
   quoteCreationFunction?: QuoteCreationFunction | QuoteCreationFunction[];
   optimisticInference?: boolean;  // default true — provider starts inference in parallel with createQuote
   maxSpeculativeJobs?: number;    // default 2 — max concurrent speculative inference jobs

@@ -390,6 +390,11 @@ export class MessageProcessor {
           settlementMethods: this.offeredSettlementMethods(),
           assetId: diiiscoAssets.usdc,
           quoteExpiresAt: Date.now() + QUOTE_TTL_MS,
+          // Echoed so the requester can measure how quickly we responded.
+          requestTimestamp: msg.timestamp,
+          // Advertised NFD name + our peer id so the requester can verify the NFD.
+          nfd: this.env.algorand?.nfd,
+          providerPeerId: this.ownPeerId,
         },
       }
     };

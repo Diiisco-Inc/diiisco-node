@@ -1,5 +1,5 @@
 import { OpenAIInferenceModel } from "../utils/models";
-import { QuoteRequest } from "./messages";
+import { QuoteRequest, QuoteCandidate } from "./messages";
 
 export interface RawQuote {
   price: number;   // = maxCharge; retained for existing call sites (escrow reads this)
@@ -14,3 +14,10 @@ export interface RawQuote {
 }
 
 export type QuoteCreationFunction = (quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel) => Promise<RawQuote | null>;
+
+/**
+ * Picks one quote from the enriched candidates. Runs after the engine has
+ * attached DSCO balance, NFD status, and response latency, so strategies can be
+ * pure and synchronous (async still allowed for exotic strategies).
+ */
+export type QuoteSelectionFunction = (candidates: QuoteCandidate[]) => QuoteCandidate | Promise<QuoteCandidate>;
