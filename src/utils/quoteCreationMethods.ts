@@ -69,8 +69,16 @@ function buildQuote(inputTokens: number, rates: TokenRates, maxOutputTokens: num
   };
 }
 
-// Create Quote from Input Tokens (ceiling = input cost + capped output cost)
-export async function createQuoteFromInputTokens(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
+/**
+ * The default (and only built-in) quote creation strategy. Prices a request at
+ * the standard ceiling: input cost + capped output cost, using the per-model
+ * input/output rates from config.
+ *
+ * Providers can supply their own `quoteEngine.quoteCreationFunction` with this
+ * same signature to price dynamically (e.g. surge pricing by load) — it just
+ * needs to return a `RawQuote`.
+ */
+export async function createStandardQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
   const inputTokens: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
   const rates = getRatesPer1M(quoteRequestMsg.payload.model);
   const maxOutputTokens = getMaxOutputTokens(quoteRequestMsg);
@@ -78,42 +86,6 @@ export async function createQuoteFromInputTokens(quoteRequestMsg: QuoteRequest, 
   const maxCharge = parseFloat(
     ((inputTokens / 1_000_000) * rates.input + (maxOutputTokens / 1_000_000) * rates.output).toFixed(6)
   );
-
-  return buildQuote(inputTokens, rates, maxOutputTokens, maxCharge);
-}
-
-// Create Quote from Multiple of Input Tokens (2× the input-token ceiling)
-export async function createQuoteFromMultipleOfInputTokens(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
-  const inputTokens: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
-  const rates = getRatesPer1M(quoteRequestMsg.payload.model);
-  const maxOutputTokens = getMaxOutputTokens(quoteRequestMsg);
-
-  const maxCharge = parseFloat(
-    (((inputTokens / 1_000_000) * rates.input + (maxOutputTokens / 1_000_000) * rates.output) * 2).toFixed(6)
-  );
-
-  return buildQuote(inputTokens, rates, maxOutputTokens, maxCharge);
-}
-
-// Create Quote from Output Tokens ONLY (runs the inference to size the quote)
-export async function createQuoteFromOutputTokens(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
-  const inputTokens: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
-  const outputTokens: number = (await model.getResponse(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs)).usage?.completion_tokens || 1;
-  const rates = getRatesPer1M(quoteRequestMsg.payload.model);
-  const maxOutputTokens = getMaxOutputTokens(quoteRequestMsg);
-
-  const maxCharge = parseFloat(((outputTokens / 1_000_000) * rates.output).toFixed(6));
-
-  return buildQuote(inputTokens, rates, maxOutputTokens, maxCharge);
-}
-
-// Create Quote from Fixed price of $0.01
-export async function createQuoteFromFixedPrice(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
-  const inputTokens: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
-  const rates = getRatesPer1M(quoteRequestMsg.payload.model);
-  const maxOutputTokens = getMaxOutputTokens(quoteRequestMsg);
-
-  const maxCharge = 0.01; // Fixed price of $0.01 for any request
 
   return buildQuote(inputTokens, rates, maxOutputTokens, maxCharge);
 }

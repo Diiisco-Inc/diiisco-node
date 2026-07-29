@@ -1,6 +1,5 @@
 import { Environment } from "./environment.types";
 import { selectHighestStakeQuote } from "../utils/quoteSelectionMethods";
-import { createQuoteFromInputTokens } from "../utils/quoteCreationMethods";
 import { deepMerge } from "../utils/deepMerge";
 
 const environment: Environment = {
@@ -51,8 +50,11 @@ const environment: Environment = {
   },
   quoteEngine: {
     waitTime: 1000,                         // Time to collect quotes before selecting one (ms)
+    // How to pick a quote: selectHighestStakeQuote (default), selectCheapestQuote,
+    // selectFastestQuote, a custom function, or a list tried in order.
     quoteSelectionFunction: selectHighestStakeQuote,
-    quoteCreationFunction: [createQuoteFromInputTokens],
+    // Optional: override pricing with a custom function (same signature as
+    // createStandardQuote) for dynamic/surge pricing. Defaults to the standard quote.
     preferSelf: true,                       // Serve requests locally when the model is available, bypassing the network
     defaultMaxOutputTokens: 4096,           // Output-token cap used to size the quote ceiling when a request omits max_tokens
   },

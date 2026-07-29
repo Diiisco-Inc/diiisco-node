@@ -50,8 +50,8 @@ export interface ApiConfig {
 export interface QuoteEngineConfig {
   waitTime: number;
   preferSelf?: boolean;
-  quoteSelectionFunction?: QuoteSelectionFunction;
-  quoteCreationFunction?: QuoteCreationFunction | QuoteCreationFunction[];
+  quoteSelectionFunction?: QuoteSelectionFunction | QuoteSelectionFunction[]; // one strategy, or a list tried in order
+  quoteCreationFunction?: QuoteCreationFunction;                              // override to price dynamically; default = createStandardQuote
   optimisticInference?: boolean;  // default true — provider starts inference in parallel with createQuote
   maxSpeculativeJobs?: number;    // default 2 — max concurrent speculative inference jobs
   defaultMaxOutputTokens?: number; // cap used for maxCharge when a request omits max_tokens (default 4096)

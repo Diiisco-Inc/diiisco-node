@@ -2,10 +2,10 @@ import environment from '../environment/environment'
 import { EventEmitter } from 'events'
 import { QuoteEvent, QuoteQueueEntry, QuoteRequest, QuoteResponse, QuoteCandidate } from '../types/messages';
 import { Environment } from '../environment/environment.types';
-import { selectHighestStakeQuote, selectFirstQuote } from './quoteSelectionMethods';
+import { selectHighestStakeQuote } from './quoteSelectionMethods';
 import { OpenAIInferenceModel } from './models';
-import { createQuoteFromInputTokens } from './quoteCreationMethods';
-import { RawQuote, QuoteSelectionFunction } from '../types/quotes';
+import { createStandardQuote } from './quoteCreationMethods';
+import { RawQuote } from '../types/quotes';
 import algorand, { verifyNFD } from './algorand';
 import diiiscoAssets from './diiiscoAssets';
 import { logger } from './logger';
@@ -34,15 +34,10 @@ export default class quoteEngine {
       this.quoteQueue[id] = {
         quotes: [event],
         timeout: setTimeout(async () => {
-          // In local mode always use selectFirstQuote — selectHighestStakeQuote
-          // requires live Algorand RPC calls which are not available in local mode.
-          const selectionFunction: QuoteSelectionFunction = environment.local?.enabled
-            ? selectFirstQuote
-            : (environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote);
-
-          // Enrich once, then let the (pure) strategy pick.
+          // Enrich once (skips on-chain calls in local mode), then let the
+          // configured strategy pick.
           const candidates = await this.buildCandidates(this.quoteQueue[id].quotes);
-          const selected = await selectionFunction(candidates);
+          const selected = await this.selectQuote(candidates);
 
           this.nodeEventEmitter.emit(`quote-selected-${id}`, { msg: selected.msg, from: selected.from });
 
@@ -53,6 +48,23 @@ export default class quoteEngine {
     } else {
       this.quoteQueue[id].quotes.push(event);
     }
+  }
+
+  // Run the configured selection strategy. Accepts a single function or a list
+  // tried in order (the first that returns a candidate wins), defaulting to —
+  // and ultimately falling back to — highest staked DSCO.
+  private async selectQuote(candidates: QuoteCandidate[]): Promise<QuoteCandidate> {
+    const configured = environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote;
+    const selectors = Array.isArray(configured) ? configured : [configured];
+    for (const selector of selectors) {
+      try {
+        const picked = await selector(candidates);
+        if (picked) return picked;
+      } catch (err) {
+        logger.warn(`⚠️ Quote selector threw, trying next: ${(err as Error).message}`);
+      }
+    }
+    return selectHighestStakeQuote(candidates);
   }
 
   // Attach DSCO balance, NFD status, and response latency to each quote so the
@@ -113,17 +125,14 @@ export default class quoteEngine {
   }
 
   async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel){
-    const MIN_PRICE = 0.000001; // 1 microUSDC — smart contract rejects zero-value quotes
-    const creationFunctionSetting = environment.quoteEngine.quoteCreationFunction ?? [createQuoteFromInputTokens];
-    const creationFunctionArray: Function[] = Array.isArray(creationFunctionSetting) ? creationFunctionSetting : [creationFunctionSetting];
+    const MIN_PRICE = 0.000001; // 1 microUSDC — payments reject zero-value quotes
+    const createFn = environment.quoteEngine.quoteCreationFunction ?? createStandardQuote;
 
-    for (const func of creationFunctionArray){
-      const result: RawQuote = await func(quoteRequestMsg, model);
-      if (result !== null){
-        return { ...result, price: Math.max(result.price, MIN_PRICE) };
-      }
-    }
+    const result: RawQuote | null = await createFn(quoteRequestMsg, model);
+    if (result === null) return null;
 
-    return null
+    // Never quote below the minimum; price mirrors maxCharge on the wire.
+    const clamped = Math.max(result.maxCharge, MIN_PRICE);
+    return { ...result, price: clamped, maxCharge: clamped };
   }
 }
