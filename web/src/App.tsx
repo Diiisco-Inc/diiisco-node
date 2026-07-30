@@ -24,7 +24,7 @@ export function App() {
   return (
     <RouterProvider>
       <header className="site-header">
-        <Link to="/" className="brand">
+        <Link to="https://diiisco.com" className="brand">
           <img src={LOGO_URL} alt="DIIISCO" className="brand-logo" />
         </Link>
         <NavChip />
