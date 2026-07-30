@@ -98,6 +98,8 @@ export class MessageProcessor {
         facilitatorUrl: settlementCfg?.x402?.facilitatorUrl ?? 'https://facilitator.goplausible.xyz/',
         algodUrl: this.env.algorand.client.address,
         algodToken: this.env.algorand.client.token,
+        algodPort: this.env.algorand.client.port,
+        selfSubmitFallback: settlementCfg?.x402?.selfSubmitFallback ?? true,
         quoteTtlSeconds: Math.round(QUOTE_TTL_MS / 1000),
       }));
       logger.info('⚙️ x402 settlement provider registered');
