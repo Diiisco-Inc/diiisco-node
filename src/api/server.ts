@@ -12,7 +12,7 @@ import { MeshMessageQueue } from '../messaging/meshMessageQueue';
 import { Connection } from 'libp2p-tcp';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
-import { OpenAIInferenceModel, pickGenerationParams } from '../utils/models';
+import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
 import OpenAI from 'openai';
 import {
   validateMessagesRequest,
@@ -171,10 +171,13 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       fromWalletAddr: algo.account.addr.toString(),
       timestamp: Date.now(),
       id: sha256(Date.now().toString() + JSON.stringify(body)).slice(0, 56),
+      // Broadcast to every provider — so it carries only what's needed to quote:
+      // the model, our own input-token count, budget, and output cap. The prompt
+      // content stays local and goes only to the winning provider (quote-accepted).
       payload: {
-        ...body,
-        // Requester's per-request budget (§4.2), so providers can size their
-        // quote and generation to it. Enforced locally before signing.
+        model: body.model,
+        inputTokenCount: countInputTokens(body.inputs),
+        max_tokens: body.max_tokens,
         maxSpend: environment.algorand?.settlement?.maxSpend,
       }
     };
@@ -201,7 +204,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
           timestamp: Date.now(),
           id: quote.msg.id,
           fromWalletAddr: algo.account.addr.toString(),
+          // Sent directly to the winning provider only — so this is where the
+          // prompt content (body) is revealed, alongside the selected quote.
           payload: {
+            ...body,
             ...quote.msg.payload,
             settlementMethod,
           }

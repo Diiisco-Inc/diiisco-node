@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
 import environment from "../environment/environment";
-import { OpenAIInferenceModel, pickGenerationParams } from "../utils/models";
+import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
 import quoteEngine from "../utils/quoteEngine";
 import {
   PubSubMessage,
@@ -380,7 +380,6 @@ export class MessageProcessor {
         ...msg.payload,
         quote: {
           model: msg.payload.model,
-          inputCount: msg.payload.inputs.length,
           tokenCount: rawQuote.inputTokens,
           addr: this.algo.account.addr.toString(),
           // Per-token rates: the provider's signed price commitment (§4.2).
@@ -548,13 +547,13 @@ export class MessageProcessor {
 
   /**
    * Output-token cap the requester's budget affords (§4.2 C), or `undefined` if
-   * the request can't be served within it. Uses the input-token count from the
-   * provider's own quote when present, else recounts.
+   * the request can't be served within it. Now that the prompt content arrives
+   * with quote-accepted, the provider re-counts the input from the real content
+   * — this is the real budget enforcement (the quote-time count was advisory).
    */
   private async budgetOutputCap(msg: { payload: any }): Promise<number | undefined> {
     const rates = getRatesPer1M(msg.payload.model);
-    const inputTokens = msg.payload.quote?.tokenCount
-      ?? await this.model.countEmbeddings(msg.payload.model, msg.payload.inputs);
+    const inputTokens = countInputTokens(msg.payload.inputs);
     const plan = planBudget(inputTokens, rates, msg.payload.maxSpend, msg.payload.max_tokens);
     return plan.canServe ? plan.outputCap : undefined;
   }

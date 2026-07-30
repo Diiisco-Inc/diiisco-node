@@ -91,7 +91,9 @@ export function priceFromUsage(
  * same signature to price dynamically (e.g. surge pricing by load).
  */
 export async function createStandardQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
-  const inputTokens: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
+  // The requester supplies its own input-token count so the prompt content isn't
+  // broadcast; the provider re-counts from the real content at accept time.
+  const inputTokens: number = quoteRequestMsg.payload.inputTokenCount ?? 0;
   const rates = getRatesPer1M(quoteRequestMsg.payload.model);
 
   const plan = planBudget(inputTokens, rates, quoteRequestMsg.payload.maxSpend, quoteRequestMsg.payload.max_tokens);

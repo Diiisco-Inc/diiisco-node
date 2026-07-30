@@ -3,9 +3,9 @@ import { NodeProfile } from "./profile";
 
 export interface QuoteRequestPayload {
   model: string;
-  inputs: any; // TODO: Define a more specific type for inputs
-  maxSpend?: number;   // requester's per-request budget in USDC (§4.2); providers budget against it
-  max_tokens?: number; // optional requester output cap, forwarded to the model runtime
+  inputTokenCount: number; // requester counts its own input; the prompt content is NOT broadcast
+  maxSpend?: number;       // requester's per-request budget in USDC (§4.2); providers budget against it
+  max_tokens?: number;     // optional requester output cap, forwarded to the model runtime
 }
 
 export interface QuoteRequest {
@@ -20,8 +20,7 @@ export interface QuoteRequest {
 
 export interface QuoteResponsePayload {
   model: string;
-  inputCount: number;
-  tokenCount: number;              // input tokens counted by the provider (k)
+  tokenCount: number;              // input token count (k), as supplied by the requester
   addr: string;
   // Per-token rates: the provider's signed price commitment (§4.2). There is no
   // provider-set charge ceiling — the requester's own `maxSpend` bounds the cost.
