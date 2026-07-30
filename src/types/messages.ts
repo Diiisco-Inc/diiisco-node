@@ -4,6 +4,8 @@ import { NodeProfile } from "./profile";
 export interface QuoteRequestPayload {
   model: string;
   inputs: any; // TODO: Define a more specific type for inputs
+  maxSpend?: number;   // requester's per-request budget in USDC (§4.2); providers budget against it
+  max_tokens?: number; // optional requester output cap, forwarded to the model runtime
 }
 
 export interface QuoteRequest {
@@ -19,17 +21,12 @@ export interface QuoteRequest {
 export interface QuoteResponsePayload {
   model: string;
   inputCount: number;
-  tokenCount: number;
-  pricePer1M: number;
-  totalPrice: number;
+  tokenCount: number;              // input tokens counted by the provider (k)
   addr: string;
-  // Split pricing + settlement negotiation (additive; older nodes omit these).
-  // totalPrice == maxCharge; the x402 path meters the actual charge from usage,
-  // capped at maxCharge (the ceiling the requester is promised at quote time).
-  pricePerInputToken1M?: number;
-  pricePerOutputToken1M?: number;
-  maxOutputTokens?: number;
-  maxCharge?: number;              // the max price for this request (ceiling)
+  // Per-token rates: the provider's signed price commitment (§4.2). There is no
+  // provider-set charge ceiling — the requester's own `maxSpend` bounds the cost.
+  pricePerInputToken1M: number;
+  pricePerOutputToken1M: number;
   settlementMethods?: 'x402'[];
   assetId?: number;
   quoteExpiresAt?: number;
@@ -210,7 +207,7 @@ export interface QuoteQueueEntry {
  * the quote engine before selection so the strategies stay pure and synchronous.
  */
 export interface QuoteCandidate {
-  quote: QuoteResponsePayload;   // quote attributes (maxCharge, per-input/output token price, model, …)
+  quote: QuoteResponsePayload;   // quote attributes (per-input/output token rates, model, …)
   from: string;                  // provider peer id
   fromWalletAddr: string;        // provider wallet address
   dscoBalance: bigint;           // DSCO held by the provider wallet (0 if none / local mode)

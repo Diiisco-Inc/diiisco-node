@@ -7,10 +7,14 @@ import { QuoteCandidate } from "../types/messages";
 // Providers can configure `quoteEngine.quoteSelectionFunction` with one of
 // these, a custom one with the same shape, or a list (tried in order).
 
-// Select the cheapest quote (lowest max charge).
+// Select the cheapest quote by combined per-token rates (there is no fixed
+// max charge to compare — cost depends on the eventual output length).
+function combinedRate(c: QuoteCandidate): number {
+  return (c.quote.pricePerInputToken1M ?? 0) + (c.quote.pricePerOutputToken1M ?? 0);
+}
 export function selectCheapestQuote(candidates: QuoteCandidate[]): QuoteCandidate {
   return candidates.reduce((prev, curr) =>
-    (curr.quote.maxCharge ?? curr.quote.totalPrice) < (prev.quote.maxCharge ?? prev.quote.totalPrice) ? curr : prev
+    combinedRate(curr) < combinedRate(prev) ? curr : prev
   );
 }
 

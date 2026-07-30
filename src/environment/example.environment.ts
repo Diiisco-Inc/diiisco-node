@@ -32,6 +32,11 @@ const environment: Environment = {
       // Settlement methods offered/accepted, in preference order. x402 is the
       // only method (escrow has been retired). Omit to disable public settlement.
       methods: ["x402"],
+      // Per-request spending limit in USDC. As a requester this is the most the
+      // node will ever pay for one request — it refuses to sign anything above
+      // it, and refuses to pay at all if this is unset. As a provider it's what
+      // requesters send you to budget their quote + generation against.
+      maxSpend: 0.10,
       x402: {
         facilitatorUrl: "https://facilitator.goplausible.xyz/",
         selfSubmitFallback: true,           // Submit the signed group to algod if the facilitator is down
@@ -56,7 +61,6 @@ const environment: Environment = {
     // Optional: override pricing with a custom function (same signature as
     // createStandardQuote) for dynamic/surge pricing. Defaults to the standard quote.
     preferSelf: true,                       // Serve requests locally when the model is available, bypassing the network
-    defaultMaxOutputTokens: 4096,           // Output-token cap used to size the quote ceiling when a request omits max_tokens
   },
   libp2pBootstrapServers: [
     "lon.diiisco.algo",

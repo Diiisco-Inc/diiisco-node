@@ -1,10 +1,8 @@
 import environment from "../environment/environment";
 import { QuoteRequest } from "../types/messages";
-import { RawQuote } from "../types/quotes";
+import { RawQuote, BudgetPlan } from "../types/quotes";
 import { TokenRate } from "../environment/environment.types";
 import { OpenAIInferenceModel } from "./models";
-
-const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 
 export interface TokenRates {
   input: number;
@@ -31,61 +29,77 @@ export function getRatesPer1M(model: string): TokenRates {
   return { input: 0.001, output: 0.001 };
 }
 
-// Output-token cap used to size maxCharge: the request's max_tokens if given,
-// else the configured default. Bounds the ceiling for open-ended requests.
-function getMaxOutputTokens(quoteRequestMsg: QuoteRequest): number {
-  const requested = (quoteRequestMsg.payload as any).max_tokens;
-  if (typeof requested === "number" && requested > 0) return requested;
-  return environment.quoteEngine.defaultMaxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+/**
+ * Resolve the requester's `maxSpend` budget against a request (§4.2 C): decide
+ * whether the provider can serve it, and how many output tokens the remaining
+ * budget affords. Used both at quote time (to decide whether to quote) and at
+ * inference time (to cap generation).
+ *
+ *   inputCost = k · r_in / 1e6
+ *   don't serve if maxSpend unset, or inputCost ≥ maxSpend
+ *   o = floor((maxSpend − inputCost) · 1e6 / r_out)   → don't serve if o ≤ 0
+ *   outputCap = requesterMaxTokens ? min(o, requesterMaxTokens) : o
+ */
+export function planBudget(
+  inputTokens: number,
+  rates: TokenRates,
+  maxSpend: number | undefined,
+  requesterMaxTokens?: number
+): BudgetPlan {
+  const inputCost = (inputTokens / 1_000_000) * rates.input;
+  if (!maxSpend || maxSpend <= 0 || inputCost >= maxSpend) {
+    return { canServe: false, inputCost, outputCap: 0 };
+  }
+
+  const remaining = maxSpend - inputCost;
+  // Free-output edge: if r_out is 0 the budget doesn't bound output; fall back
+  // to the requester's own cap (or unbounded — charge is inputCost ≤ maxSpend).
+  let outputCap = rates.output > 0
+    ? Math.floor((remaining * 1_000_000) / rates.output)
+    : (requesterMaxTokens ?? Number.MAX_SAFE_INTEGER);
+
+  if (outputCap <= 0) return { canServe: false, inputCost, outputCap: 0 };
+  if (requesterMaxTokens && requesterMaxTokens > 0) outputCap = Math.min(outputCap, requesterMaxTokens);
+
+  return { canServe: true, inputCost, outputCap };
 }
 
-// Price a completed inference from its real token usage, capped at maxCharge.
-// Used at settlement time (x402): the provider knows actual usage before it
-// issues the payment challenge, so it charges min(actualPrice, maxCharge).
+// Price a completed inference from its real token usage, clamped to the
+// requester's budget (§4.2 D). Used at settlement time: the provider knows the
+// actual usage before it issues the payment challenge.
 export function priceFromUsage(
   usage: { prompt_tokens?: number; completion_tokens?: number } | undefined,
   rates: TokenRates,
-  maxCharge: number
+  maxSpend: number
 ): number {
   const inputTokens = usage?.prompt_tokens ?? 0;
   const outputTokens = usage?.completion_tokens ?? 0;
   const actual = parseFloat(
     ((inputTokens / 1_000_000) * rates.input + (outputTokens / 1_000_000) * rates.output).toFixed(6)
   );
-  return Math.min(actual, maxCharge);
-}
-
-// Assemble a RawQuote from an input-token count and a maxCharge (the ceiling),
-// filling the split-pricing fields consistently for all creation strategies.
-function buildQuote(inputTokens: number, rates: TokenRates, maxOutputTokens: number, maxCharge: number): RawQuote {
-  return {
-    price: maxCharge,      // escrow / legacy call sites read this
-    rate: rates.input,     // legacy per-1M rate
-    tokens: inputTokens,
-    pricePerInputToken1M: rates.input,
-    pricePerOutputToken1M: rates.output,
-    maxOutputTokens,
-    maxCharge,
-  };
+  return Math.min(actual, maxSpend);
 }
 
 /**
- * The default (and only built-in) quote creation strategy. Prices a request at
- * the standard ceiling: input cost + capped output cost, using the per-model
- * input/output rates from config.
+ * The default (and only built-in) quote creation strategy. Counts input tokens,
+ * looks up the per-model rates, and — if the requester's `maxSpend` budget can
+ * cover at least the input plus some output — returns a quote carrying the
+ * rates. Returns `null` (don't quote) when the request can't be served within
+ * the budget.
  *
  * Providers can supply their own `quoteEngine.quoteCreationFunction` with this
- * same signature to price dynamically (e.g. surge pricing by load) — it just
- * needs to return a `RawQuote`.
+ * same signature to price dynamically (e.g. surge pricing by load).
  */
 export async function createStandardQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
   const inputTokens: number = await model.countEmbeddings(quoteRequestMsg.payload.model, quoteRequestMsg.payload.inputs);
   const rates = getRatesPer1M(quoteRequestMsg.payload.model);
-  const maxOutputTokens = getMaxOutputTokens(quoteRequestMsg);
 
-  const maxCharge = parseFloat(
-    ((inputTokens / 1_000_000) * rates.input + (maxOutputTokens / 1_000_000) * rates.output).toFixed(6)
-  );
+  const plan = planBudget(inputTokens, rates, quoteRequestMsg.payload.maxSpend, quoteRequestMsg.payload.max_tokens);
+  if (!plan.canServe) return null;
 
-  return buildQuote(inputTokens, rates, maxOutputTokens, maxCharge);
+  return {
+    pricePerInputToken1M: rates.input,
+    pricePerOutputToken1M: rates.output,
+    inputTokens,
+  };
 }

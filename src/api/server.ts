@@ -172,7 +172,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       timestamp: Date.now(),
       id: sha256(Date.now().toString() + JSON.stringify(body)).slice(0, 56),
       payload: {
-        ...body
+        ...body,
+        // Requester's per-request budget (§4.2), so providers can size their
+        // quote and generation to it. Enforced locally before signing.
+        maxSpend: environment.algorand?.settlement?.maxSpend,
       }
     };
 

@@ -54,7 +54,6 @@ export interface QuoteEngineConfig {
   quoteCreationFunction?: QuoteCreationFunction;                              // override to price dynamically; default = createStandardQuote
   optimisticInference?: boolean;  // default true — provider starts inference in parallel with createQuote
   maxSpeculativeJobs?: number;    // default 2 — max concurrent speculative inference jobs
-  defaultMaxOutputTokens?: number; // cap used for maxCharge when a request omits max_tokens (default 4096)
 }
 
 export interface PeerIdStorageConfig {
@@ -85,6 +84,10 @@ export interface SettlementConfig {
   // Accepted/offered settlement methods, preference-ordered. Default ['x402'].
   // Network + USDC asset are taken from the parent `algorand.network`.
   methods?: 'x402'[];
+  // Requester's per-request spending limit in USDC (§4.2). Sent in the
+  // quote-request and enforced locally before signing. Unset ⇒ the node refuses
+  // to pay (never signs an unbounded cheque).
+  maxSpend?: number;
   x402?: X402Config;
 }
 

@@ -26,7 +26,7 @@ import { Environment } from "../environment/environment.types";
 import diiiscoAssets from "../utils/diiiscoAssets";
 import { verifyNFD } from '../utils/algorand';
 import { RawQuote } from "../types/quotes";
-import { priceFromUsage } from "../utils/quoteCreationMethods";
+import { priceFromUsage, planBudget, getRatesPer1M } from "../utils/quoteCreationMethods";
 import { MessageRouter } from './messageRouter';
 import { SpeculativeInferenceCache } from './speculativeInferenceCache';
 import { SettlementRegistry, SettlementProvider, SettlementMethod } from '../settlement/settlementProvider';
@@ -36,6 +36,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 
 const QUOTE_TTL_MS = 120_000;      // validity window advertised on quotes (x402 requires one)
 const COMPLETION_TTL_MS = 120_000; // how long a withheld completion is held awaiting payment
+const MIN_CHARGE = 0.000001;       // 1 µUSDC — x402/facilitator reject a zero-value transfer
 
 export class MessageProcessor {
   private algo: algorand;
@@ -378,14 +379,11 @@ export class MessageProcessor {
         quote: {
           model: msg.payload.model,
           inputCount: msg.payload.inputs.length,
-          tokenCount: rawQuote.tokens,
-          pricePer1M: rawQuote.rate,
-          totalPrice: rawQuote.price,
+          tokenCount: rawQuote.inputTokens,
           addr: this.algo.account.addr.toString(),
+          // Per-token rates: the provider's signed price commitment (§4.2).
           pricePerInputToken1M: rawQuote.pricePerInputToken1M,
           pricePerOutputToken1M: rawQuote.pricePerOutputToken1M,
-          maxOutputTokens: rawQuote.maxOutputTokens,
-          maxCharge: rawQuote.maxCharge,
           // Settlement negotiation: the requester picks one of these methods.
           settlementMethods: this.offeredSettlementMethods(),
           assetId: diiiscoAssets.usdc,
@@ -424,18 +422,26 @@ export class MessageProcessor {
       return;
     }
 
-    // Optimistic inference: start as soon as the quote is accepted.
+    // Cap generation at what the requester's budget affords (§4.2 C), so the
+    // provider never spends more compute than the budget pays for.
+    const outputCap = await this.budgetOutputCap(msg);
+    if (outputCap === undefined) {
+      logger.warn(`❌ Cannot serve ${msg.id} within the requester's budget; dropping.`);
+      return;
+    }
+
+    // Optimistic inference: start as soon as the quote is accepted (budget-capped).
     if (this.env.quoteEngine?.optimisticInference !== false) {
       this.speculativeCache.start(msg.id, () =>
-        this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload))
+        this.model.getResponse(msg.payload.model, msg.payload.inputs, this.genParams(msg.payload, outputCap))
       );
     }
 
-    // Compute the answer, hold it, and bill the actual usage (capped at maxCharge).
-    const completion = await this.runInference(msg);
+    // Compute the answer, hold it, and bill the actual usage (clamped to maxSpend).
+    const completion = await this.runInference(msg, outputCap);
     this.stashCompletion(msg.id, completion);
 
-    const charge = this.chargeForCompletion(msg.payload.quote, completion);
+    const charge = this.chargeForCompletion(msg.payload, completion);
     const amount = BigInt(Math.round(charge * 1_000_000));
     const paymentRequirements = await this.settlementFor(msg).createPaymentRequest({ quoteId: msg.id, amount });
 
@@ -454,8 +460,11 @@ export class MessageProcessor {
   }
 
   /**
-   * Requester side. The answer is ready; pay to unlock it. Enforce the ceiling
-   * we were quoted before signing, then return proof-of-payment.
+   * Requester side. The answer is ready; pay to unlock it. The spending gate
+   * here is the security anchor (§4.2 E): the requester refuses to sign any
+   * payment exceeding its **local** `maxSpend`, and refuses outright if no
+   * `maxSpend` is configured — so it can never sign an unbounded cheque, no
+   * matter what a modified provider requests.
    */
   private async handleContractCreated(msg: ContractCreated, sourcePeerId: string) {
     const request = msg.payload?.paymentRequirements;
@@ -464,10 +473,14 @@ export class MessageProcessor {
       return;
     }
 
-    const maxCharge = msg.payload?.quote?.maxCharge ?? msg.payload?.quote?.totalPrice;
+    const localMaxSpend = this.env.algorand?.settlement?.maxSpend;
+    if (localMaxSpend === undefined || localMaxSpend <= 0) {
+      logger.warn(`❌ Refusing to pay ${msg.id}: no local maxSpend configured (never sign an unbounded cheque).`);
+      return;
+    }
     const requestedAmount = BigInt(request.amount);
-    if (typeof maxCharge === 'number' && requestedAmount > BigInt(Math.round(maxCharge * 1_000_000))) {
-      logger.warn(`❌ Payment request for ${msg.id} (${requestedAmount}) exceeds quoted maxCharge; refusing.`);
+    if (requestedAmount > BigInt(Math.round(localMaxSpend * 1_000_000))) {
+      logger.warn(`❌ Payment request for ${msg.id} (${requestedAmount} µUSDC) exceeds local maxSpend; refusing.`);
       return;
     }
 
@@ -493,12 +506,12 @@ export class MessageProcessor {
    */
   private async handleContractSigned(msg: ContractSigned, sourcePeerId: string) {
     const evidence = msg.payload?.paymentPayload;
-    const maxCharge = msg.payload?.quote?.maxCharge ?? msg.payload?.quote?.totalPrice ?? 0;
+    const maxSpend = msg.payload?.maxSpend ?? 0;
     const settlement = this.settlementFor(msg);
 
     const verified = await settlement.verifyPayment({
       quoteId: msg.id,
-      expectedAmount: BigInt(Math.round(maxCharge * 1_000_000)),
+      expectedAmount: BigInt(Math.round(maxSpend * 1_000_000)),
       evidence,
     });
     if (!verified.ok) {
@@ -515,10 +528,33 @@ export class MessageProcessor {
     this.settleInBackground(settlement, msg.id, evidence);
   }
 
-  /** Resolve a (possibly speculative) inference result for a quote. */
-  private async runInference(msg: { id: string; payload: any }): Promise<any> {
+  /** Resolve a (possibly speculative) inference result, capping output if given. */
+  private async runInference(msg: { id: string; payload: any }, outputCap?: number): Promise<any> {
     return (await this.speculativeCache.resolve(msg.id))
-      ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs, pickGenerationParams(msg.payload));
+      ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs, this.genParams(msg.payload, outputCap));
+  }
+
+  /** Generation params for the runtime, with the budget-derived output cap applied. */
+  private genParams(payload: any, outputCap?: number) {
+    const params = pickGenerationParams(payload);
+    // Number.MAX_SAFE_INTEGER is the free-output sentinel (§4.2) — leave uncapped.
+    if (outputCap !== undefined && outputCap !== Number.MAX_SAFE_INTEGER) {
+      params.max_tokens = outputCap;
+    }
+    return params;
+  }
+
+  /**
+   * Output-token cap the requester's budget affords (§4.2 C), or `undefined` if
+   * the request can't be served within it. Uses the input-token count from the
+   * provider's own quote when present, else recounts.
+   */
+  private async budgetOutputCap(msg: { payload: any }): Promise<number | undefined> {
+    const rates = getRatesPer1M(msg.payload.model);
+    const inputTokens = msg.payload.quote?.tokenCount
+      ?? await this.model.countEmbeddings(msg.payload.model, msg.payload.inputs);
+    const plan = planBudget(inputTokens, rates, msg.payload.maxSpend, msg.payload.max_tokens);
+    return plan.canServe ? plan.outputCap : undefined;
   }
 
   private async sendInferenceResponse(msg: { id: string; payload: any }, sourcePeerId: string, completion: any) {
@@ -536,14 +572,16 @@ export class MessageProcessor {
     logger.info(`📤 Sent inference-response to ${sourcePeerId}`);
   }
 
-  /** Actual charge = metered from real usage, capped at the quoted maxCharge. */
-  private chargeForCompletion(quote: any, completion: any): number {
+  /** Actual charge = metered from real usage (§4.2 D), clamped to the requester's
+   *  budget and floored at the 1 µUSDC minimum transfer. */
+  private chargeForCompletion(payload: any, completion: any): number {
+    const quote = payload?.quote;
     const rates = {
-      input: quote?.pricePerInputToken1M ?? quote?.pricePer1M ?? 0,
-      output: quote?.pricePerOutputToken1M ?? quote?.pricePer1M ?? 0,
+      input: quote?.pricePerInputToken1M ?? 0,
+      output: quote?.pricePerOutputToken1M ?? 0,
     };
-    const maxCharge = quote?.maxCharge ?? quote?.totalPrice ?? 0;
-    return priceFromUsage(completion?.usage, rates, maxCharge);
+    const maxSpend = payload?.maxSpend ?? 0;
+    return Math.max(priceFromUsage(completion?.usage, rates, maxSpend), MIN_CHARGE);
   }
 
   private stashCompletion(id: string, completion: any): void {

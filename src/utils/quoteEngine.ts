@@ -124,15 +124,11 @@ export default class quoteEngine {
     return verified;
   }
 
-  async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel){
-    const MIN_PRICE = 0.000001; // 1 microUSDC — payments reject zero-value quotes
+  async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
+    // The quote carries per-token rates only; there is no price ceiling to clamp
+    // (§4.2). A null result means the request can't be served within the
+    // requester's budget, so the provider doesn't quote.
     const createFn = environment.quoteEngine.quoteCreationFunction ?? createStandardQuote;
-
-    const result: RawQuote | null = await createFn(quoteRequestMsg, model);
-    if (result === null) return null;
-
-    // Never quote below the minimum; price mirrors maxCharge on the wire.
-    const clamped = Math.max(result.maxCharge, MIN_PRICE);
-    return { ...result, price: clamped, maxCharge: clamped };
+    return createFn(quoteRequestMsg, model);
   }
 }
