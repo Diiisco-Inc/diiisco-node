@@ -3,6 +3,7 @@ import { setLocalAddressProvider } from './libp2p/localAddresses';
 import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck, stopConnectionHealthCheck } from './libp2p/reconnection';
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
+import { pathToFileURL } from 'node:url';
 import algorand from "./utils/algorand";
 import environment from "./environment/environment";
 import { Environment } from "./environment/environment.types";
@@ -368,7 +369,11 @@ export { Application };
 export { configureEnvironment } from './environment/environment';
 export type { Environment } from './environment/environment.types';
 
-const isMainModule = import.meta.url.replace('%20', ' ') === `file://${process.argv[1]}`
+// Are we the entry module (run directly, e.g. `node dist/index.js`) vs imported
+// as a library? Compare proper file:// URLs — `pathToFileURL` handles Windows
+// paths (drive letters, backslashes) and space encoding, which the previous
+// string concatenation did not, so on Windows the app silently never started.
+const isMainModule = (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href)
   || typeof process.env.pm_id !== 'undefined';
 
 if (isMainModule) {
