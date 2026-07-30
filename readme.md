@@ -19,11 +19,13 @@ DIIISCO is open-source and free forever. Any application that calls an OpenAI Co
 
 ## 🪩 How DIIISCO works
 
-When a request arrives at a DIIISCO node, it is broadcast to the network as a quote request. Nodes that can serve the model respond with a price. The best quote is selected, an on-chain escrow contract is created, inference runs, and payment is released automatically on delivery. Nodes that don't need payment such as private clusters, skip the contract entirely and serve inference directly overf the network.
+When a request arrives at a DIIISCO node, it is broadcast to the network as a quote request that carries the requester's per-request budget (`maxSpend`) — but **not** the prompt itself. Nodes that can serve the model respond with their per-token price. The best quote is selected and the prompt is sent **directly to that one provider**, which runs inference (capped to what the budget affords), withholds the answer, and asks the requester to pay the actual metered cost via **x402**: a single signed USDC transfer, verified off-chain and settled on Algorand in ~3 seconds. The answer is released the moment payment is verified. Private clusters skip payment entirely and serve inference directly over the network.
+
+Because the requester enforces its own `maxSpend` before signing, a node can never be charged more than the budget it set — no matter what a provider claims.
 
 ### Public network (payments enabled)
 
-Nodes connect to the global DIIISCO network. Requesters pay providers in USDC; providers earn DSCO tokens as an additional reward. Requires an Algorand wallet on each node.
+Nodes connect to the global DIIISCO network. Requesters pay providers in **USDC** per token actually used. Holding **DSCO** improves a provider's standing in quote selection (selection is stake-weighted by default). Requires an Algorand wallet on each node.
 
 ### Private network (payments disabled)
 
@@ -64,7 +66,6 @@ cp src/environment/example.environment.ts src/environment/environment.ts
 ```typescript
 import { Environment } from "./environment.types";
 import { selectHighestStakeQuote } from "../utils/quoteSelectionMethods";
-import { createQuoteFromInputTokens } from "../utils/quoteCreationMethods";
 
 const environment: Environment = {
   peerIdStorage: {
@@ -76,20 +77,29 @@ const environment: Environment = {
     port: 11434,                     // Default Ollama port
     apiKey: "",                      // Usually not needed for local LLMs
     chargePer1MTokens: {
-      default: 0.01703,              // Price per 1M tokens in USDC
-      "llama3:8b": 0.01,             // Per-model price override
+      // Price per 1M tokens in USDC. A bare number sets equal input/output
+      // rates; use { input, output } to price them separately.
+      default: 0.01703,
+      "llama3:8b": { input: 0.01, output: 0.03 },  // Per-model split-rate override
     }
   },
   algorand: {
-    addr: "YOUR_ALGORAND_ADDRESS",
-    mnemonic: "YOUR_25_WORD_MNEMONIC",
+    mnemonic: "YOUR_25_WORD_MNEMONIC",   // The wallet address is derived from this
     network: "mainnet",
     client: {
       address: "https://mainnet-api.algonode.cloud/",
       port: 443,
       token: ""
     },
-    nfd: "your-name.diiisco.algo",   // Optional — see Verified Identity below
+    nfd: "your-name.diiisco.algo",       // Optional — see Verified Identity below
+    settlement: {
+      methods: ["x402"],                 // Settlement method (x402 is the only one)
+      maxSpend: 0.01,                    // USDC — most you'll pay per request; unset = won't pay
+      x402: {
+        facilitatorUrl: "https://facilitator.goplausible.xyz/",
+        selfSubmitFallback: true,        // Submit to algod directly if the facilitator is down
+      },
+    },
   },
   api: {
     enabled: true,
@@ -101,7 +111,6 @@ const environment: Environment = {
   quoteEngine: {
     waitTime: 1000,                  // How long to collect quotes before selecting (ms)
     quoteSelectionFunction: selectHighestStakeQuote,
-    quoteCreationFunction: [createQuoteFromInputTokens],
     preferSelf: true,                // Serve locally when model is available, skipping the network
   },
   libp2pBootstrapServers: [
@@ -141,7 +150,6 @@ const environment: Environment = {
   },
   quoteEngine: {
     waitTime: 1000,
-    quoteCreationFunction: [createQuoteFromInputTokens],
   },
   libp2pBootstrapServers: [
     "/ip4/192.168.1.10/tcp/4242/p2p/<peer-id-of-your-bootstrap-node>",
@@ -159,7 +167,7 @@ const environment: Environment = {
 
 When `local.enabled` is `true`:
 - 🔓 No Algorand wallet is required. Each node generates an ephemeral signing key at startup.
-- 🆓 All inference is served freely. Payment contract steps are skipped entirely.
+- 🆓 All inference is served freely. Quoting and x402 settlement are skipped entirely.
 - 🔐 Only nodes sharing the same `privateTopic` can communicate.
 
 For single-machine or LAN setups you can omit `libp2pBootstrapServers` entirely and rely on mDNS auto-discovery.
@@ -184,21 +192,30 @@ For single-machine or LAN setups you can omit `libp2pBootstrapServers` entirely 
 | `baseURL` | `http://localhost` | Base URL of your LLM backend |
 | `port` | `11434` | Port of your LLM backend (Ollama default) |
 | `apiKey` | `""` | API key for the LLM backend, if required |
-| `chargePer1MTokens` | — | USDC price per 1M tokens. `default` applies to all models; add per-model keys to override |
+| `chargePer1MTokens` | — | USDC price per 1M tokens. A bare number sets equal input/output rates; use `{ input, output }` to price them separately. `default` applies to all models; add per-model keys to override. |
 
 ### `algorand` (public network only)
 
 | Field | Description |
 |---|---|
-| `addr` | Your Algorand wallet address |
-| `mnemonic` | Your 25-word mnemonic passphrase |
-| `network` | `"mainnet"` or `"testnet"` |
+| `mnemonic` | Your 25-word mnemonic passphrase — the wallet address is derived from this |
+| `network` | `"mainnet"` or `"testnet"` — selects the USDC ASA and CAIP-2 id used for settlement |
 | `client.address` | Algod API endpoint |
 | `client.port` | Algod API port |
 | `client.token` | Algod API token (empty for public nodes) |
 | `nfd` | Optional `.diiisco.algo` NFD domain for verified on-chain identity |
+| `settlement` | x402 settlement config — see below |
 
-On startup, the node automatically opts into the DSCO and USDC assets and registers with the DIIISCO smart contract if not already done. This requires a small ALGO balance for transaction fees and box storage.
+On startup, the node automatically opts into the DSCO and USDC assets if not already done. This requires a small ALGO balance for the opt-in and for x402 transaction fees.
+
+### `algorand.settlement`
+
+| Field | Default | Description |
+|---|---|---|
+| `methods` | `["x402"]` | Accepted/offered settlement methods, preference-ordered. x402 is currently the only method. |
+| `maxSpend` | — | **Per-request spending limit in USDC.** As a requester, the node never signs a payment above this (and refuses to pay at all if unset) — so it can't be overcharged. As a provider, it's the budget requesters send you to size their quote and generation. |
+| `x402.facilitatorUrl` | GoPlausible | URL of the x402 facilitator that verifies and submits payments |
+| `x402.selfSubmitFallback` | `true` | If the facilitator is unreachable, submit the signed payment group directly to algod |
 
 ### `api`
 
@@ -215,14 +232,15 @@ On startup, the node automatically opts into the DSCO and USDC assets and regist
 | Field | Default | Description |
 |---|---|---|
 | `waitTime` | `1000` | How long (ms) to collect quotes before selecting the best one |
-| `quoteSelectionFunction` | `selectHighestStakeQuote` | Strategy used to choose among received quotes |
-| `quoteCreationFunction` | `[createQuoteFromInputTokens]` | How the node prices its own quotes |
+| `quoteSelectionFunction` | `selectHighestStakeQuote` | Strategy (or list of strategies, tried in order) used to choose among received quotes |
+| `quoteCreationFunction` | `createStandardQuote` | Optional override for how the node prices its own quotes — supply a function with the same signature for dynamic/surge pricing. Defaults to per-token rates from `chargePer1MTokens`. |
 | `preferSelf` | `true` | If `true` and the requested model is available locally, serve it directly without broadcasting to the network |
 
 **Quote selection strategies:**
 
-- `selectHighestStakeQuote` — prefers providers with the most DSCO staked (default, public network)
-- `selectFirstQuote` — takes the first quote received (default in local mode)
+- `selectHighestStakeQuote` — prefers providers holding the most DSCO, breaking ties on verified NFD then response speed (default)
+- `selectCheapestQuote` — prefers the lowest combined per-token rate
+- `selectFastestQuote` — prefers the provider that responded quickest
 
 ### `node`
 
@@ -338,22 +356,20 @@ Returns `200 API is healthy`. No authentication required. Suitable for load bala
 
 #### `GET /health/algorand`
 
-Returns the Algorand wallet and contract registration status. Returns `200` when everything is healthy, `503` when the node is not ready to participate in paid inference.
+Returns the Algorand wallet status. Returns `200` when the node is ready to participate in paid inference (algod reachable and the wallet opted into USDC), `503` otherwise.
 
 ```json
 {
   "localMode": false,
   "address": "XXXX...",
-  "appId": 3357935482,
   "algodReachable": true,
   "algoBalance": "13.269000 ALGO",
   "dsco": { "optedIn": true, "balance": "463414" },
-  "usdc": { "optedIn": true, "balance": "2.940801 USDC" },
-  "contractRegistered": true
+  "usdc": { "optedIn": true, "balance": "2.940801 USDC" }
 }
 ```
 
-A `503` with `contractRegistered: false` means the wallet hasn't registered with the DIIISCO smart contract — typically caused by insufficient ALGO balance at first startup.
+A `503` means algod is unreachable or the wallet hasn't opted into USDC — typically caused by insufficient ALGO balance to complete the opt-in at first startup.
 
 ---
 
