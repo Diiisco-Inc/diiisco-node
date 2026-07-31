@@ -2,8 +2,8 @@ import algosdk from "algosdk";
 import {
   ExactAvmScheme,
   toClientAvmSigner,
-  ALGORAND_MAINNET_CAIP2,
-  ALGORAND_TESTNET_CAIP2,
+  ALGORAND_MAINNET_GENESIS_HASH,
+  ALGORAND_TESTNET_GENESIS_HASH,
   USDC_DECIMALS,
   decodeTransaction,
   getTransactionId,
@@ -61,7 +61,12 @@ export class X402Settlement implements SettlementProvider {
 
   constructor(config: X402SettlementConfig) {
     this.account = config.account;
-    this.caip2 = config.network === "testnet" ? ALGORAND_TESTNET_CAIP2 : ALGORAND_MAINNET_CAIP2;
+    // The facilitator matches networks on the FULL genesis-hash CAIP-2 form
+    // (algorand:<base64 genesis hash>), not the library's truncated canonical id
+    // — sending the truncated form fails verify with "Network not supported".
+    this.caip2 = config.network === "testnet"
+      ? `algorand:${ALGORAND_TESTNET_GENESIS_HASH}`
+      : `algorand:${ALGORAND_MAINNET_GENESIS_HASH}`;
     this.usdcAssetId = String(config.usdcAssetId);
     this.algodUrl = config.algodUrl;
     this.algodToken = config.algodToken;
