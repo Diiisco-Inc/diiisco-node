@@ -32,6 +32,28 @@ export function pickGenerationParams(obj: any): GenerationParams {
   return params;
 }
 
+/**
+ * Count input tokens with the llama tokenizer. Pure CPU/JS — no model backend —
+ * so the requester can count its own input before requesting a quote, letting
+ * the prompt content stay off the broadcast (only the winning provider sees it).
+ */
+export function countInputTokens(inputs: any[]): number {
+  return (inputs ?? []).reduce((acc: number, input: any) => {
+    let text: string;
+    if (typeof input === 'string') {
+      text = input;
+    } else if (Array.isArray(input.content)) {
+      text = input.content
+        .filter((part: any) => part.type === 'text')
+        .map((part: any) => part.text)
+        .join('');
+    } else {
+      text = input.content || '';
+    }
+    return acc + tokenizer.encode(text).length;
+  }, 0);
+}
+
 export class OpenAIInferenceModel {
   openai: OpenAI;
   private env: Environment;
@@ -69,21 +91,7 @@ export class OpenAIInferenceModel {
   }
 
   async countEmbeddings(model: string, inputs: any[]) {
-    return inputs.reduce((acc, input) => {
-      let text: string;
-      if (typeof input === 'string') {
-        text = input;
-      } else if (Array.isArray(input.content)) {
-        text = input.content
-          .filter((part: any) => part.type === 'text')
-          .map((part: any) => part.text)
-          .join('');
-      } else {
-        text = input.content || '';
-      }
-      const tokens = tokenizer.encode(text);
-      return acc + tokens.length;
-    }, 0);
+    return countInputTokens(inputs);
   }
 
   async addModel(models: Model[]) {

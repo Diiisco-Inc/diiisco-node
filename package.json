@@ -45,6 +45,8 @@
     "@libp2p/yamux": "^8.0.1",
     "@multiformats/multiaddr": "^13.0.1",
     "@txnlab/nfd-sdk": "0.10.1",
+    "@x402/avm": "^2.20.0",
+    "@x402/core": "^2.20.0",
     "algosdk": "^3.5.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",

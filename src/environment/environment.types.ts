@@ -1,6 +1,5 @@
 import PeerId from 'peer-id';
-import { QuoteEvent } from '../types/messages';
-import { QuoteCreationFunction } from '../types/quotes';
+import { QuoteCreationFunction, QuoteSelectionFunction } from '../types/quotes';
 
 export interface AlgorandClientConfig {
   address: string;
@@ -9,12 +8,18 @@ export interface AlgorandClientConfig {
 }
 
 export interface AlgorandConfig {
-  addr: string;
-  mnemonic: string;
+  mnemonic: string;                   // wallet identity + signing key; the address is derived from this
   client: AlgorandClientConfig;
-  network?: 'mainnet' | 'testnet';
+  network?: 'mainnet' | 'testnet';    // selects the USDC ASA + CAIP-2 id used by x402 settlement
   nfd?: string;
+  settlement?: SettlementConfig;      // x402 settlement; omit → node cannot settle on the public network
 }
+
+/**
+ * Per-1M-token rate. A bare `number` is shorthand for equal input/output rates
+ * (`{ input: n, output: n }`) — keeps existing scalar configs working unchanged.
+ */
+export type TokenRate = number | { input: number; output: number };
 
 export interface ModelsConfig {
   enabled: boolean;
@@ -22,8 +27,8 @@ export interface ModelsConfig {
   port: number;
   apiKey: string;
   chargePer1MTokens?: {
-    default: number;
-    [key: string]: number;
+    default: TokenRate;
+    [key: string]: TokenRate;
   };
   chargePer1KTokens?: {
     default: number;
@@ -45,8 +50,8 @@ export interface ApiConfig {
 export interface QuoteEngineConfig {
   waitTime: number;
   preferSelf?: boolean;
-  quoteSelectionFunction?: (quotes: QuoteEvent[]) => Promise<QuoteEvent>;
-  quoteCreationFunction?: QuoteCreationFunction | QuoteCreationFunction[];
+  quoteSelectionFunction?: QuoteSelectionFunction | QuoteSelectionFunction[]; // one strategy, or a list tried in order
+  quoteCreationFunction?: QuoteCreationFunction;                              // override to price dynamically; default = createStandardQuote
   optimisticInference?: boolean;  // default true — provider starts inference in parallel with createQuote
   maxSpeculativeJobs?: number;    // default 2 — max concurrent speculative inference jobs
 }
@@ -68,6 +73,22 @@ export interface DirectMessagingConfig {
 export interface LocalConfig {
   enabled: boolean;
   privateTopic?: string;
+}
+
+export interface X402Config {
+  facilitatorUrl?: string;            // default https://facilitator.goplausible.xyz/
+  selfSubmitFallback?: boolean;       // default true — submit signed group to algod if facilitator settle fails
+}
+
+export interface SettlementConfig {
+  // Accepted/offered settlement methods, preference-ordered. Default ['x402'].
+  // Network + USDC asset are taken from the parent `algorand.network`.
+  methods?: 'x402'[];
+  // Requester's per-request spending limit in USDC (§4.2). Sent in the
+  // quote-request and enforced locally before signing. Unset ⇒ the node refuses
+  // to pay (never signs an unbounded cheque).
+  maxSpend?: number;
+  x402?: X402Config;
 }
 
 export interface Environment {

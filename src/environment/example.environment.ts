@@ -1,6 +1,5 @@
 import { Environment } from "./environment.types";
 import { selectHighestStakeQuote } from "../utils/quoteSelectionMethods";
-import { createQuoteFromInputTokens } from "../utils/quoteCreationMethods";
 import { deepMerge } from "../utils/deepMerge";
 
 const environment: Environment = {
@@ -13,20 +12,36 @@ const environment: Environment = {
     port: 11434,                            // Default Ollama port
     apiKey: "YOUR_LOCAL_LLM_API_KEY_HERE_OFTEN_NOT_NEEDED",
     chargePer1MTokens: {
-      default: 0.01703,                     // Price per 1M tokens in USDC
-      "gpt-oss:20b": 0.02,                  // Per-model override
+      // Price per 1M tokens in USDC. A bare number sets equal input/output
+      // rates; use { input, output } to price them separately (x402 meters the
+      // actual charge from real token usage, capped at the quoted maximum).
+      default: 0.01703,
+      "gpt-oss:20b": { input: 0.02, output: 0.06 }, // Per-model split-rate override
     }
   },
   algorand: {
-    addr: "YOUR_ALGORAND_ADDRESS_HERE",
-    mnemonic: "YOUR_ALGORAND_MNEMONIC_HERE",
-    network: "mainnet",
+    mnemonic: "YOUR_ALGORAND_MNEMONIC_HERE", // Wallet identity + signing key; the address is derived from this
+    network: "mainnet",                     // Selects the USDC ASA + CAIP-2 id used by x402 settlement
     client: {
       address: "https://mainnet-api.algonode.cloud/",
       port: 443,
       token: ""
     },
     nfd: "your-name.diiisco.algo",          // Optional: .diiisco.algo NFD domain for verified identity
+    settlement: {
+      // Settlement methods offered/accepted, in preference order. x402 is the
+      // only method (escrow has been retired). Omit to disable public settlement.
+      methods: ["x402"],
+      // Per-request spending limit in USDC. As a requester this is the most the
+      // node will ever pay for one request — it refuses to sign anything above
+      // it, and refuses to pay at all if this is unset. As a provider it's what
+      // requesters send you to budget their quote + generation against.
+      maxSpend: 0.10,
+      x402: {
+        facilitatorUrl: "https://facilitator.goplausible.xyz/",
+        selfSubmitFallback: true,           // Submit the signed group to algod if the facilitator is down
+      },
+    },
   },
   api: {
     enabled: true,
@@ -40,8 +55,11 @@ const environment: Environment = {
   },
   quoteEngine: {
     waitTime: 1000,                         // Time to collect quotes before selecting one (ms)
+    // How to pick a quote: selectHighestStakeQuote (default), selectCheapestQuote,
+    // selectFastestQuote, a custom function, or a list tried in order.
     quoteSelectionFunction: selectHighestStakeQuote,
-    quoteCreationFunction: [createQuoteFromInputTokens],
+    // Optional: override pricing with a custom function (same signature as
+    // createStandardQuote) for dynamic/surge pricing. Defaults to the standard quote.
     preferSelf: true,                       // Serve requests locally when the model is available, bypassing the network
   },
   libp2pBootstrapServers: [
