@@ -41,6 +41,18 @@ export async function runStart(options: StartOptions = {}): Promise<string> {
     warn('Removed a stale daemon.json (the recorded process was no longer running).');
   }
 
+  // Something is already bound to the API port — a `diiisco serve` in another
+  // terminal, or an unrelated service. Starting anyway would spawn a daemon
+  // that fails to bind while `/health` (answered by the other process) makes it
+  // look like a success.
+  if ((await probe(endpoint, '/health', 2000)).ok) {
+    die(
+      `${endpoint} is already being served, but not by a daemon this CLI started.`,
+      'If that is a `diiisco serve` in another terminal, stop it there.',
+      'Otherwise change `api.port` in `diiisco config path`.'
+    );
+  }
+
   // Fail here, in the foreground, rather than in a detached process whose only
   // trace is a line in the log file.
   assertValid(env);
