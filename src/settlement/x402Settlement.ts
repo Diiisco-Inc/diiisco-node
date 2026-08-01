@@ -32,8 +32,8 @@ const DEFAULT_QUOTE_TTL_SECONDS = 120;
 const DIIISCO_RESOURCE: ResourceInfo = {
   url: "https://diiisco.com/x402",
   serviceName: "DIIISCO",
-  description: "DIIISCO — a peer-to-peer marketplace for LLM inference, paid per token in USDC via x402.",
-  iconUrl: "https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/diiisco-logo.png?raw=true",
+  description: "DIIISCO. Algorand's decentralized AI compute network, paid per token in USDC via x402.",
+  iconUrl: "https://asset.diiisco.com/diiisco-logomark.png",
   tags: ["ai", "llm", "inference", "p2p"],
 };
 
