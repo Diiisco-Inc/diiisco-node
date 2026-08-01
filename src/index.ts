@@ -3,9 +3,8 @@ import { setLocalAddressProvider } from './libp2p/localAddresses';
 import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck, stopConnectionHealthCheck } from './libp2p/reconnection';
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
-import { pathToFileURL } from 'node:url';
 import algorand from "./utils/algorand";
-import environment from "./environment/environment";
+import environment from "./environment/runtime";
 import { Environment } from "./environment/environment.types";
 import { OpenAIInferenceModel } from "./utils/models";
 import quoteEngine from "./utils/quoteEngine";
@@ -366,26 +365,15 @@ class Application extends EventEmitter {
 }
 
 export { Application };
-export { configureEnvironment } from './environment/environment';
+export { configureEnvironment } from './environment/runtime';
+export { DEFAULT_ENVIRONMENT, withDefaults } from './environment/defaults';
+export { validateEnvironment } from './environment/validate';
 export type { Environment } from './environment/environment.types';
 
-// Are we the entry module (run directly, e.g. `node dist/index.js`) vs imported
-// as a library? Compare proper file:// URLs — `pathToFileURL` handles Windows
-// paths (drive letters, backslashes) and space encoding, which the previous
-// string concatenation did not, so on Windows the app silently never started.
-const isMainModule = (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href)
-  || typeof process.env.pm_id !== 'undefined';
-
-if (isMainModule) {
-  const app = new Application();
-  process.on('SIGTERM', () => app.shutdown('SIGTERM'));
-  process.on('SIGINT', () => app.shutdown('SIGINT'));
-  app.start().catch(err => {
-    if (err.message === "PeerID not found.") {
-      logger.error('🚨  Application failed to start: PeerID not found.');
-    } else {
-      logger.error('🚨  Application failed to start:', err);
-    }
-    process.exit(1);
-  });
-}
+// This module is a pure library export — it never starts the node on import.
+// Entry points live elsewhere so the same `Application` can be embedded by the
+// CLI, the desktop app or a library consumer without a main-module guard racing
+// them:
+//   • `src/cli.ts` — the `diiisco` binary (`diiisco serve` / `diiisco start`)
+//   • `src/dev.ts` — the repo/PM2 workflow, applying a local
+//     `src/environment/environment.ts` override when one exists

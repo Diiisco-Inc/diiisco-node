@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import environment from "../environment/environment";
+import environment from "../environment/runtime";
 import tokenizer from "llama-tokenizer-js";
 import { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { logger } from './logger';

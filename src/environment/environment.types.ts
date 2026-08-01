@@ -91,6 +91,30 @@ export interface SettlementConfig {
   x402?: X402Config;
 }
 
+/** Wire protocol a launch target speaks (`diiisco launch <app>`). */
+export type CliWireProtocol = 'anthropic' | 'openai';
+
+/**
+ * A user-defined launch target, merged over (and able to override) the CLI's
+ * built-in app map:
+ *
+ *   { "cli": { "apps": { "aider": { "bin": "aider", "wire": "openai" } } } }
+ */
+export interface CliAppConfig {
+  bin: string;                 // executable to look up on PATH
+  wire: CliWireProtocol;       // which env vars to set before spawning it
+  installHint?: string;        // shown when `bin` is not on PATH
+  args?: string[];             // arguments prepended to the user's positional args
+}
+
+export interface CliConfig {
+  apps?: { [name: string]: CliAppConfig };
+  // Terminal emulator the desktop app should spawn for launch buttons.
+  // A bare string applies everywhere; the object form is per-platform
+  // (keys are `process.platform` values, e.g. "darwin" | "win32" | "linux").
+  terminal?: string | { [platform: string]: string };
+}
+
 export interface Environment {
   local?: LocalConfig;
   peerIdStorage: PeerIdStorageConfig;
@@ -108,4 +132,5 @@ export interface Environment {
     statusPages?: boolean;  // default true — set false to disable the public status page routes
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
+  cli?: CliConfig;                          // Optional: DIIISCO CLI extensions (extra `launch` targets)
 }

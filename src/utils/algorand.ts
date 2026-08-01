@@ -1,4 +1,4 @@
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 import algosdk from 'algosdk';
 import { logger } from './logger';
 import { Environment } from '../environment/environment.types';

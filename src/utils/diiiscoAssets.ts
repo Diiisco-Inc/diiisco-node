@@ -1,4 +1,4 @@
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 
 /**
  * On-chain asset identifiers used by DIIISCO, selected by `algorand.network`.

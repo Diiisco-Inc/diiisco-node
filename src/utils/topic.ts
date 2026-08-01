@@ -1,4 +1,4 @@
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 
 /** The public network's GossipSub topic — the default all nodes share. */
 export const PUBLIC_TOPIC = 'diiisco/models/1.0.0';

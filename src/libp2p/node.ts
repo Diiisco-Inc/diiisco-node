@@ -15,7 +15,7 @@ import { FaultTolerance } from '@libp2p/interface';
 import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
 import { bootstrap } from '@libp2p/bootstrap';
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 import { nfdToNodeAddress } from '../utils/algorand';
 
 // Maximum circuit-relay reservations a public relay node will accept from

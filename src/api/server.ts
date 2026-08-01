@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from "cors";
 import { requireBearer } from "../utils/endpoint";
-import environment from "../environment/environment";
+import environment from "../environment/runtime";
 import { sha256 } from "js-sha256";
 import { EventEmitter } from 'events';
 import { encode } from "msgpackr";

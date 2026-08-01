@@ -6,7 +6,7 @@ import { existsSync } from 'fs';
 import { EventEmitter } from 'events';
 import { sha256 } from 'js-sha256';
 import { peerIdFromString } from '@libp2p/peer-id';
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
 import { buildOwnProfile } from '../utils/nodeProfile';

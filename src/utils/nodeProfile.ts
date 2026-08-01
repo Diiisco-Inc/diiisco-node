@@ -3,7 +3,7 @@ import { NodeProfile } from '../types/profile';
 import { nodeStats } from './nodeStats';
 import { isPublicNode } from '../libp2p/node';
 import { getMeshTopic } from './topic';
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 import algorand from './algorand';
 import { getRatesPer1M } from './quoteCreationMethods';
 

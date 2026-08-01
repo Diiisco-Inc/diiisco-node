@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
-import environment from "../environment/environment";
+import environment from "../environment/runtime";
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
 import quoteEngine from "../utils/quoteEngine";
 import {

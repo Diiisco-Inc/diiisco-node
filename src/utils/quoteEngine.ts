@@ -1,4 +1,4 @@
-import environment from '../environment/environment'
+import environment from '../environment/runtime'
 import { EventEmitter } from 'events'
 import { QuoteEvent, QuoteQueueEntry, QuoteRequest, QuoteResponse, QuoteCandidate } from '../types/messages';
 import { Environment } from '../environment/environment.types';

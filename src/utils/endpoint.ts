@@ -1,4 +1,4 @@
-import environment from "../environment/environment";
+import environment from "../environment/runtime";
 
 /**
  * Extract the API key from a request. Supports the Anthropic-style

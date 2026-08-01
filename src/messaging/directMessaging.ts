@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger';
 import { encode, decode } from 'msgpackr';
 import { PubSubMessage } from '../types/messages';
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 import type { Connection, Stream } from '@libp2p/interface';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { lpStream } from '@libp2p/utils';
