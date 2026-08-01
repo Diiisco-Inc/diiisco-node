@@ -78,16 +78,6 @@ export interface LocalConfig {
 export interface X402Config {
   facilitatorUrl?: string;            // default https://facilitator.goplausible.xyz/
   selfSubmitFallback?: boolean;       // default true — submit signed group to algod if facilitator settle fails
-  // Advanced: override the shared DIIISCO service identity attached to every x402
-  // payment. Leave unset — all nodes should advertise the same resource so the
-  // network's volume aggregates under one entry in the facilitator's Bazaar.
-  resource?: {
-    url?: string;
-    serviceName?: string;
-    description?: string;
-    iconUrl?: string;
-    tags?: string[];
-  };
 }
 
 export interface SettlementConfig {

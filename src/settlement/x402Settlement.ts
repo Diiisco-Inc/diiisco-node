@@ -47,7 +47,6 @@ export interface X402SettlementConfig {
   algodPort?: number;
   quoteTtlSeconds?: number; // maxTimeoutSeconds on the requirements
   selfSubmitFallback?: boolean; // default true — submit the signed group to algod if the facilitator fails
-  resource?: Partial<ResourceInfo>; // advanced: override the shared DIIISCO service identity
 }
 
 /**
@@ -72,7 +71,6 @@ export class X402Settlement implements SettlementProvider {
   private readonly algodToken: string;
   private readonly quoteTtlSeconds: number;
   private readonly selfSubmitFallback: boolean;
-  private readonly resource: ResourceInfo;
   private readonly facilitator: HTTPFacilitatorClient;
   private readonly algod: algosdk.Algodv2;
 
@@ -89,7 +87,6 @@ export class X402Settlement implements SettlementProvider {
     this.algodToken = config.algodToken;
     this.quoteTtlSeconds = config.quoteTtlSeconds ?? DEFAULT_QUOTE_TTL_SECONDS;
     this.selfSubmitFallback = config.selfSubmitFallback ?? true;
-    this.resource = { ...DIIISCO_RESOURCE, ...config.resource };
     this.facilitator = new HTTPFacilitatorClient({ url: config.facilitatorUrl });
     this.algod = new algosdk.Algodv2(config.algodToken, config.algodUrl, config.algodPort ?? 443);
   }
@@ -195,7 +192,7 @@ export class X402Settlement implements SettlementProvider {
       x402Version: X402_VERSION,
       // Shared DIIISCO service identity so the facilitator's Bazaar catalogs
       // every node's payment under one resource (see DIIISCO_RESOURCE).
-      resource: this.resource,
+      resource: DIIISCO_RESOURCE,
       accepted: requirements,
       payload: result.payload,
     };
