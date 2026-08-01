@@ -100,6 +100,7 @@ export class MessageProcessor {
         algodToken: this.env.algorand.client.token,
         algodPort: this.env.algorand.client.port,
         selfSubmitFallback: settlementCfg?.x402?.selfSubmitFallback ?? true,
+        resource: settlementCfg?.x402?.resource,
         quoteTtlSeconds: Math.round(QUOTE_TTL_MS / 1000),
       }));
       logger.info('⚙️ x402 settlement provider registered');
