@@ -1,7 +1,10 @@
 module.exports = {
   apps: [{
     name: 'diiisco-node',
-    script: 'dist/index.js',
+    // dist/index.js is a pure library export (it never starts the node); the
+    // self-starting entry point is dist/dev.js, which applies a local
+    // src/environment/environment.ts override when the contributor has one.
+    script: 'dist/dev.js',
 
     // Process management
     instances: 1,              // Single instance (P2P node should not cluster)
