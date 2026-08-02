@@ -1,12 +1,11 @@
 import { spawn } from 'node:child_process';
 import { LaunchTarget, launchEnv, launchTargets, listLaunchTargets, which } from '../apps';
 import { Environment } from '../../environment/environment.types';
-import { loadConfig, mergeConfig, requireConfig } from '../config';
+import { apiEndpoint, loadConfig, mergeConfig, requireConfig } from '../config';
 import { probe } from '../daemon';
 import { colour, die, info, json, setQuiet, warn } from '../output';
 import { runStart } from './lifecycle';
 
-const DEFAULT_ENDPOINT = 'http://localhost:8080';
 const DEFAULT_KEY = 'diiisco';
 const PROBE_TIMEOUT_MS = 2000;
 const SPAWN_HEALTH_TIMEOUT_MS = 30_000;
@@ -70,8 +69,10 @@ export async function runLaunch(options: LaunchOptions): Promise<void> {
     );
   }
 
-  // 1. Resolve endpoint and key.
-  const endpoint = (options.endpoint ?? process.env.DIIISCO_ENDPOINT ?? DEFAULT_ENDPOINT).replace(/\/$/, '');
+  // 1. Resolve endpoint and key. The default comes from the configured
+  // `api.port`, not a hardcoded 8080 — otherwise a node on a custom port sends
+  // the agent tool to an address nothing is listening on.
+  const endpoint = (options.endpoint ?? process.env.DIIISCO_ENDPOINT ?? apiEndpoint(env)).replace(/\/$/, '');
   const key = options.key ?? process.env.DIIISCO_API_KEY ?? env.api.keys?.[0] ?? DEFAULT_KEY;
   // An explicit endpoint (or --no-spawn) means "attach to that node" — never
   // silently start a local one that is not the node the user asked for.
