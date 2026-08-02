@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { LaunchTarget, launchEnv, launchTargets, listLaunchTargets, which } from '../apps';
-import { loadConfig } from '../config';
+import { Environment } from '../../environment/environment.types';
+import { loadConfig, mergeConfig, requireConfig } from '../config';
 import { probe } from '../daemon';
 import { colour, die, info, json, setQuiet, warn } from '../output';
 import { runStart } from './lifecycle';
@@ -24,7 +25,16 @@ export interface LaunchOptions {
 }
 
 export async function runLaunch(options: LaunchOptions): Promise<void> {
-  const env = loadConfig();
+  // `--list` and attach-only launches must work on an unconfigured machine, so
+  // an absent (or broken) config degrades to the defaults here; the config gate
+  // is applied further down, only on the path that would start a local node.
+  let env: Environment;
+  try {
+    env = loadConfig();
+  } catch (err) {
+    if (options.list) env = mergeConfig(null);
+    else throw err;
+  }
 
   if (options.list) {
     const listing = listLaunchTargets(env);
@@ -42,7 +52,7 @@ export async function runLaunch(options: LaunchOptions): Promise<void> {
       if (!target.installed) info(`  ${' '.repeat(width)}  ${colour.dim(target.installHint)}`);
     }
     info('');
-    info(colour.dim('  Add your own with the `cli.apps` block in `diiisco config path`.'));
+    info(colour.dim('  Add your own with the `cli.apps` block in `diiisco config edit`.'));
     return;
   }
 
@@ -56,7 +66,7 @@ export async function runLaunch(options: LaunchOptions): Promise<void> {
     die(
       `Unknown app "${options.app}".`,
       `Supported: ${[...targets.keys()].sort().join(', ')}`,
-      'Add your own with the `cli.apps` block in `diiisco config path`.'
+      'Add your own with the `cli.apps` block in `diiisco config edit`.'
     );
   }
 
@@ -80,6 +90,10 @@ export async function runLaunch(options: LaunchOptions): Promise<void> {
           : 'Drop --no-spawn to start a local node automatically, or run `diiisco start` yourself.'
       );
     }
+
+    // Only now do we need a configured node — attaching to a remote one above
+    // never touches local config.
+    requireConfig();
 
     info(`No node at ${endpoint} — starting one…`);
     await runStart({ timeoutMs: SPAWN_HEALTH_TIMEOUT_MS, silent: true });

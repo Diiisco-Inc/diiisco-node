@@ -8,7 +8,7 @@ import { isAbsolute, join, resolve } from 'node:path';
  * versa:
  *
  *   ~/.diiisco/
- *     config.json                 user config (Environment shape)
+ *     diiisco.config.json         user config (Environment shape; see cli/config.ts)
  *     diiisco-peer-id.protobuf    peer identity
  *     daemon.json                 pid/state file
  *     logs/diiisco.log            daemon log (size-rotated, keep 2)
@@ -37,10 +37,6 @@ export function diiiscoHome(): string {
   return join(userHome(), '.diiisco');
 }
 
-export function configPath(): string {
-  return join(diiiscoHome(), 'config.json');
-}
-
 export function daemonStatePath(): string {
   return join(diiiscoHome(), 'daemon.json');
 }
@@ -56,11 +52,6 @@ export function logFile(): string {
 /** Rotated log (we keep exactly one previous file — 2 × LOG_MAX_BYTES total). */
 export function rotatedLogFile(): string {
   return `${logFile()}.1`;
-}
-
-/** Marker written after the first-run notice has been shown once. */
-export function firstRunMarkerPath(): string {
-  return join(diiiscoHome(), '.first-run');
 }
 
 /** Create `~/.diiisco` (and `logs/`) if missing. Safe to call repeatedly. */

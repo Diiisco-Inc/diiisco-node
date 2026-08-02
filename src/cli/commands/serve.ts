@@ -1,9 +1,9 @@
+import { mkdirSync } from 'node:fs';
 import { Application, configureEnvironment } from '../../index';
-import { assertValid, isFirstRun, loadConfig, markFirstRunSeen } from '../config';
-import { ensureHome, expandTilde, diiiscoHome, logFile } from '../paths';
+import { assertValid, loadConfig, requireConfig } from '../config';
+import { ensureHome, expandTilde, logFile } from '../paths';
 import { startLogRotationWatcher } from '../daemon';
 import { colour, error, info } from '../output';
-import { mkdirSync } from 'node:fs';
 
 /**
  * Run the node in the foreground. This is also the body of the daemon: `start`
@@ -11,9 +11,11 @@ import { mkdirSync } from 'node:fs';
  * here with `daemon: true`.
  */
 export async function runServe(options: { daemon?: boolean } = {}): Promise<void> {
+  // No implicit zero-config run: a node without a configured backend, an API
+  // key and (on the public network) a wallet starts but serves nothing.
+  requireConfig();
   ensureHome();
 
-  const firstRun = isFirstRun();
   const env = loadConfig();
 
   // The peer-id store must exist before libp2p starts, or the node fails deep
@@ -27,11 +29,6 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
 
   assertValid(env);
   configureEnvironment(env);
-
-  if (firstRun) {
-    printFirstRunNotice();
-    markFirstRunSeen();
-  }
 
   if (options.daemon) startLogRotationWatcher();
 
@@ -50,15 +47,4 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
   else info(colour.dim(`  Logging to ${logFile()}`));
 
   await app.start();
-}
-
-function printFirstRunNotice(): void {
-  info();
-  info(colour.bold('Welcome to DIIISCO.'));
-  info(`No config found at ${diiiscoHome()}/config.json, so this node is running in ${colour.bold('local mode')}:`);
-  info('  • payment-free, using an ephemeral signing key');
-  info('  • it serves models from your local inference server and does not join the public network');
-  info('');
-  info(`To join the public network and earn USDC, run ${colour.cyan('diiisco config init --public')}.`);
-  info('');
 }

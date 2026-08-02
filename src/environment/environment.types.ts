@@ -134,3 +134,26 @@ export interface Environment {
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
   cli?: CliConfig;                          // Optional: DIIISCO CLI extensions (extra `launch` targets)
 }
+
+/**
+ * The `quoteEngine` block as it appears in `diiisco.config.json`.
+ *
+ * `Environment` types the two strategy hooks as functions, which JSON cannot
+ * express, so on the file side they are also accepted as **strategy names**
+ * (`"selectHighestStakeQuote"`) and resolved on load — see
+ * `src/environment/strategies.ts`. Functions are still accepted here so a
+ * programmatic `Partial<Environment>` is assignable to an `EnvironmentFile`.
+ */
+export interface QuoteEngineFileConfig extends Omit<Partial<QuoteEngineConfig>, 'quoteSelectionFunction' | 'quoteCreationFunction'> {
+  quoteSelectionFunction?: string | string[] | QuoteSelectionFunction | QuoteSelectionFunction[];
+  quoteCreationFunction?: string | QuoteCreationFunction;
+}
+
+/**
+ * The on-disk shape of `diiisco.config.json`: `Environment` with the
+ * function-valued fields widened to their JSON-expressible name form. Resolving
+ * it with `resolveStrategies()` yields a `Partial<Environment>`.
+ */
+export type EnvironmentFile = Omit<Partial<Environment>, 'quoteEngine'> & {
+  quoteEngine?: QuoteEngineFileConfig;
+};

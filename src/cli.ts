@@ -7,8 +7,8 @@
  * process and `start` re-spawns this same executable detached — no npm, no PM2,
  * no system Node required.
  */
-import { flagBoolean, flagNumber, flagString, parseArgs } from './cli/args';
-import { ConfigError } from './cli/config';
+import { flagBoolean, flagNumber, flagString, parseArgs, ParsedArgs } from './cli/args';
+import { ConfigError, setConfigPathOverride } from './cli/config';
 import { DAEMON_ARG } from './cli/daemon';
 import { colour, die, error, info, print, setQuiet } from './cli/output';
 import { versionLine } from './cli/version';
@@ -17,9 +17,42 @@ import { runLaunch } from './cli/commands/launch';
 import { runLogs } from './cli/commands/logs';
 import { runRestart, runStart, runStatus, runStop } from './cli/commands/lifecycle';
 import { runServe } from './cli/commands/serve';
-import { runConfig, ConfigMode } from './cli/commands/config';
+import { runConfig } from './cli/commands/config';
+import { runSetup, SetupMode } from './cli/commands/setup';
 
 const DEFAULT_LOG_LINES = 100;
+
+/** `--config <path>` is global: it applies to whichever command follows it. */
+function applyConfigOverride(parsed: ParsedArgs): void {
+  const path = flagString(parsed, 'config');
+  if (path !== undefined) setConfigPathOverride(path);
+}
+
+/** Shared parse for `setup` and its deprecated `config init` alias. */
+function setupOptions(rest: string[], deprecatedAlias: boolean) {
+  const parsed = parseArgs(rest, {
+    valueFlags: ['network', 'api-port', 'models-url', 'max-spend', 'config'],
+  });
+  applyConfigOverride(parsed);
+
+  const local = flagBoolean(parsed, 'local');
+  const isPublic = flagBoolean(parsed, 'public');
+  if (local && isPublic) die('Pick one: --local or --public.');
+  const mode: SetupMode | undefined = local ? 'local' : isPublic ? 'public' : undefined;
+
+  return {
+    mode,
+    yes: flagBoolean(parsed, 'yes', 'y'),
+    force: flagBoolean(parsed, 'force'),
+    print: flagBoolean(parsed, 'print'),
+    network: flagString(parsed, 'network'),
+    apiPort: flagNumber(parsed, 'api-port'),
+    modelsUrl: flagString(parsed, 'models-url'),
+    maxSpend: flagNumber(parsed, 'max-spend'),
+    mnemonicStdin: flagBoolean(parsed, 'mnemonic-stdin'),
+    deprecatedAlias,
+  };
+}
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...rest] = argv;
@@ -27,26 +60,38 @@ async function main(argv: string[]): Promise<void> {
   switch (command) {
     // Internal: `start` re-spawns the executable with this argument. Not
     // documented in `help` because users never type it.
-    case DAEMON_ARG:
+    case DAEMON_ARG: {
+      applyConfigOverride(parseArgs(rest, { valueFlags: ['config'] }));
       return runServe({ daemon: true });
+    }
 
-    case 'serve':
+    case 'serve': {
+      applyConfigOverride(parseArgs(rest, { valueFlags: ['config'] }));
       return runServe();
+    }
 
-    case 'start':
+    case 'start': {
+      applyConfigOverride(parseArgs(rest, { valueFlags: ['config'] }));
       await runStart();
       return;
+    }
 
     case 'stop':
       return runStop();
 
-    case 'restart':
+    case 'restart': {
+      applyConfigOverride(parseArgs(rest, { valueFlags: ['config'] }));
       return runRestart();
+    }
 
     case 'status': {
-      const parsed = parseArgs(rest);
+      const parsed = parseArgs(rest, { valueFlags: ['config'] });
+      applyConfigOverride(parsed);
       return runStatus(flagBoolean(parsed, 'json'));
     }
+
+    case 'setup':
+      return runSetup(setupOptions(rest, false));
 
     case 'logs': {
       const parsed = parseArgs(rest, { valueFlags: ['n', 'lines'] });
@@ -58,9 +103,10 @@ async function main(argv: string[]): Promise<void> {
       // Stop at the first positional so everything after the app name goes to
       // the child untouched (`diiisco launch claude --resume`).
       const parsed = parseArgs(rest, {
-        valueFlags: ['endpoint', 'remote', 'key', 'model'],
+        valueFlags: ['endpoint', 'remote', 'key', 'model', 'config'],
         stopAfterPositionals: 1,
       });
+      applyConfigOverride(parsed);
       const endpoint = flagString(parsed, 'endpoint') ?? flagString(parsed, 'remote');
       return runLaunch({
         app: parsed.positionals[0],
@@ -76,16 +122,14 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'config': {
-      const parsed = parseArgs(rest);
-      const local = flagBoolean(parsed, 'local');
-      const isPublic = flagBoolean(parsed, 'public');
-      if (local && isPublic) die('Pick one: --local or --public.');
-      const mode: ConfigMode | undefined = local ? 'local' : isPublic ? 'public' : undefined;
+      // `config init` is a hidden, deprecated alias for `setup`.
+      if (rest[0] === 'init') return runSetup(setupOptions(rest.slice(1), true));
+
+      const parsed = parseArgs(rest, { valueFlags: ['config'] });
+      applyConfigOverride(parsed);
       return runConfig({
         subcommand: parsed.positionals[0],
-        mode,
         asJson: flagBoolean(parsed, 'json'),
-        force: flagBoolean(parsed, 'force'),
       });
     }
 

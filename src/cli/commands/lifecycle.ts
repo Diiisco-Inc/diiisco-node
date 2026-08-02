@@ -1,4 +1,5 @@
-import { apiEndpoint, assertValid, loadConfig } from '../config';
+import { Environment } from '../../environment/environment.types';
+import { apiEndpoint, assertValid, configExists, configPath, loadConfig, mergeConfig, requireConfig } from '../config';
 import {
   DaemonState,
   liveDaemon,
@@ -8,7 +9,7 @@ import {
   stopDaemon,
   waitForHealth,
 } from '../daemon';
-import { configPath, diiiscoHome, logFile } from '../paths';
+import { diiiscoHome, logFile } from '../paths';
 import { colour, die, info, json, setQuiet, success, warn } from '../output';
 import { version } from '../version';
 
@@ -26,6 +27,7 @@ export interface StartOptions {
  * `/health`. Returns the endpoint it is serving on.
  */
 export async function runStart(options: StartOptions = {}): Promise<string> {
+  requireConfig();
   const existing = liveDaemon();
   const env = loadConfig();
   const endpoint = apiEndpoint(env);
@@ -95,12 +97,15 @@ export async function runStop(): Promise<void> {
 }
 
 export async function runRestart(): Promise<void> {
+  requireConfig();
   await runStop();
   await runStart();
 }
 
 /** The `status --json` shape. This is a contract the desktop app consumes. */
 export interface StatusReport {
+  /** False when no config file exists — `status` reports it rather than erroring. */
+  configured: boolean;
   running: boolean;
   stale: boolean;
   pid: number | null;
@@ -130,7 +135,15 @@ export interface AlgorandStatus {
 }
 
 export async function collectStatus(): Promise<StatusReport> {
-  const env = loadConfig();
+  // `status` must answer on an unconfigured machine, so a config file that is
+  // missing (or unreadable) degrades to the defaults rather than throwing.
+  const configured = configExists();
+  let env: Environment;
+  try {
+    env = loadConfig();
+  } catch {
+    env = mergeConfig(null);
+  }
   const configuredEndpoint = apiEndpoint(env);
   const recorded = readDaemonState();
   const running = recorded !== null && isRunning(recorded);
@@ -138,6 +151,7 @@ export async function collectStatus(): Promise<StatusReport> {
   const endpoint = recorded?.endpoint || configuredEndpoint;
 
   const report: StatusReport = {
+    configured,
     running,
     stale,
     pid: running ? recorded!.pid : null,
@@ -241,8 +255,13 @@ export async function runStatus(asJson: boolean): Promise<void> {
   if (!report.running) {
     info(`${colour.red('●')} DIIISCO node: ${colour.bold('stopped')}`);
     if (report.stale) info(colour.dim('  A stale daemon.json was found — the recorded process is gone.'));
-    info(colour.dim(`  config: ${report.configPath}`));
-    info(colour.dim(`  start it with: diiisco start`));
+    if (!report.configured) {
+      info(`  config    ${colour.yellow('not configured')} — ${report.configPath}`);
+      info(colour.dim('  set it up with: diiisco setup'));
+    } else {
+      info(colour.dim(`  config: ${report.configPath}`));
+      info(colour.dim(`  start it with: diiisco start`));
+    }
     process.exitCode = 1;
     return;
   }

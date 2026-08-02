@@ -15,22 +15,22 @@ export function validateEnvironment(env: Environment): string[] {
   if (!isLocal) {
     if (!env.algorand) {
       errors.push(
-        'No wallet configured. Run `diiisco config init --public`, or enable local mode with `diiisco config init --local`.'
+        'No wallet configured. Run `diiisco setup --public`, or enable local mode with `diiisco setup --local`.'
       );
     } else {
       if (!env.algorand.mnemonic || env.algorand.mnemonic.trim() === '') {
         errors.push(
-          'No wallet configured: `algorand.mnemonic` is empty. Run `diiisco config init --public`, or enable local mode with `diiisco config init --local`.'
+          'No wallet configured: `algorand.mnemonic` is empty. Run `diiisco setup --public`, or enable local mode with `diiisco setup --local`.'
         );
       } else if (env.algorand.mnemonic.trim().split(/\s+/).length !== 25) {
         errors.push(
-          '`algorand.mnemonic` does not look like an Algorand mnemonic (expected 25 space-separated words). Re-run `diiisco config init --public`.'
+          '`algorand.mnemonic` does not look like an Algorand mnemonic (expected 25 space-separated words). Re-run `diiisco setup --public`.'
         );
       }
 
       if (!env.algorand.client?.address) {
         errors.push(
-          'No Algorand node configured: set `algorand.client.address` (e.g. "https://mainnet-api.algonode.cloud/") in `diiisco config path`.'
+          'No Algorand node configured: set `algorand.client.address` (e.g. "https://mainnet-api.algonode.cloud/") in `diiisco config edit`.'
         );
       }
 
@@ -43,7 +43,7 @@ export function validateEnvironment(env: Environment): string[] {
       const settlement = env.algorand.settlement;
       if (!settlement) {
         errors.push(
-          'No settlement configured: add an `algorand.settlement` block with a `maxSpend` budget, or enable local mode with `diiisco config init --local`.'
+          'No settlement configured: add an `algorand.settlement` block with a `maxSpend` budget, or enable local mode with `diiisco setup --local`.'
         );
       } else if (settlement.maxSpend === undefined) {
         errors.push(
@@ -80,7 +80,7 @@ export function validateEnvironment(env: Environment): string[] {
   }
 
   if (isLocal && !env.local?.privateTopic) {
-    errors.push('Local mode needs a `local.privateTopic` to isolate this cluster. Run `diiisco config init --local` to generate one.');
+    errors.push('Local mode needs a `local.privateTopic` to isolate this cluster. Run `diiisco setup --local` to generate one.');
   }
 
   return errors;
