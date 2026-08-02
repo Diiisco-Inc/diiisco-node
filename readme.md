@@ -33,29 +33,150 @@ A cluster of nodes you control, isolated from the public network by a unique top
 
 ---
 
+## ⚡ Install the CLI
+
+`diiisco` is a single self-contained executable. It embeds the node, so there is **no Node.js, npm or PM2 to install** — the binary manages its own background daemon and points agent tools at it.
+
+**macOS and Linux:**
+
+```bash
+curl -fsSL https://diiisco.com/install.sh | sh
+```
+
+The installer detects your platform, downloads the matching release, **verifies its SHA-256** against the published `SHA256SUMS`, and installs to `~/.local/bin` — no `sudo`. If that directory isn't on your `PATH` it prints the exact `export PATH=…` line for your shell rather than editing your rc file behind your back.
+
+```bash
+# Pin a version, install system-wide, or let it edit your rc file:
+curl -fsSL https://diiisco.com/install.sh | sh -s -- --version v1.1.0
+curl -fsSL https://diiisco.com/install.sh | sh -s -- --system
+curl -fsSL https://diiisco.com/install.sh | sh -s -- --modify-path
+```
+
+| Flag | Environment variable | Default |
+|------|----------------------|---------|
+| `--version VERSION` | `DIIISCO_VERSION` | latest release |
+| `--install-dir DIR` | `DIIISCO_INSTALL_DIR` | `~/.local/bin` |
+| `--system` | `DIIISCO_SYSTEM=1` | off (installs to `/usr/local/bin`) |
+| `--modify-path` | `DIIISCO_MODIFY_PATH=1` | off |
+
+**Windows:** download `diiisco-windows-x64.exe` from the [releases page](https://github.com/Diiisco-Inc/diiisco-node/releases/latest), or install [DIIISCO Desktop](https://diiisco.com), which ships the CLI and puts it on your `PATH`.
+
+**Already have DIIISCO Desktop?** You already have `diiisco` — the app bundles it. `diiisco version` says which copy you're running (`[desktop-bundled]` is updated by the app, `[standalone]` by re-running the installer).
+
+### First run
+
+There is **no zero-config run**: a useful node needs an inference backend, an API key, and — on the public network — a wallet. Two commands:
+
+```bash
+diiisco setup          # interactive wizard; writes ~/.diiisco/diiisco.config.json (0600)
+diiisco launch claude  # starts a node if one isn't running, then opens Claude Code against it
+```
+
+`setup` is scriptable too:
+
+```bash
+diiisco setup --local --yes                                        # payment-free node, all defaults
+diiisco setup --public --yes --network testnet --mnemonic-stdin < wallet.txt
+diiisco setup --print                                              # emit the JSON, write nothing
+```
+
+A mnemonic is only ever read from stdin or an echo-off prompt — never from `argv`.
+
+### Command surface
+
+```
+diiisco <command> [flags]
+
+  setup                  Create or edit the config file (start here)
+  start                  Start the node as a background daemon
+  stop                   Stop the background daemon
+  restart                Restart the daemon
+  status [--json]        pid, uptime, /health and an Algorand summary
+  logs [-f] [-n N]       Show (or follow) the daemon log
+  serve                  Run the node in the foreground (Ctrl-C to stop)
+  launch <app> [flags]   Point an agent tool at a node, starting one if needed
+  config show|path|edit  Inspect or edit the config file
+  version                Print version, commit and install source
+  help                   Print usage
+```
+
+`diiisco launch` wires the agent's environment to your node and hands over:
+
+| App | Binary | Wire protocol |
+|-----|--------|---------------|
+| `claude` | `claude` | Anthropic (`/v1/messages`) |
+| `openclaw` | `openclaw` | Anthropic |
+| `codex` | `codex` | OpenAI (`/v1/chat/completions`) |
+| `opencode` | `opencode` | OpenAI |
+| `hermes` | `hermes` | OpenAI |
+
+Flags: `--endpoint URL` (or `--remote`, attach to a node you already have), `--key KEY`, `--model MODEL`, `--no-spawn`, `--list [--json]`. Anything after the app name is passed straight through: `diiisco launch claude --resume`.
+
+Add your own targets without waiting for a release, via the `cli.apps` block in the config file:
+
+```json
+{ "cli": { "apps": { "aider": { "bin": "aider", "wire": "openai" } } } }
+```
+
+Everything the CLI writes lives under `~/.diiisco/` (override with `DIIISCO_HOME`):
+
+```
+~/.diiisco/
+  diiisco.config.json       your config, mode 0600
+  diiisco-peer-id.protobuf  this node's identity
+  daemon.json               pid / state file
+  logs/diiisco.log          daemon log, rotated at 10 MB
+```
+
+Exit codes: `0` success, `1` failure, **`2` not configured** — so a script can tell "run `diiisco setup`" apart from a real error.
+
+---
+
 ## 📋 Requirements
 
-- **Node.js 22** or higher
 - **An LLM runtime** — [Ollama](https://ollama.com/) or any OpenAI-compatible backend (e.g. [Shimmy](https://github.com/Michael-A-Kuykendall/shimmy))
 - **An Algorand wallet** — required for the public network only (we recommend [Pera Wallet](https://perawallet.app/))
+- **Node.js 22** — only for the source checkout below; the `diiisco` binary needs no runtime
 
 > ⚠️ **Never share your mnemonic.** Never enter it on a device you don't control.
 
 ---
 
-## 📦 Installation
+## 📦 Running from source
+
+The CLI covers everyday use. Clone the repo when you want to modify the node itself:
 
 ```bash
 git clone https://github.com/Diiisco-Inc/diiisco-node.git
 cd diiisco-node
-npm install
+bun install     # or: npm install
+```
+
+The repo runs on [Bun](https://bun.sh); `bun.lock` is committed alongside `package-lock.json` during the transition, and the Node 22 build (`dist/index.js`) is still what library consumers import.
+
+```bash
+bun run dev                 # run the node from source with your local environment.ts
+bun run cli -- status       # run the CLI from source
+bun test                    # the smoke suite
+bun run build:binaries      # compile dist/bin/diiisco-<os>-<arch>
 ```
 
 ---
 
 ## ⚙️ Configuration
 
-Copy the example configuration and edit it:
+There are two places a node reads its configuration from, with the **same shape** in both:
+
+| | File | Written by |
+|---|---|---|
+| **CLI / desktop app** | `~/.diiisco/diiisco.config.json` (JSON, mode `0600`) | `diiisco setup`, `diiisco config edit` |
+| **Source checkout** | `src/environment/environment.ts` (TypeScript, gitignored) | you |
+
+Every key documented below is valid in both. The JSON file takes **strategy names** where the TypeScript interface takes functions — `"quoteSelectionFunction": "selectHighestStakeQuote"` — and they are resolved on load. Anything you leave out falls back to the committed defaults in `src/environment/defaults.ts`.
+
+Resolution order for the JSON file: `--config <path>`, then `$DIIISCO_CONFIG`, then `$DIIISCO_HOME/diiisco.config.json`, then `~/.diiisco/diiisco.config.json`.
+
+For a source checkout, copy the example configuration and edit it:
 
 ```bash
 cp src/environment/example.environment.ts src/environment/environment.ts
@@ -261,6 +382,19 @@ On startup, the node automatically opts into the DSCO and USDC assets if not alr
 
 A list of known peers used to join the network on startup. Accepts multiaddrs directly (`/ip4/…/tcp/…/p2p/…`) or `.diiisco.algo` NFD names that resolve to a multiaddr. Leave empty on a LAN to use mDNS auto-discovery instead.
 
+### `cli`
+
+Optional. Read by the `diiisco` binary (and by DIIISCO Desktop's Launch view, which renders one button per entry).
+
+| Field | Description |
+|---|---|
+| `apps` | Extra `diiisco launch` targets, keyed by app name: `{ "bin": "aider", "wire": "openai", "installHint": "…", "args": [] }`. Overrides a built-in target of the same name. `wire` is `"anthropic"` or `"openai"`. |
+| `terminal` | Overrides the terminal DIIISCO Desktop opens for a launch button. |
+
+```json
+{ "cli": { "apps": { "aider": { "bin": "aider", "wire": "openai" } } } }
+```
+
 ### 🪪 Verified identity with NFD
 
 [NFD (Non-Fungible Domains)](https://app.nf.domains) is an Algorand naming service. Setting `algorand.nfd` to a `.diiisco.algo` subdomain links your node to a human-readable, on-chain identity that other nodes can verify. Your NFD record must contain a custom property `diiiscohost` set to your full libp2p multiaddr:
@@ -275,15 +409,25 @@ If NFD verification fails at startup, the node operates normally — peers will 
 
 ## 🚀 Running the node
 
-**Development / one-off:**
+**With the CLI** (no build step, no process manager):
+
+```bash
+diiisco start     # start as a background daemon
+diiisco status    # pid, uptime, health, Algorand summary
+diiisco logs -f   # follow the log
+diiisco stop      # stop
+diiisco serve     # or run it in the foreground
+```
+
+**From a source checkout, development / one-off:**
 
 ```bash
 npm run serve
 ```
 
-Builds the project and starts the node in a single step.
+Builds the project and starts `dist/dev.js`, which applies your local `src/environment/environment.ts` when you have one.
 
-**Production (PM2):**
+**From a source checkout, production (PM2):**
 
 ```bash
 npm run node:start    # Build and start as a background service
@@ -293,6 +437,8 @@ npm run node:monit    # Live resource monitor
 npm run node:restart  # Rebuild and restart
 npm run node:stop     # Stop the service
 ```
+
+PM2 remains supported for the repo workflow; the `diiisco` binary never uses it.
 
 ---
 
