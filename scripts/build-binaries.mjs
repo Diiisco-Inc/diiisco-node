@@ -1,15 +1,23 @@
 #!/usr/bin/env bun
 /**
- * Build the standalone `diiisco` executables (spec §6.1).
+ * Build the `diiisco` executables (spec §6.1).
  *
  *   bun scripts/build-binaries.mjs               # every target
  *   bun scripts/build-binaries.mjs --host        # just this machine's target
  *   bun scripts/build-binaries.mjs --target=bun-linux-x64,bun-windows-x64
+ *   bun scripts/build-binaries.mjs --desktop     # the desktop-bundled variant
  *
- * Output lands in `dist/bin/diiisco-<os>-<arch>[.exe]` plus a `SHA256SUMS`.
- * **That path is a contract**: the desktop repo's bundling step copies
- * `dist/bin/diiisco-<os>-<arch>[.exe]` into the app bundle, so renaming the
- * artifacts breaks the desktop build.
+ * Two variants, differing only in the `DIIISCO_INSTALL_SOURCE` baked into them
+ * (§9.4) — that value decides whether `diiisco version` and the update check
+ * tell the user to re-run `install.sh` or to update through DIIISCO Desktop:
+ *
+ *   dist/bin/diiisco-<os>-<arch>[.exe]          `standalone`      (install.sh, direct download)
+ *   dist/bin/desktop/diiisco-<os>-<arch>[.exe]  `desktop-bundled` (copied into the app bundle)
+ *
+ * **Both paths are a contract.** The desktop repo's bundling step looks for the
+ * binary under `$DIIISCO_CLI_ARTIFACTS`, then `$DIIISCO_NODE_REPO/dist/bin`,
+ * then `../diiisco-node/dist/bin`, so renaming or relocating the artifacts
+ * breaks the desktop build. Each variant gets its own `SHA256SUMS`.
  *
  * `bun build --compile --target` cross-compiles, so one runner produces every
  * artifact; only signing and notarization (§6.2) need a matching host.
@@ -43,7 +51,26 @@ const value = (name) => {
   return hit ? hit.slice(name.length + 3) : undefined;
 };
 
-const outDir = join(root, value('out-dir') ?? join('dist', 'bin'));
+/**
+ * `standalone` (install.sh / a direct download) or `desktop-bundled` (§9.4).
+ * The desktop app also stamps `DIIISCO_INSTALL_SOURCE` on the child processes
+ * it spawns itself, so this define only matters when the user types `diiisco`
+ * in a terminal — which is exactly the case the update hint exists for.
+ */
+const INSTALL_SOURCES = ['standalone', 'desktop-bundled'];
+const installSource = flag('desktop')
+  ? 'desktop-bundled'
+  : value('install-source') || process.env.DIIISCO_INSTALL_SOURCE || 'standalone';
+
+if (!INSTALL_SOURCES.includes(installSource)) {
+  fail(`Unknown install source "${installSource}". Use one of: ${INSTALL_SOURCES.join(', ')}`);
+}
+
+// The two variants must never land in the same directory: they are
+// byte-different executables with identical names, and shipping the wrong one
+// gives every standalone user the desktop update hint (or vice versa).
+const defaultOutDir = installSource === 'desktop-bundled' ? join('dist', 'bin', 'desktop') : join('dist', 'bin');
+const outDir = join(root, value('out-dir') ?? defaultOutDir);
 
 function hostTarget() {
   const os = { darwin: 'darwin', linux: 'linux', win32: 'windows' }[process.platform];
@@ -73,9 +100,6 @@ if (flag('host')) {
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const version = process.env.DIIISCO_VERSION?.replace(/^v/, '') || pkg.version;
 const commit = process.env.DIIISCO_COMMIT || gitCommit() || '';
-// `standalone` (install.sh / a direct download) or `desktop-bundled` (§9.4),
-// which points the update hint at the desktop updater instead of install.sh.
-const installSource = process.env.DIIISCO_INSTALL_SOURCE || 'standalone';
 
 function gitCommit() {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
@@ -271,6 +295,9 @@ function fail(message) {
 mkdirSync(outDir, { recursive: true });
 
 console.log(`diiisco ${version}${commit ? ` (${commit.slice(0, 12)})` : ''} [${installSource}]`);
+if (installSource === 'desktop-bundled') {
+  console.log('  variant: for the DIIISCO Desktop app bundle — do not publish these to GitHub Releases');
+}
 console.log(`  entry:  ${entry}`);
 console.log(`  output: ${outDir}`);
 reportWebAssets();
