@@ -158,8 +158,54 @@ The repo runs on [Bun](https://bun.sh); `bun.lock` is committed alongside `packa
 bun run dev                 # run the node from source with your local environment.ts
 bun run cli -- status       # run the CLI from source
 bun test                    # the smoke suite
+bun run build:web           # rebuild the status pages + their embedded manifest
 bun run build:binaries      # compile dist/bin/diiisco-<os>-<arch>
 ```
+
+### Status pages in the binary
+
+The public status pages (`/`, `/nodes`, `/nodes/{peerId}`) are served from
+`src/api/webManifest.generated.json`, a committed manifest of the `web/` build.
+It exists because Bun's standalone filesystem has embedded *files* but no
+directories, so a compiled binary cannot mount `dist/web` — it would serve an
+`index.html` whose hashed JS and CSS 404.
+
+**After changing anything under `web/`, run `npm run build:web` and commit the
+regenerated manifest with your change.** A source checkout or a `tsup` build
+still serves `dist/web` straight off disk when it exists, so the manifest only
+matters for the compiled binary; `node scripts/build-web-manifest.mjs --check`
+reports whether it is stale, and CI runs that on every release.
+
+### Releases and the desktop app
+
+A `v*` tag runs `.github/workflows/release.yml`, which refuses to publish unless
+`package.json` (and `src/cli/version.ts`'s `FALLBACK_VERSION`) match the tag —
+DIIISCO Desktop bundles the CLI of the same tag and reports both versions, so
+the two must never drift.
+
+Each release carries both variants of the executables:
+
+| Asset | Variant | Consumer |
+|---|---|---|
+| `diiisco-<os>-<arch>[.exe]`, `SHA256SUMS` | `standalone` | `install.sh`, direct download |
+| `diiisco-desktop-<os>-<arch>[.exe]`, `SHA256SUMS.desktop` | `desktop-bundled` | the [diiisco-desktop](https://github.com/Diiisco-Inc/diiisco-desktop) build |
+| `diiisco-desktop-bundled.zip` | `desktop-bundled` | the same binaries under their canonical `diiisco-<os>-<arch>` names |
+
+The desktop repo consumes the **desktop-bundled** assets of the **same tag** and
+points its bundling step at them with `DIIISCO_CLI_ARTIFACTS`:
+
+```bash
+gh release download "$TAG" --repo Diiisco-Inc/diiisco-node \
+  --pattern 'diiisco-desktop-bundled.zip' --dir /tmp
+unzip -d dist/cli /tmp/diiisco-desktop-bundled.zip
+DIIISCO_CLI_ARTIFACTS="$PWD/dist/cli" bun run build
+```
+
+The two variants differ only in the `DIIISCO_INSTALL_SOURCE` baked into them,
+which decides whether `diiisco version` and the update hint point at the desktop
+updater or at `install.sh`. They are deliberately *not* interchangeable — never
+download them with a `diiisco-*` glob, which also matches the standalone assets,
+and assert `diiisco version | grep '\[desktop-bundled\]'` after copying.
 
 ---
 

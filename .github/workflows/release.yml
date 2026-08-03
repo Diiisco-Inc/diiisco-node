@@ -11,11 +11,54 @@
 #                   secrets are absent (§6.2)
 #   sign-windows    Authenticode signing — SKIPPED when the secrets are absent
 #   smoke           the compiled binary is exercised on Linux, macOS and Windows
-#   release         checksums + GitHub Release, standalone artifacts only
+#   release         checksums + GitHub Release: the standalone artifacts *and*
+#                   the desktop-bundled ones (see the contract below)
 #
 # The signing jobs are deliberately guarded stubs. They document the exact steps
 # and inputs, and they no-op cleanly on a fork or before the certificates exist,
 # rather than failing the release or inventing credentials.
+#
+# ---------------------------------------------------------------------------
+# Contract with the diiisco-desktop repo
+# ---------------------------------------------------------------------------
+#
+# DIIISCO Desktop ships the CLI inside the app bundle (spec §9), so its build
+# needs the **desktop-bundled** variant of *this* tag — the one stamped
+# `DIIISCO_INSTALL_SOURCE=desktop-bundled`, so `diiisco version` and the update
+# check point at the app's updater rather than install.sh.
+#
+# An `actions/upload-artifact` cannot be fetched from another repository, so the
+# desktop-bundled binaries are published as release assets under their own
+# names:
+#
+#   diiisco-desktop-<os>-<arch>[.exe]   one per target, desktop-bundled
+#   SHA256SUMS.desktop                  checksums for exactly those
+#   diiisco-desktop-bundled.zip         the same binaries under their canonical
+#                                       `diiisco-<os>-<arch>` names, ready to
+#                                       unzip straight into DIIISCO_CLI_ARTIFACTS
+#
+# The desktop workflow consumes them for the **same tag**, e.g.
+#
+#   gh release download "$TAG" --repo Diiisco-Inc/diiisco-node \
+#     --pattern 'diiisco-desktop-bundled.zip' --dir /tmp
+#   unzip -d dist/cli /tmp/diiisco-desktop-bundled.zip
+#   DIIISCO_CLI_ARTIFACTS="$PWD/dist/cli" bun run build
+#
+# …or, per target:
+#
+#   gh release download "$TAG" --repo Diiisco-Inc/diiisco-node \
+#     --pattern 'diiisco-desktop-darwin-arm64' \
+#     --output dist/cli/diiisco-darwin-arm64
+#
+# `scripts/bundle-cli.ts` in the desktop repo looks for `diiisco-<os>-<arch>` in
+# that directory, which is why the zip keeps the unprefixed names and the
+# per-target download renames on the way in.
+#
+# ⚠ Never glob `diiisco-*` when downloading: that also matches the **standalone**
+# assets, which have exactly the canonical names, and bundling one of those into
+# the app would silently point every user's update hint at install.sh. The
+# desktop build should assert `diiisco version | grep '\[desktop-bundled\]'`
+# after copying.
 name: Release
 
 on:
@@ -62,17 +105,52 @@ jobs:
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
+      # Version lockstep (spec §11). The desktop app bundles the CLI of the same
+      # tag and reports both versions, so a tag that disagrees with
+      # package.json ships two halves that claim different versions. Fail here,
+      # before anything is built or published.
+      - name: Check the version lockstep
+        if: github.ref_type == 'tag'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}."
+            echo "::error::Bump package.json (and src/cli/version.ts's FALLBACK_VERSION) or retag."
+            exit 1
+          fi
+          # The compiled binary takes its version from a --define, but a source
+          # checkout falls back to this constant; letting them drift makes
+          # `bun run src/cli.ts version` lie.
+          fallback="$(grep -oE "FALLBACK_VERSION = '[^']+'" src/cli/version.ts | cut -d"'" -f2)"
+          if [ "$fallback" != "$pkg" ]; then
+            echo "::error::src/cli/version.ts FALLBACK_VERSION (${fallback}) does not match package.json (${pkg})."
+            exit 1
+          fi
+          echo "Version lockstep OK: ${GITHUB_REF_NAME} = ${pkg}"
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
       - name: Typecheck
         run: bunx tsc --noEmit
 
-      # The status pages are built here so the artifact list is complete even
-      # though they are not embedded in the binary (see scripts/build-binaries.mjs).
+      # The status pages *are* embedded in the binary, from the committed
+      # `src/api/webManifest.generated.json`. Rebuilding them here is a check,
+      # not a build input: if the manifest does not match a fresh `web/` build,
+      # someone changed the UI without running `npm run build:web`, and the
+      # release would ship the previous status pages.
       - name: Build the status pages
         run: bun run build:web
         continue-on-error: true
+
+      - name: Check the embedded status-page manifest is current
+        run: |
+          if [ -f dist/web/index.html ]; then
+            node scripts/build-web-manifest.mjs --check
+          else
+            echo "::warning::dist/web was not built — shipping the committed manifest unverified."
+          fi
 
       - name: Build the standalone executables
         env:
@@ -297,8 +375,10 @@ jobs:
         run: bun test
 
   # ---------------------------------------------------------------------------
-  # Publish. Standalone artifacts only — the desktop-bundled variant is consumed
-  # from the CI artifact by the desktop repo, never from a public release.
+  # Publish. Both variants: the standalone artifacts users install, and the
+  # desktop-bundled ones the diiisco-desktop repo downloads for the same tag
+  # (see the contract at the top of this file). A CI artifact is not reachable
+  # across repositories, which is why the desktop set is a release asset too.
   # ---------------------------------------------------------------------------
   release:
     name: Publish
@@ -312,6 +392,14 @@ jobs:
         with:
           name: diiisco-standalone
           path: dist/bin
+
+      # NOTE: only the standalone macOS binaries pass through sign-macos today.
+      # Before the desktop app can notarize (§9.1 — a .app cannot contain an
+      # unsigned Mach-O), the signing job needs to cover this set as well.
+      - uses: actions/download-artifact@v4
+        with:
+          name: diiisco-desktop-bundled
+          path: dist/bin/desktop
 
       # Overlay the signed builds when the signing jobs produced any; the
       # unsigned originals stand in otherwise.
@@ -336,12 +424,41 @@ jobs:
           sha256sum diiisco-* > SHA256SUMS
           cat SHA256SUMS
 
+      # The desktop set, published under names that cannot be confused with the
+      # standalone ones. Two shapes, because the desktop workflow may want
+      # either: a zip that unpacks straight into DIIISCO_CLI_ARTIFACTS with the
+      # canonical `diiisco-<os>-<arch>` names `scripts/bundle-cli.ts` looks for,
+      # and per-target assets it can download and rename with `gh release
+      # download --output`.
+      - name: Package the desktop-bundled artifacts
+        run: |
+          set -euo pipefail
+          chmod +x dist/bin/desktop/diiisco-*
+
+          # 1. The zip, with canonical names.
+          (cd dist/bin/desktop && rm -f SHA256SUMS && sha256sum diiisco-* > SHA256SUMS)
+          mkdir -p dist/desktop
+          (cd dist/bin/desktop && zip -X -9 ../../desktop/diiisco-desktop-bundled.zip diiisco-* SHA256SUMS)
+
+          # 2. Per-target assets, prefixed so a `diiisco-*` glob cannot pick up
+          #    a desktop binary by accident and vice versa.
+          for source in dist/bin/desktop/diiisco-*; do
+            name="$(basename "$source")"
+            cp "$source" "dist/desktop/diiisco-desktop-${name#diiisco-}"
+          done
+          (cd dist/desktop && sha256sum diiisco-desktop-* > SHA256SUMS.desktop)
+
+          ls -l dist/desktop
+          cat dist/desktop/SHA256SUMS.desktop
+
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/bin/diiisco-*
             dist/bin/SHA256SUMS
+            dist/desktop/diiisco-desktop-*
+            dist/desktop/SHA256SUMS.desktop
             install.sh
           generate_release_notes: true
           fail_on_unmatched_files: true
