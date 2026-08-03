@@ -320,16 +320,21 @@ async function waitForExit(pid: number, timeoutMs: number, pollMs: number): Prom
  * The graceful path on Windows is the control channel; this is the backstop for
  * a daemon that never recorded one.
  */
-function requestTermination(pid: number): void {
+function requestTermination(pid: number): boolean {
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T'], { stdio: 'ignore', windowsHide: true });
-    return;
+    const result = spawnSync('taskkill', ['/PID', String(pid), '/T'], { stdio: 'ignore', windowsHide: true });
+    // A console process with no message loop answers "can only be terminated
+    // forcefully" and exits non-zero. Waiting out a grace period for a request
+    // the OS has already refused just delays the inevitable, so say so and let
+    // the caller escalate immediately.
+    return result.status === 0;
   }
   try {
     process.kill(pid, 'SIGTERM');
   } catch {
-    // Already gone.
+    // Already gone; waitForExit will confirm that on its first poll.
   }
+  return true;
 }
 
 function forceKill(pid: number): void {
@@ -383,8 +388,8 @@ export async function stopDaemon(signalGraceMs = SIGNAL_GRACE_MS, pollMs = 200):
     controlError = 'this daemon did not record a control channel (started by an older diiisco)';
   }
 
-  requestTermination(state.pid);
-  if (await waitForExit(state.pid, signalGraceMs, pollMs)) {
+  const accepted = requestTermination(state.pid);
+  if (await waitForExit(state.pid, accepted ? signalGraceMs : 0, pollMs)) {
     removeDaemonState();
     return { outcome: 'signalled', pid: state.pid, controlError };
   }
