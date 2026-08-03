@@ -6,10 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Build
-npm run build          # Compile TypeScript via tsup → dist/
+npm run build          # Compile src/{index,dev,cli}.ts via tsup → dist/
+npm run build:binaries # bun build --compile → dist/bin/diiisco-<os>-<arch>[.exe] + SHA256SUMS
+npm run build:binaries:desktop  # same matrix, stamped desktop-bundled → dist/bin/desktop/
 
 # Run (development)
-npm run serve          # Build then run dist/index.js directly
+npm run dev            # bun run src/dev.ts — the contributor entry point
+npm run cli            # bun run src/cli.ts — the CLI entry point
+npm run serve          # Build then run dist/dev.js
+
+# Test / typecheck
+npm test               # bun test — smoke suite against the compiled binary
+npm run typecheck      # tsc --noEmit
 
 # Run (production, PM2)
 npm run node:start     # Build and start as background service
@@ -20,19 +28,35 @@ npm run node:status    # PM2 process status
 npm run node:monit     # Live resource monitor
 ```
 
-No test suite exists yet. There is no lint script; TypeScript strict mode is the primary correctness check (`npx tsc --noEmit`).
+The runtime target is **Bun** (see `.claude/docs/diiisco-cli.md`); Node 22 still runs the tsup output and PM2 path. TypeScript strict mode remains the primary correctness check, alongside the `bun test` suite under `test/`.
+
+End users do not use any of the above — they install the `diiisco` binary and run `diiisco setup`, then `diiisco start` / `diiisco launch claude`.
 
 ## Architecture
 
 DIIISCO is a peer-to-peer LLM inference marketplace. Nodes connect over libp2p, broadcast inference requests as quote auctions, settle in USDC via the **x402** protocol on Algorand, and expose an OpenAI-compatible HTTP API to clients.
 
-### Entry point
+### Entry points
 
-`src/index.ts` exports the `Application` class and `configureEnvironment`. When run directly (or under PM2), it instantiates `Application`, wires SIGTERM/SIGINT, and calls `app.start()`. It can also be imported as a library — call `configureEnvironment(overrides)` before `new Application()`.
+There are three, and picking the wrong one is the classic mistake here:
+
+- **`src/index.ts`** — the **library** export (`Application`, `configureEnvironment`, `DEFAULT_ENVIRONMENT`, `withDefaults`, `validateEnvironment`). It does **not** self-start; the desktop app and other consumers import it.
+- **`src/dev.ts`** — the **contributor / PM2** entry. It applies an optional local `src/environment/environment.ts` override via a dynamic import, then instantiates `Application`, wires SIGTERM/SIGINT and calls `start()`. `npm run serve` and `pm2.config.cjs` both target `dist/dev.js`.
+- **`src/cli.ts`** — the **`diiisco` CLI** (`src/cli/**`), the entry point compiled into the shipped binary.
+
+`index.ts` deliberately has no self-start block: it used to, and under PM2 that made it start the node *while being imported* by the dev entry, double-starting it.
 
 ### Configuration
 
-`src/environment/environment.ts` holds the singleton config object. `configureEnvironment()` deep-merges overrides into it before the app starts. Copy `src/environment/example.environment.ts` to `src/environment/environment.ts` to get started. Two modes:
+`src/environment/runtime.ts` holds the singleton config object, initialised from `src/environment/defaults.ts`. `configureEnvironment()` deep-merges overrides into it before the app starts. All internal modules import `runtime`, never `environment`.
+
+Config comes from one of three places:
+
+1. **`~/.diiisco/diiisco.config.json`** — how end users configure a node, created by `diiisco setup`. Mirrors the `Environment` interface; function-valued fields (`quoteSelectionFunction`) take strategy *names*, resolved by `src/environment/strategies.ts`. There is no implicit zero-config run: without this file the CLI exits **2** and tells the user to run `diiisco setup`.
+2. **`configureEnvironment(overrides)`** — how library consumers (the desktop app) configure it.
+3. **`src/environment/environment.ts`** — an optional, **gitignored** contributor override loaded only by `src/dev.ts`. Copy `example.environment.ts` to create it. It typically holds a real mnemonic, so never commit it or read it into other tooling.
+
+Two modes:
 
 - **Public network** — requires `algorand` block with a wallet mnemonic and an `algorand.settlement` block (a `maxSpend` budget plus x402 config); settles payments in USDC via x402.
 - **Private/local network** — omit `algorand`, add `local: { enabled: true, privateTopic: "..." }`. Quoting and settlement are skipped; an ephemeral signing key is generated instead.
@@ -80,3 +104,14 @@ Collects `QuoteResponse` messages per request, enriches each into a `QuoteCandid
 Express 5 server exposing an OpenAI-compatible API. All `/v1`, `/peers`, `/network`, and `/health/algorand` endpoints require `Authorization: Bearer <key>` when `bearerAuthentication` is true. `/health` is always unauthenticated.
 
 `preferSelf: true` (default) short-circuits the network auction — if the requested model is available locally, inference runs directly without broadcasting.
+
+### CLI (`src/cli.ts`, `src/cli/**`)
+
+The `diiisco` command, shipped as a self-contained Bun-compiled binary (no Node, npm or PM2 on the host). Commands: `setup`, `start`/`stop`/`restart`/`status`/`logs`/`serve`, `launch <app>`, `config show|path|edit`, `version`, `help`.
+
+- **Lifecycle is self-managed**, not PM2: `start` re-spawns the executable detached with an internal `__daemon` argument and records `{pid, endpoint, version, owner}` in `~/.diiisco/daemon.json`. `owner` (`cli` or `desktop`) lets the desktop app and the terminal share one daemon rather than fight over it.
+- **`launch <app>`** points an agent tool at the node by setting wire env vars (`anthropic`: `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_API_KEY` explicitly blanked; `openai`: `OPENAI_BASE_URL`/`OPENAI_API_KEY`) and spawning it with inherited stdio. Flags must precede the app name — everything after it is passed through to the tool verbatim.
+- **`--json` output** on `status`, `config show` and `launch --list` is a **contract consumed by DIIISCO Desktop**; changing those shapes breaks the app. Exit codes: 0 success, 1 failure, **2 not configured**.
+- Runtime state lives in `~/.diiisco/` (`DIIISCO_HOME` overrides).
+
+See `.claude/docs/diiisco-cli.md` for the full spec, including packaging, `install.sh`, and the Electrobun desktop integration.
