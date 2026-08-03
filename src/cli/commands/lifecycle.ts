@@ -78,6 +78,11 @@ export async function runStart(options: StartOptions = {}): Promise<string> {
   return endpoint;
 }
 
+/**
+ * Report what actually happened, not what was hoped for: a node that had to be
+ * force-killed may have left an x402 settlement in flight and its peers holding
+ * half-open connections, and the operator needs to know that.
+ */
 export async function runStop(): Promise<void> {
   const result = await stopDaemon();
   switch (result.outcome) {
@@ -90,8 +95,20 @@ export async function runStop(): Promise<void> {
     case 'stopped':
       success(`Stopped DIIISCO node (pid ${result.pid}).`);
       return;
+    case 'signalled':
+      if (process.platform === 'win32') {
+        warn(`DIIISCO node (pid ${result.pid}) was terminated without a graceful shutdown.`);
+        if (result.controlError) info(colour.dim(`  control channel: ${result.controlError}`));
+        info(colour.dim('  Peers may see a dropped connection rather than a clean disconnect.'));
+      } else {
+        success(`Stopped DIIISCO node (pid ${result.pid}) with SIGTERM.`);
+        if (result.controlError) info(colour.dim(`  control channel: ${result.controlError}`));
+      }
+      return;
     case 'killed':
-      warn(`DIIISCO node (pid ${result.pid}) did not exit in time and was killed.`);
+      warn(`DIIISCO node (pid ${result.pid}) did not exit in time and was force-killed.`);
+      if (result.controlError) info(colour.dim(`  control channel: ${result.controlError}`));
+      info(colour.dim('  Shutdown did not complete: check `diiisco logs` for an interrupted settlement.'));
       return;
   }
 }
@@ -114,6 +131,12 @@ export interface StatusReport {
   endpoint: string;
   version: string | null;
   owner: string | null;
+  /**
+   * Whether this daemon published a shutdown control channel, i.e. whether
+   * `stop` can shut it down gracefully rather than signalling it. The port and
+   * token themselves are secrets and are never reported.
+   */
+  controlChannel: boolean;
   health: { ok: boolean; status: number | null; error: string | null } | null;
   algorand: AlgorandStatus | null;
   home: string;
@@ -160,6 +183,7 @@ export async function collectStatus(): Promise<StatusReport> {
     endpoint,
     version: running ? recorded!.version : null,
     owner: running ? recorded!.owner : null,
+    controlChannel: running && recorded!.control !== undefined,
     health: null,
     algorand: null,
     home: diiiscoHome(),
