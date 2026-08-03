@@ -16,7 +16,9 @@
   },
   "scripts": {
     "build": "tsup src/index.ts src/dev.ts src/cli.ts --format=esm --dts --out-dir=dist && node scripts/postbuild.mjs",
-    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "build:web": "npm --prefix web install && npm --prefix web run build && npm run build:web:manifest",
+    "build:web:manifest": "node scripts/build-web-manifest.mjs",
+    "check:web:manifest": "node scripts/build-web-manifest.mjs --check",
     "build:binaries": "bun scripts/build-binaries.mjs",
     "build:binaries:desktop": "bun scripts/build-binaries.mjs --desktop",
     "serve": "npm run build && node dist/dev.js",

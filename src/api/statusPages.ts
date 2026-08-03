@@ -1,8 +1,7 @@
-import express from 'express';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync } from 'fs';
+import { resolveWebAssets, type WebAsset } from './webAssets';
 import { EventEmitter } from 'events';
 import { sha256 } from 'js-sha256';
 import { peerIdFromString } from '@libp2p/peer-id';
@@ -278,12 +277,22 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   };
 
   // ---- Web app shell + static assets -----------------------------------------
-  const webDist = join(dirname(fileURLToPath(import.meta.url)), 'web');
-  const shellPath = join(webDist, 'index.html');
-
-  if (existsSync(webDist)) {
-    app.use(express.static(webDist, { index: false, maxAge: '1y', immutable: true }));
-  }
+  //
+  // Served from an in-memory manifest rather than `express.static(<dir>)`.
+  // Inside a `bun build --compile` executable there is no directory to mount —
+  // Bun's standalone filesystem has embedded files but no directories — so a
+  // directory mount there yields an index.html whose hashed JS and CSS 404.
+  // `resolveWebAssets` prefers a real directory when there is one (the tsup
+  // `dist/web` layout, and a repo checkout that has run `npm run build:web`),
+  // falls back to the embedded manifest, and reports `none` when there is
+  // neither — in which case the rendered shell below stands in.
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const assets = resolveWebAssets([
+    // tsup: dist/index.js → dist/web. Compiled: /$bunfs/root/web, never present.
+    join(moduleDir, 'web'),
+    // `bun run src/cli.ts`: src/api → <repo>/dist/web.
+    join(moduleDir, '..', '..', 'dist', 'web'),
+  ]);
 
   // Scripts stay locked to 'self' (the XSS backstop); the logo loads from the
   // DIIISCO asset host, the only external origin the pages need.
@@ -295,17 +304,63 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     "connect-src 'self'",
   ].join('; ');
 
-  const sendShell = (res: Response) => {
+  /**
+   * Conditional-GET support: a strong ETag on every asset, plus the long
+   * immutable cache Vite's content-hashed filenames are designed for. The
+   * shell is `no-cache` — revalidated every load — so a rebuilt UI is picked up
+   * immediately.
+   */
+  const sendAsset = (req: Request, res: Response, asset: WebAsset, shell: boolean): void => {
+    res.setHeader('Content-Type', asset.contentType);
+    res.setHeader('ETag', asset.etag);
+    res.setHeader('Cache-Control', shell || !asset.immutable ? 'no-cache' : 'public, max-age=31536000, immutable');
+    if (shell) res.setHeader('Content-Security-Policy', CSP);
+
+    const ifNoneMatch = req.headers['if-none-match'];
+    if (typeof ifNoneMatch === 'string' && ifNoneMatch.split(',').some((tag) => tag.trim() === asset.etag)) {
+      res.status(304).end();
+      return;
+    }
+
+    res.setHeader('Content-Length', String(asset.body.length));
+    if (req.method === 'HEAD') {
+      res.status(200).end();
+      return;
+    }
+    res.status(200).send(asset.body);
+  };
+
+  // Paths the node answers itself. A file of the same name in the web build
+  // must never be able to shadow an API route.
+  const RESERVED = /^\/(?:health|v1|peers|network|node\.json|nodes(?:\.json)?(?:\/|$)|models\.json)/;
+
+  // Static assets. Registered before the SPA routes so a real file wins over
+  // the shell, and scoped to GET/HEAD — nothing here is writable.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (req.path === '/' || RESERVED.test(req.path)) return next();
+    const asset = assets.get(req.path);
+    if (!asset) return next();
+    sendAsset(req, res, asset, req.path === '/index.html');
+  });
+
+  const sendShell = (res: Response, req?: Request) => {
+    const shell = assets.index();
+    if (shell && req) return sendAsset(req, res, shell, true);
+    if (shell) {
+      res.setHeader('Content-Security-Policy', CSP);
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Content-Type', shell.contentType);
+      res.status(200).send(shell.body);
+      return;
+    }
+
+    // Dev checkout without a web build — never fail over a missing frontend.
     res.setHeader('Content-Security-Policy', CSP);
     res.setHeader('Cache-Control', 'no-cache');
-    if (existsSync(shellPath)) {
-      res.sendFile(shellPath);
-    } else {
-      // Dev checkout without a web build — never fail over a missing frontend.
-      res.status(200).send(
-        '<!doctype html><title>DIIISCO Node</title><p>This is a DIIISCO node. The status page UI is not built — see <a href="/node.json">/node.json</a> and <a href="/nodes.json">/nodes.json</a>, or run <code>npm run build:web</code>.</p>'
-      );
-    }
+    res.status(200).send(
+      '<!doctype html><title>DIIISCO Node</title><p>This is a DIIISCO node. The status page UI is not built — see <a href="/node.json">/node.json</a> and <a href="/nodes.json">/nodes.json</a>, or run <code>npm run build:web</code>.</p>'
+    );
   };
 
   const sendJson = (res: Response, body: unknown, status = 200) => {
@@ -314,7 +369,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   };
 
   // ---- Routes -----------------------------------------------------------------
-  app.get('/', (_req, res) => sendShell(res));
+  app.get('/', (req, res) => sendShell(res, req));
 
   app.get('/node.json', (_req, res) => {
     sendJson(res, buildOwnProfile(node, algo, availableModels));
@@ -339,7 +394,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     if (req.accepts(['html', 'json']) === 'json') {
       return sendJson(res, { object: 'list', data: getDirectory() });
     }
-    sendShell(res);
+    sendShell(res, req);
   });
 
   app.get('/nodes/:peerId', rateLimit, async (req, res) => {
@@ -355,7 +410,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
 
     if (!wantsJson) {
       // The web app shell fetches /nodes/{peerId}.json itself.
-      return sendShell(res);
+      return sendShell(res, req);
     }
 
     try {
@@ -370,5 +425,13 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     }
   });
 
-  logger.info('📄 Public status pages enabled at /, /nodes and /nodes/{peerId}');
+  logger.info(
+    `📄 Public status pages enabled at /, /nodes and /nodes/{peerId} — assets: ${
+      assets.source === 'embedded'
+        ? `${assets.count} embedded`
+        : assets.source === 'directory'
+          ? assets.origin
+          : 'none (serving the fallback shell)'
+    }`
+  );
 };
