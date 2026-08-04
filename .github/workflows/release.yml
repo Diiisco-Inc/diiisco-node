@@ -219,7 +219,9 @@ jobs:
       #   MACOS_CERTIFICATE_P12         base64 of the Developer ID Application .p12
       #   MACOS_CERTIFICATE_PASSWORD    its password
       #   MACOS_SIGNING_IDENTITY        e.g. "Developer ID Application: DIIISCO Inc (TEAMID)"
-      #   MACOS_NOTARY_APPLE_ID / MACOS_NOTARY_PASSWORD / MACOS_NOTARY_TEAM_ID
+      #   MACOS_NOTARY_KEY_P8           base64 of the App Store Connect .p8 key
+      #   MACOS_NOTARY_KEY_ID           the key's ID (e.g. ABC123DEFG)
+      #   MACOS_NOTARY_ISSUER_ID        the issuer UUID from App Store Connect
       - name: Import the certificate
         if: steps.creds.outputs.available == 'true'
         env:
@@ -238,14 +240,29 @@ jobs:
           security list-keychain -d user -s "$keychain"
           rm -f "$RUNNER_TEMP/certificate.p12"
 
+      # Notarization authenticates with an **App Store Connect API key**, not an
+      # Apple ID. notarytool accepts either, but the API key is not bound to a
+      # person: it survives someone leaving, it is revocable on its own without
+      # touching anyone's account, it is unaffected by password rotation or 2FA
+      # changes, and it is auditable per key in App Store Connect. An
+      # app-specific password is none of those things.
+      #
+      # The .p8 is downloadable exactly once when you create it. Store it
+      # base64-encoded, write it to a file only for the length of the job, and
+      # delete it afterwards — notarytool needs a path, not a value.
       - name: Sign and notarize
         if: steps.creds.outputs.available == 'true'
         env:
           IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
-          TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          NOTARY_KEY_P8: ${{ secrets.MACOS_NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: |
+          set -euo pipefail
+          key_file="$(mktemp -t notary_key).p8"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$key_file"
+
           for binary in dist/bin/diiisco-darwin-*; do
             codesign --force --timestamp --options runtime \
               --sign "$IDENTITY" "$binary"
@@ -254,7 +271,7 @@ jobs:
             # notarytool takes an archive, not a bare Mach-O.
             ditto -c -k --keepParent "$binary" "${binary}.zip"
             xcrun notarytool submit "${binary}.zip" \
-              --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$TEAM_ID" \
+              --key "$key_file" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
               --wait
             # A standalone executable cannot be stapled; Gatekeeper checks the
             # notarization ticket online on first run.
