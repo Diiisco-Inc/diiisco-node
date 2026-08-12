@@ -34,7 +34,7 @@ const DIIISCO_RESOURCE: ResourceInfo = {
   serviceName: "DIIISCO",
   description: "DIIISCO. Algorand's decentralized AI compute network, paid per token in USDC via x402.",
   iconUrl: "https://asset.diiisco.com/diiisco-logomark.png",
-  tags: ["ai", "llm", "inference", "p2p"],
+  tags: ["ai", "llm", "inference", "p2p", "x402-global-challenge", "diiisco"],
 };
 
 export interface X402SettlementConfig {
