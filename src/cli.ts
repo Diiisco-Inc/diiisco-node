@@ -115,6 +115,7 @@ async function main(argv: string[]): Promise<void> {
         explicitEndpoint: endpoint !== undefined,
         key: flagString(parsed, 'key'),
         model: flagString(parsed, 'model'),
+        yes: flagBoolean(parsed, 'yes', 'y'),
         noSpawn: flagBoolean(parsed, 'no-spawn'),
         list: flagBoolean(parsed, 'list'),
         asJson: flagBoolean(parsed, 'json'),
