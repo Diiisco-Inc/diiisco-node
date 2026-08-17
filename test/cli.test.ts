@@ -71,9 +71,12 @@ suite('compiled binary — command surface', () => {
       expect(['anthropic', 'openai']).toContain(entry.wire);
       expect(typeof entry.installed).toBe('boolean');
       expect(typeof entry.installHint).toBe('string');
+      expect(typeof entry.defaultModelWiring).toBe('boolean');
     }
 
     expect(listing.map((e: { app: string }) => e.app)).toContain('claude');
+    const claude = listing.find((e: { app: string }) => e.app === 'claude');
+    expect(claude.defaultModelWiring).toBe(true);
   });
 
   test('launch --list works with no config file', () => {

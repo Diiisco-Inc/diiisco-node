@@ -3,6 +3,8 @@ import { LaunchTarget, launchEnv, launchTargets, listLaunchTargets, which } from
 import { Environment } from '../../environment/environment.types';
 import { apiEndpoint, loadConfig, mergeConfig, requireConfig } from '../config';
 import { probe } from '../daemon';
+import { MODEL_WIRING, ModelWiringHook } from '../launchAdapters';
+import { resolveLaunchModel } from '../modelResolution';
 import { colour, die, info, json, setQuiet, warn } from '../output';
 import { runStart } from './lifecycle';
 
@@ -18,6 +20,8 @@ export interface LaunchOptions {
   explicitEndpoint: boolean;
   key?: string;
   model?: string;
+  /** `--yes`/`-y`: never prompt for a model, take the deterministic default. */
+  yes: boolean;
   noSpawn: boolean;
   list: boolean;
   asJson: boolean;
@@ -47,7 +51,8 @@ export async function runLaunch(options: LaunchOptions): Promise<void> {
     const width = Math.max(...listing.map((t) => t.app.length), 4);
     for (const target of listing) {
       const state = target.installed ? colour.green('installed') : colour.dim('not installed');
-      info(`  ${target.app.padEnd(width)}  ${target.wire.padEnd(9)}  ${state}`);
+      const wiring = target.defaultModelWiring ? colour.dim(' · wires a default model') : '';
+      info(`  ${target.app.padEnd(width)}  ${target.wire.padEnd(9)}  ${state}${wiring}`);
       if (!target.installed) info(`  ${' '.repeat(width)}  ${colour.dim(target.installHint)}`);
     }
     info('');
@@ -109,8 +114,16 @@ export async function runLaunch(options: LaunchOptions): Promise<void> {
     info(colour.dim(`  node ready on ${endpoint}`));
   }
 
-  // 4. Wire the env and hand over.
-  await spawnApp(target, endpoint, key, options.model, options.passthrough);
+  // 4. Resolve a model, for tools that have a model-wiring hook (or when the
+  // user asked for one explicitly regardless). Apps with neither keep
+  // today's behavior exactly — no network call, no prompt.
+  const hook = MODEL_WIRING[target.app];
+  const model = hook || options.model
+    ? await resolveLaunchModel(endpoint, key, options.model, env.quoteEngine?.waitTime ?? 5000, options.yes)
+    : undefined;
+
+  // 5. Wire the env and hand over.
+  await spawnApp(target, endpoint, key, model, options.passthrough, hook);
 }
 
 async function spawnApp(
@@ -118,16 +131,26 @@ async function spawnApp(
   endpoint: string,
   key: string,
   model: string | undefined,
-  passthrough: string[]
+  passthrough: string[],
+  hook?: ModelWiringHook
 ): Promise<void> {
   if (which(target.bin) === null) {
     die(`\`${target.bin}\` is not on your PATH.`, target.installHint);
   }
 
-  const wireEnv = launchEnv(target.wire, endpoint, key, model);
+  // A hook owns all model-related env/args for its app — set the generic
+  // ANTHROPIC_MODEL/OPENAI_MODEL only when there's no hook to conflict with.
+  const wireEnv = launchEnv(target.wire, endpoint, key, hook ? undefined : model);
+  let extraArgs: string[] = [];
+  if (hook && model) {
+    const result = await hook({ model, endpoint, key, target });
+    Object.assign(wireEnv, result.env);
+    extraArgs = result.args ?? [];
+  }
+
   info(colour.dim(`  ${target.app} → ${endpoint} (${target.wire})`));
 
-  const child = spawn(target.bin, [...target.args, ...passthrough], {
+  const child = spawn(target.bin, [...extraArgs, ...target.args, ...passthrough], {
     stdio: 'inherit',
     env: { ...process.env, ...wireEnv },
   });

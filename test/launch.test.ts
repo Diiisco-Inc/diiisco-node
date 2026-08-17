@@ -31,6 +31,7 @@ suite('compiled binary — launch env wiring', () => {
   let home: string;
   let probe: string;
   let probeOut: string;
+  let probeCalls: string;
   let server: ReturnType<typeof Bun.serve>;
   let endpoint: string;
 
@@ -40,20 +41,34 @@ suite('compiled binary — launch env wiring', () => {
     'ANTHROPIC_AUTH_TOKEN',
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'CLAUDE_CODE_SUBAGENT_MODEL',
     'OPENAI_BASE_URL',
     'OPENAI_API_KEY',
     'OPENAI_MODEL',
+    'OPENCODE_CONFIG_CONTENT',
   ];
+
+  /** Model ids the stub `/v1/models` route hands back; overwritten per-test. */
+  let meshModels: string[] = ['diiisco-mesh-model-1'];
+  let lastModelsAuthHeader: string | null = null;
 
   beforeAll(async () => {
     home = makeHome('diiisco-launch-');
     probe = join(home, 'probe-agent.sh');
     probeOut = join(home, 'probe-env.json');
+    probeCalls = join(home, 'probe-calls.log');
 
     // `${VAR+set}` distinguishes "exported as empty" from "not exported at all",
-    // which is the whole point of the ANTHROPIC_API_KEY assertion below.
+    // which is the whole point of the ANTHROPIC_API_KEY assertion below. Values
+    // are base64-encoded before landing in probeOut's JSON — OPENCODE_CONFIG_CONTENT
+    // is itself JSON, and naively quoting it would corrupt probeOut's own JSON.
+    // `launch()` below decodes every field back before returning it to a test.
     const lines = WATCHED.map(
-      (name) => `  printf '  "%s": %s,\\n' '${name}' "$(if [ -n "\${${name}+set}" ]; then printf '"%s"' "$${name}"; else printf 'null'; fi)" >> "$OUT"`
+      (name) =>
+        `  if [ -n "\${${name}+set}" ]; then printf '  "%s": "%s",\\n' '${name}' "$(printf '%s' "$${name}" | base64 | tr -d '\\n')" >> "$OUT"; else printf '  "%s": null,\\n' '${name}' >> "$OUT"; fi`
     ).join('\n');
 
     writeFileSync(
@@ -63,7 +78,14 @@ suite('compiled binary — launch env wiring', () => {
         'OUT="${DIIISCO_PROBE_OUT}"',
         'printf \'{\\n\' > "$OUT"',
         lines,
-        'printf \'  "args": "%s"\\n}\\n\' "$*" >> "$OUT"',
+        'printf \'  "args": "%s"\\n}\\n\' "$(printf \'%s\' "$*" | base64 | tr -d \'\\n\')" >> "$OUT"',
+        // A separate, append-only call log — OpenClaw's hook invokes this
+        // probe binary twice (a one-shot `onboard` subprocess, then the real
+        // spawn), and probeOut above only ever holds the latest invocation.
+        // Records argv and CUSTOM_API_KEY (the onboarding secret) per call.
+        'if [ -n "${DIIISCO_PROBE_CALLS+set}" ]; then',
+        '  printf \'%s\\t%s\\n\' "$*" "$(printf \'%s\' "$CUSTOM_API_KEY" | base64 | tr -d \'\\n\')" >> "$DIIISCO_PROBE_CALLS"',
+        'fi',
         'exit 0',
         '',
       ].join('\n'),
@@ -83,6 +105,12 @@ suite('compiled binary — launch env wiring', () => {
             apps: {
               'probe-anthropic': { bin: probe, wire: 'anthropic' },
               'probe-openai': { bin: probe, wire: 'openai' },
+              // The built-in apps below keep their wire/hook; only `bin` is
+              // swapped so the real model-wiring hooks still fire against
+              // this fake binary instead of the real tools.
+              claude: { bin: probe },
+              opencode: { bin: probe },
+              openclaw: { bin: probe },
             },
           },
         },
@@ -100,6 +128,13 @@ suite('compiled binary — launch env wiring', () => {
       fetch(request) {
         const { pathname } = new URL(request.url);
         if (pathname === '/health') return new Response('API is healthy');
+        if (pathname === '/v1/models') {
+          lastModelsAuthHeader = request.headers.get('authorization');
+          return Response.json({
+            object: 'list',
+            data: meshModels.map((id) => ({ id, object: 'model', created: 0, owned_by: 'diiisco' })),
+          });
+        }
         return new Response('not found', { status: 404 });
       },
     });
@@ -112,12 +147,14 @@ suite('compiled binary — launch env wiring', () => {
 
   async function launch(args: string[]): Promise<Record<string, string | null>> {
     rmSync(probeOut, { force: true });
+    rmSync(probeCalls, { force: true });
     // Async: the stub /health server below lives in this process, and spawnSync
     // would block the event loop that has to answer it.
     const result = await runAsync(args, {
       home,
       env: {
         DIIISCO_PROBE_OUT: probeOut,
+        DIIISCO_PROBE_CALLS: probeCalls,
         // A real key in the user's shell — the CLI must override it.
         ANTHROPIC_API_KEY: 'sk-ant-should-be-cleared',
         OPENAI_API_KEY: 'sk-openai-should-be-replaced',
@@ -125,7 +162,24 @@ suite('compiled binary — launch env wiring', () => {
     });
     expect(result.code).toBe(0);
     expect(existsSync(probeOut)).toBe(true);
-    return JSON.parse(readFileSync(probeOut, 'utf8'));
+    const raw = JSON.parse(readFileSync(probeOut, 'utf8')) as Record<string, string | null>;
+    const decoded: Record<string, string | null> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      decoded[key] = value === null ? null : Buffer.from(value, 'base64').toString('utf8');
+    }
+    return decoded;
+  }
+
+  /** Every invocation of the probe binary during the last `launch()` call. */
+  function readProbeCalls(): Array<{ args: string; customApiKey: string }> {
+    if (!existsSync(probeCalls)) return [];
+    return readFileSync(probeCalls, 'utf8')
+      .split('\n')
+      .filter((line) => line !== '')
+      .map((line) => {
+        const [args, key] = line.split('\t');
+        return { args, customApiKey: Buffer.from(key ?? '', 'base64').toString('utf8') };
+      });
   }
 
   test('the anthropic wire points the agent at the node and blanks the real key', async () => {
@@ -173,6 +227,71 @@ suite('compiled binary — launch env wiring', () => {
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('Unknown app');
     expect(result.stderr).toContain('claude');
+  });
+
+  test('claude wires a single mesh model into all tiers, not the generic var', async () => {
+    meshModels = ['diiisco-mesh-model-1'];
+    const env = await launch(['launch', '--endpoint', endpoint, '--key', 'test-key', 'claude']);
+
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('diiisco-mesh-model-1');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('diiisco-mesh-model-1');
+    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('diiisco-mesh-model-1');
+    expect(env.CLAUDE_CODE_SUBAGENT_MODEL).toBe('diiisco-mesh-model-1');
+    // The hook owns the model signal exclusively — no redundant/conflicting var.
+    expect(env.ANTHROPIC_MODEL).toBeNull();
+    expect(lastModelsAuthHeader).toBe('Bearer test-key');
+  });
+
+  test('claude --model skips mesh discovery entirely', async () => {
+    meshModels = ['should-not-be-picked'];
+    lastModelsAuthHeader = null;
+    const env = await launch(['launch', '--endpoint', endpoint, '--key', 'test-key', '--model', 'explicit-model', 'claude']);
+
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('explicit-model');
+    expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('explicit-model');
+    expect(lastModelsAuthHeader).toBeNull();
+  });
+
+  test('claude with no mesh models falls back to unwired launch', async () => {
+    meshModels = [];
+    const env = await launch(['launch', '--endpoint', endpoint, '--key', 'test-key', 'claude']);
+
+    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBeNull();
+    expect(env.ANTHROPIC_BASE_URL).toBe(endpoint);
+    meshModels = ['diiisco-mesh-model-1'];
+  });
+
+  test('opencode wires a provider block via OPENCODE_CONFIG_CONTENT', async () => {
+    meshModels = ['diiisco-mesh-model-1'];
+    const env = await launch(['launch', '--endpoint', endpoint, '--key', 'test-key', 'opencode']);
+
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? '{}');
+    expect(config.provider.diiisco.options.baseURL).toBe(`${endpoint}/v1`);
+    expect(config.provider.diiisco.options.apiKey).toBe('test-key');
+    expect(config.provider.diiisco.models).toHaveProperty('diiisco-mesh-model-1');
+    // No file writes for OpenCode — the generic OPENAI_MODEL stays unset too,
+    // same "hook owns the model signal" rule as Claude Code.
+    expect(env.OPENAI_MODEL).toBeNull();
+  });
+
+  test('openclaw onboards non-interactively before the real spawn, then launches clean', async () => {
+    meshModels = ['diiisco-mesh-model-1'];
+    await launch(['launch', '--endpoint', endpoint, '--key', 'test-key', 'openclaw']);
+
+    const calls = readProbeCalls();
+    expect(calls.length).toBe(2);
+
+    const [onboard, realSpawn] = calls;
+    expect(onboard.args).toBe(
+      `onboard --non-interactive --accept-risk --auth-choice custom-api-key --custom-compatibility openai --custom-provider-id diiisco --custom-base-url ${endpoint} --custom-model-id diiisco-mesh-model-1`
+    );
+    // The key travels via env, not argv (ps visibility) — same convention as
+    // ANTHROPIC_AUTH_TOKEN elsewhere in this codebase.
+    expect(onboard.customApiKey).toBe('test-key');
+
+    // The real spawn carries no onboarding args and no leaked secret env var.
+    expect(realSpawn.args).toBe('');
+    expect(realSpawn.customApiKey).toBe('');
   });
 
   test('an app whose binary is missing gives an install hint, not an ENOENT', async () => {

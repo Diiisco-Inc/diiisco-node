@@ -68,6 +68,26 @@ export class Prompter {
     }
   }
 
+  /**
+   * Numbered choice from a list of items, matched by 1-based index. Shows the
+   * whole list first, then asks for a selection with `fallback` as the
+   * default (shown in brackets, taken verbatim when input is empty or the
+   * session isn't interactive).
+   */
+  async pickFromList(question: string, items: readonly string[], fallback: string): Promise<string> {
+    if (!this.interactive) return fallback;
+    const fallbackIndex = Math.max(0, items.indexOf(fallback));
+    items.forEach((item, i) => this.write(`  ${i + 1}) ${item}`));
+    for (;;) {
+      const answer = (await this.ask(question, String(fallbackIndex + 1))).trim();
+      const index = Number(answer);
+      if (Number.isInteger(index) && index >= 1 && index <= items.length) {
+        return items[index - 1];
+      }
+      this.write(`  Enter a number between 1 and ${items.length}.`);
+    }
+  }
+
   /** Number, re-asked until it parses and passes `validate`. */
   async askNumber(question: string, fallback: number, validate: (n: number) => string | null): Promise<number> {
     if (!this.interactive) return fallback;

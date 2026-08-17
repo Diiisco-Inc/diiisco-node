@@ -1,6 +1,7 @@
 import { accessSync, constants, statSync } from 'node:fs';
 import { delimiter, join, isAbsolute } from 'node:path';
 import { Environment, CliAppConfig, CliWireProtocol } from '../environment/environment.types';
+import { MODEL_WIRING } from './launchAdapters';
 
 export interface LaunchTarget {
   app: string;
@@ -17,6 +18,8 @@ export interface LaunchTargetListing {
   wire: CliWireProtocol;
   installed: boolean;
   installHint: string;
+  /** Whether `launch` resolves a mesh model and wires it into this app itself. */
+  defaultModelWiring: boolean;
 }
 
 /**
@@ -106,6 +109,7 @@ export function listLaunchTargets(env?: Environment): LaunchTargetListing[] {
       wire: target.wire,
       installed: which(target.bin) !== null,
       installHint: target.installHint,
+      defaultModelWiring: MODEL_WIRING[target.app] !== undefined,
     }));
 }
 

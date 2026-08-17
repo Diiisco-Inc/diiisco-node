@@ -49,8 +49,12 @@ ${b('launch')}
   --endpoint URL   Attach to an existing node (never starts one)
   --remote URL     Alias for --endpoint
   --key KEY        API key to present (default: config, then \$DIIISCO_API_KEY, then "diiisco")
-  --model MODEL    Model the app should request
+  --model MODEL    Model the app should request (skips mesh model discovery)
+  --yes, -y        Don't prompt for a model; take the first one found
   --no-spawn       Fail instead of starting a local node
+  ${d('claude, codex, opencode, openclaw and hermes wire the resolved model into')}
+  ${d('the app itself; --model skips discovery, otherwise a mesh model is picked')}
+  ${d('automatically (or you are prompted, if more than one is found).')}
   Everything after the app name is passed through to it verbatim.
 
 ${b('config')}
