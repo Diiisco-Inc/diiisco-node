@@ -2,34 +2,55 @@
 #
 # DIIISCO CLI installer for macOS and Linux (spec §7.1).
 #
-#   curl -fsSL https://diiisco.com/install.sh | sh
+#   curl -fsSL https://diiis.co/install.sh | sudo sh
 #
 # Downloads the release artifact for this machine, verifies its SHA-256 against
-# the published SHA256SUMS, and installs it to ~/.local/bin — no sudo, no
-# package manager, no Node.js.
+# the published SHA256SUMS, and installs it to /usr/local/bin — already on
+# PATH by default on macOS and virtually every Linux distribution, no shell rc
+# edit needed. That's a system-wide, root-owned directory, so the default
+# install needs sudo; pass --user for a sudo-free install into ~/.local/bin
+# instead (you'll then need to put that on PATH yourself, or pass
+# --modify-path). No package manager, no Node.js, either way.
+#
+# On macOS this also installs DIIISCO Desktop by default — there is no Linux
+# desktop build, so on Linux this only ever installs the CLI. The desktop app
+# is downloaded as a .dmg, mounted, and DIIISCO.app is copied into
+# /Applications (or ~/Applications with --user), same as dragging it there
+# yourself. Pass --no-desktop to skip it and install just the CLI.
 #
 # Flags (each also an environment variable):
 #
-#   --version VERSION    DIIISCO_VERSION       release tag to install (default: latest)
-#   --install-dir DIR    DIIISCO_INSTALL_DIR   where to put the binary (default: ~/.local/bin)
-#   --system             DIIISCO_SYSTEM=1      install to /usr/local/bin instead
-#   --modify-path        DIIISCO_MODIFY_PATH=1 append the PATH line to your shell rc file
-#   --no-verify          DIIISCO_NO_VERIFY=1   skip checksum verification (unsupported)
+#   --version VERSION       DIIISCO_VERSION          release tag to install (default: latest)
+#   --install-dir DIR       DIIISCO_INSTALL_DIR      where to put the binary (default: /usr/local/bin)
+#   --user                   DIIISCO_USER=1           install to ~/.local/bin instead — no sudo needed
+#   --no-desktop             DIIISCO_NO_DESKTOP=1     skip DIIISCO Desktop, install just the CLI
+#   --modify-path            DIIISCO_MODIFY_PATH=1    append the PATH line to your shell rc file
+#   --no-verify              DIIISCO_NO_VERIFY=1      skip checksum verification (unsupported)
+#   --base-url URL           DIIISCO_BASE_URL         override the CLI release host (default: https://diiis.co/cli)
+#   --desktop-base-url URL   DIIISCO_DESKTOP_BASE_URL override the desktop release host (default: https://diiis.co/desktop)
 #   --help
 #
 # POSIX sh, shellcheck-clean, idempotent, and it never runs anything with sudo
 # on your behalf: if a destination needs elevation the script tells you the
-# command to run rather than running it.
+# command to run (re-invoke the whole pipe through sudo) rather than running
+# it for you.
 
 set -eu
 
-REPO="Diiisco-Inc/diiisco-node"
-RELEASES_URL="https://github.com/${REPO}/releases"
-API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+# Self-hosted releases, laid out by diiisco-publish/scripts/collect.ts:
+#   ${BASE_URL}/releases/<tag>/diiisco-<os>-<arch>[.exe]
+#   ${BASE_URL}/releases/<tag>/SHA256SUMS
+#   ${BASE_URL}/latest.json                       {"tag": "v1.2.3"}
+BASE_URL="${DIIISCO_BASE_URL:-https://diiis.co/cli}"
+# Desktop artifacts, laid out by the same collect.ts, flat (see electrobun's
+# release.baseUrl convention):
+#   ${DESKTOP_BASE_URL}/stable-macos-<arch>-DIIISCO.dmg
+DESKTOP_BASE_URL="${DIIISCO_DESKTOP_BASE_URL:-https://diiis.co/desktop}"
 
 VERSION="${DIIISCO_VERSION:-}"
 INSTALL_DIR="${DIIISCO_INSTALL_DIR:-}"
-SYSTEM="${DIIISCO_SYSTEM:-0}"
+USER_INSTALL="${DIIISCO_USER:-0}"
+NO_DESKTOP="${DIIISCO_NO_DESKTOP:-0}"
 MODIFY_PATH="${DIIISCO_MODIFY_PATH:-0}"
 NO_VERIFY="${DIIISCO_NO_VERIFY:-0}"
 
@@ -66,20 +87,26 @@ usage() {
     cat <<'USAGE'
 DIIISCO CLI installer for macOS and Linux.
 
-  curl -fsSL https://diiisco.com/install.sh | sh
+  curl -fsSL https://diiis.co/install.sh | sudo sh
+
+On macOS this also installs DIIISCO Desktop by default (no Linux desktop
+build exists, so Linux only ever gets the CLI). Pass --no-desktop to skip it.
 
 Options (each also settable as an environment variable):
 
-  --version VERSION    DIIISCO_VERSION       release tag to install (default: latest)
-  --install-dir DIR    DIIISCO_INSTALL_DIR   where to put the binary (default: ~/.local/bin)
-  --system             DIIISCO_SYSTEM=1      install to /usr/local/bin instead
-  --modify-path        DIIISCO_MODIFY_PATH=1 append the PATH line to your shell rc file
-  --no-verify          DIIISCO_NO_VERIFY=1   skip checksum verification (unsupported)
-  -h, --help           this message
+  --version VERSION       DIIISCO_VERSION          release tag to install (default: latest)
+  --install-dir DIR       DIIISCO_INSTALL_DIR      where to put the binary (default: /usr/local/bin)
+  --user                   DIIISCO_USER=1           install to ~/.local/bin instead — no sudo needed
+  --no-desktop             DIIISCO_NO_DESKTOP=1     skip DIIISCO Desktop, install just the CLI
+  --modify-path            DIIISCO_MODIFY_PATH=1    append the PATH line to your shell rc file
+  --no-verify              DIIISCO_NO_VERIFY=1      skip checksum verification (unsupported)
+  --base-url URL           DIIISCO_BASE_URL         override the CLI release host (default: https://diiis.co/cli)
+  --desktop-base-url URL   DIIISCO_DESKTOP_BASE_URL override the desktop release host (default: https://diiis.co/desktop)
+  -h, --help               this message
 
 Passing flags through a pipe needs an explicit separator:
 
-  curl -fsSL https://diiisco.com/install.sh | sh -s -- --modify-path
+  curl -fsSL https://diiis.co/install.sh | sh -s -- --user --no-desktop --modify-path
 USAGE
     exit 0
 }
@@ -102,9 +129,22 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --install-dir=*) INSTALL_DIR="${1#--install-dir=}"; shift ;;
-        --system) SYSTEM=1; shift ;;
+        --user) USER_INSTALL=1; shift ;;
+        --no-desktop) NO_DESKTOP=1; shift ;;
         --modify-path) MODIFY_PATH=1; shift ;;
         --no-verify) NO_VERIFY=1; shift ;;
+        --base-url)
+            [ $# -ge 2 ] || die "--base-url needs a value, e.g. --base-url http://localhost:8080"
+            BASE_URL="$2"
+            shift 2
+            ;;
+        --base-url=*) BASE_URL="${1#--base-url=}"; shift ;;
+        --desktop-base-url)
+            [ $# -ge 2 ] || die "--desktop-base-url needs a value, e.g. --desktop-base-url http://localhost:8080"
+            DESKTOP_BASE_URL="$2"
+            shift 2
+            ;;
+        --desktop-base-url=*) DESKTOP_BASE_URL="${1#--desktop-base-url=}"; shift ;;
         -h|--help) usage ;;
         *) die "Unknown option \"$1\"." "Run the installer with --help to see the supported flags." ;;
     esac
@@ -157,7 +197,7 @@ detect_target() {
         *)
             die "Unsupported operating system \"$os\"." \
                 "This installer covers macOS and Linux." \
-                "Windows builds are downloaded directly: ${RELEASES_URL}/latest"
+                "Windows builds are downloaded directly: ${BASE_URL}"
             ;;
     esac
 
@@ -167,7 +207,7 @@ detect_target() {
         *)
             die "Unsupported architecture \"$arch\"." \
                 "Prebuilt binaries exist for arm64 and x86_64." \
-                "See ${RELEASES_URL}/latest"
+                "See ${BASE_URL}"
             ;;
     esac
 
@@ -176,6 +216,20 @@ detect_target() {
 
 TARGET=$(detect_target)
 ARTIFACT="diiisco-${TARGET}"
+
+# detect_target's os_name/arch_name don't survive its own $(...) subshell, so
+# re-derive them from TARGET (always exactly "<os>-<arch>") wherever needed.
+TARGET_OS="${TARGET%-*}"
+TARGET_ARCH="${TARGET#*-}"
+
+# Desktop is on by default, but only where a build actually exists: macOS.
+# There's no Linux desktop build to opt into, so --no-desktop is the only
+# thing that changes anything there — it's already off.
+if [ "$NO_DESKTOP" = 1 ] || [ "$TARGET_OS" != darwin ]; then
+    DESKTOP_INSTALL=0
+else
+    DESKTOP_INSTALL=1
+fi
 
 # ---------------------------------------------------------------------------
 # Version resolution
@@ -190,13 +244,13 @@ resolve_version() {
         return
     fi
 
-    # The GitHub API returns the latest release as JSON; pull out tag_name
-    # without needing jq, which is not universally installed.
-    tag=$(fetch "$API_URL" 2>/dev/null | sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -n 1)
+    # latest.json is {"tag": "v1.2.3"}; pull out the value without needing jq,
+    # which is not universally installed.
+    tag=$(fetch "${BASE_URL}/latest.json" 2>/dev/null | sed -n 's/.*"tag" *: *"\([^"]*\)".*/\1/p' | head -n 1)
     [ -n "$tag" ] || die \
         "Could not work out the latest DIIISCO release." \
         "Check your network, or pin a version: DIIISCO_VERSION=v1.2.3 sh install.sh" \
-        "Releases: ${RELEASES_URL}"
+        "Releases: ${BASE_URL}"
     printf '%s' "$tag"
 }
 
@@ -207,10 +261,10 @@ TAG=$(resolve_version)
 # ---------------------------------------------------------------------------
 
 if [ -z "$INSTALL_DIR" ]; then
-    if [ "$SYSTEM" = 1 ]; then
-        INSTALL_DIR=/usr/local/bin
-    else
+    if [ "$USER_INSTALL" = 1 ]; then
         INSTALL_DIR="${HOME}/.local/bin"
+    else
+        INSTALL_DIR=/usr/local/bin
     fi
 fi
 
@@ -227,15 +281,16 @@ DESTINATION="${INSTALL_DIR}/diiisco"
 
 if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
     die "Cannot create ${INSTALL_DIR}." \
-        "Choose a writable directory with --install-dir DIR," \
-        "or create it yourself: sudo mkdir -p ${INSTALL_DIR} && sudo chown \"\$(id -un)\" ${INSTALL_DIR}"
+        "Re-run the whole pipe through sudo: curl -fsSL https://diiis.co/install.sh | sudo sh" \
+        "or install just for you, no sudo needed: sh install.sh --user"
 fi
 
 if [ ! -w "$INSTALL_DIR" ]; then
     die "${INSTALL_DIR} is not writable." \
-        "This script never uses sudo on your behalf. Either install somewhere you own:" \
-        "  sh install.sh --install-dir \"\$HOME/.local/bin\"" \
-        "or take ownership of the directory first."
+        "This script never uses sudo on your behalf — re-run the whole pipe through sudo yourself:" \
+        "  curl -fsSL https://diiis.co/install.sh | sudo sh" \
+        "or install just for you, no sudo needed:" \
+        "  sh install.sh --user"
 fi
 
 # ---------------------------------------------------------------------------
@@ -265,10 +320,16 @@ fi
 # ---------------------------------------------------------------------------
 
 TMP_DIR=$(mktemp -d 2>/dev/null || mktemp -d -t diiisco)
-cleanup() { rm -rf "$TMP_DIR"; }
+DMG_MOUNT=""
+cleanup() {
+    if [ -n "$DMG_MOUNT" ]; then
+        hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$TMP_DIR"
+}
 trap cleanup EXIT INT TERM
 
-DOWNLOAD_BASE="${RELEASES_URL}/download/${TAG}"
+DOWNLOAD_BASE="${BASE_URL}/releases/${TAG}"
 
 say ""
 say "${BOLD}Installing DIIISCO CLI${RESET}"
@@ -281,7 +342,7 @@ info "Downloading ${ARTIFACT}…"
 fetch_to "${DOWNLOAD_BASE}/${ARTIFACT}" "${TMP_DIR}/${ARTIFACT}" || die \
     "Could not download ${DOWNLOAD_BASE}/${ARTIFACT}." \
     "Check the version tag and that a build exists for ${TARGET}." \
-    "Releases: ${RELEASES_URL}"
+    "Releases: ${BASE_URL}"
 
 # Pick a checksum tool. macOS ships shasum; most Linux distributions ship
 # sha256sum; either is fine.
@@ -418,6 +479,92 @@ if ! on_path; then
         say ""
         info "  Or re-run this installer with --modify-path to do it for you."
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Desktop app (macOS only, on by default — see DESKTOP_INSTALL above)
+# ---------------------------------------------------------------------------
+
+if [ "$DESKTOP_INSTALL" = 1 ]; then
+    APPS_DIR="${DIIISCO_APPS_DIR:-}"
+    if [ -z "$APPS_DIR" ]; then
+        if [ "$USER_INSTALL" = 1 ]; then
+            APPS_DIR="${HOME}/Applications"
+        else
+            APPS_DIR="/Applications"
+        fi
+    fi
+
+    mkdir -p "$APPS_DIR" 2>/dev/null || die \
+        "Cannot create ${APPS_DIR}." \
+        "Install just for you instead: sh install.sh --user" \
+        "or point at a directory you own: DIIISCO_APPS_DIR=DIR sh install.sh"
+
+    if [ ! -w "$APPS_DIR" ]; then
+        die "${APPS_DIR} is not writable." \
+            "This script never uses sudo on your behalf — re-run the whole pipe through sudo yourself:" \
+            "  curl -fsSL https://diiis.co/install.sh | sudo sh" \
+            "or install just for you, no sudo needed:" \
+            "  sh install.sh --user"
+    fi
+
+    DESKTOP_ARTIFACT="stable-macos-${TARGET_ARCH}-DIIISCO.dmg"
+    DESKTOP_URL="${DESKTOP_BASE_URL}/${DESKTOP_ARTIFACT}"
+
+    say ""
+    say "${BOLD}Installing DIIISCO Desktop${RESET}"
+    info "  target   macos-${TARGET_ARCH}"
+    info "  into     ${APPS_DIR}/DIIISCO.app"
+    say ""
+
+    info "Downloading ${DESKTOP_ARTIFACT}…"
+    fetch_to "$DESKTOP_URL" "${TMP_DIR}/${DESKTOP_ARTIFACT}" || die \
+        "Could not download ${DESKTOP_URL}." \
+        "Check that a desktop build exists for macos-${TARGET_ARCH}." \
+        "Releases: ${DESKTOP_BASE_URL}"
+
+    DMG_MOUNT="${TMP_DIR}/dmg"
+    mkdir -p "$DMG_MOUNT"
+    hdiutil attach -nobrowse -readonly -mountpoint "$DMG_MOUNT" "${TMP_DIR}/${DESKTOP_ARTIFACT}" >/dev/null || die \
+        "Could not mount ${DESKTOP_ARTIFACT}." "It may be corrupt — try re-running the installer."
+
+    [ -d "${DMG_MOUNT}/DIIISCO.app" ] || die "${DESKTOP_ARTIFACT} does not contain DIIISCO.app."
+
+    # No SHA256SUMS is published for the desktop .dmg (unlike the CLI binary
+    # above) — the app bundle's own code signature is the equivalent integrity
+    # check here. An unsigned build is a supported fallback elsewhere in this
+    # pipeline, so a failed/missing signature warns rather than blocks install.
+    if [ "$NO_VERIFY" != 1 ] && have codesign; then
+        info "Verifying code signature…"
+        if codesign --verify --deep --strict "${DMG_MOUNT}/DIIISCO.app" 2>/dev/null; then
+            ok "Code signature verified."
+        else
+            warn "DIIISCO.app's code signature did not verify — installing anyway."
+            warn "This is expected for an unsigned build; Gatekeeper may warn on first launch."
+        fi
+    fi
+
+    rm -rf "${APPS_DIR}/DIIISCO.app"
+    cp -R "${DMG_MOUNT}/DIIISCO.app" "${APPS_DIR}/DIIISCO.app"
+
+    hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
+    DMG_MOUNT=""
+
+    # DIIISCO.app is a self-extracting stub: first launch unpacks the real app
+    # in place (writing new files into its own bundle), then relaunches. Under
+    # sudo that copy above just made it root-owned, and a normal (non-root)
+    # double-click can never write into it — the launcher spins at ~100% CPU
+    # forever and no window ever appears. Hand it back to whoever ran sudo, since
+    # that's who's going to double-click it.
+    if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        chown -R "$SUDO_USER" "${APPS_DIR}/DIIISCO.app"
+    fi
+
+    if have xattr; then
+        xattr -dr com.apple.quarantine "${APPS_DIR}/DIIISCO.app" >/dev/null 2>&1 || true
+    fi
+
+    ok "Installed DIIISCO Desktop to ${APPS_DIR}/DIIISCO.app"
 fi
 
 # ---------------------------------------------------------------------------
