@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import { Response } from "express";
 import { GenerationParams } from "../utils/models";
 
 /**
@@ -9,7 +10,7 @@ import { GenerationParams } from "../utils/models";
  * Scope (first pass): text content blocks + core generation params. Tools,
  * images, and extended thinking are intentionally not translated — non-text
  * content blocks are ignored rather than rejected, and unknown params pass
- * through untouched. Streaming is handled at the route layer, not here.
+ * through untouched.
  */
 
 // ---------------------------------------------------------------------------
@@ -211,4 +212,103 @@ export function openAIToAnthropicMessage(
       output_tokens: completion?.usage?.completion_tokens ?? 0,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Streaming: an already-computed AnthropicMessage, framed as SSE
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal subset of the Anthropic Messages streaming event types — just
+ * enough to frame one already-complete response as a valid stream. Shapes
+ * verified against a working Claude Code integration (ollama's
+ * `anthropic.MessageStartEvent` etc., `ollama/anthropic/anthropic.go`).
+ */
+export interface MessageStartEvent {
+  type: "message_start";
+  message: AnthropicMessage;
+}
+export interface ContentBlockStartEvent {
+  type: "content_block_start";
+  index: number;
+  content_block: { type: "text"; text: "" };
+}
+export interface ContentBlockDeltaEvent {
+  type: "content_block_delta";
+  index: number;
+  delta: { type: "text_delta"; text: string };
+}
+export interface ContentBlockStopEvent {
+  type: "content_block_stop";
+  index: number;
+}
+export interface MessageDeltaEvent {
+  type: "message_delta";
+  delta: { stop_reason: string | null; stop_sequence: string | null };
+  usage: { output_tokens: number };
+}
+export interface MessageStopEvent {
+  type: "message_stop";
+}
+
+function writeSSE(res: Response, eventType: string, data: unknown): void {
+  res.write(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+/**
+ * Emits an already-computed completion as a batched SSE stream — one
+ * `text_delta` carrying the whole message, not incremental generation.
+ * `OpenAIInferenceModel.getResponse` is non-streaming, so by the time this
+ * runs the full response already exists; this only changes how it's framed
+ * on the wire so Claude Code's stream parser accepts it (it always sends
+ * `stream: true` and has no way to be told not to).
+ */
+export function streamAnthropicMessage(
+  res: Response,
+  completion: OpenAI.Chat.Completions.ChatCompletion,
+  model: string,
+): void {
+  const message = openAIToAnthropicMessage(completion, model);
+  const text = message.content[0]?.text ?? "";
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  const messageStart: MessageStartEvent = {
+    type: "message_start",
+    message: { ...message, content: [], usage: { ...message.usage, output_tokens: 0 } },
+  };
+  writeSSE(res, "message_start", messageStart);
+
+  const blockStart: ContentBlockStartEvent = {
+    type: "content_block_start",
+    index: 0,
+    content_block: { type: "text", text: "" },
+  };
+  writeSSE(res, "content_block_start", blockStart);
+
+  const blockDelta: ContentBlockDeltaEvent = {
+    type: "content_block_delta",
+    index: 0,
+    delta: { type: "text_delta", text },
+  };
+  writeSSE(res, "content_block_delta", blockDelta);
+
+  const blockStop: ContentBlockStopEvent = { type: "content_block_stop", index: 0 };
+  writeSSE(res, "content_block_stop", blockStop);
+
+  const messageDelta: MessageDeltaEvent = {
+    type: "message_delta",
+    delta: { stop_reason: message.stop_reason, stop_sequence: message.stop_sequence },
+    usage: { output_tokens: message.usage.output_tokens },
+  };
+  writeSSE(res, "message_delta", messageDelta);
+
+  const messageStop: MessageStopEvent = { type: "message_stop" };
+  writeSSE(res, "message_stop", messageStop);
+
+  res.end();
 }
