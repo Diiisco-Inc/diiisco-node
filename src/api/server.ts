@@ -30,7 +30,12 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   const app = express();
   const port = environment.api.port || 8080;
   app.use(cors());
-  app.use(express.json());
+  // Express's json() defaults to a 100kb body limit — easily exceeded by a real
+  // agent request (system prompt + full tool schemas + conversation history),
+  // which throws PayloadTooLargeError before this app's own routes ever see the
+  // request. Raised well below the 32MB ceiling clients like Claude Code apply
+  // on their own end, so DIIISCO's own limit is never the thing that trips first.
+  app.use(express.json({ limit: '25mb' }));
 
   if (environment.api.bearerAuthentication) {
     app.use("/v1", requireBearer);
