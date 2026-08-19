@@ -19,6 +19,7 @@ import {
   validateCountTokensRequest,
   anthropicToOpenAIInputs,
   openAIToAnthropicMessage,
+  streamAnthropicMessage,
   anthropicError,
   AnthropicMessagesRequest,
 } from './anthropicAdapter';
@@ -267,18 +268,23 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       return res.status(400).json(validationError);
     }
 
-    if (req.body.stream === true) {
-      return res.status(400).json(
-        anthropicError("invalid_request_error", "Streaming (stream: true) is not yet supported on this endpoint.")
-      );
-    }
-
     const { model: reqModel, inputs, params } = anthropicToOpenAIInputs(req.body as AnthropicMessagesRequest);
 
     try {
       const completion = await runInference({ model: reqModel, inputs, ...params });
-      const anthropicMessage = openAIToAnthropicMessage(completion, reqModel);
       const elapsed = ((Date.now() - requestStartedAt) / 1000).toFixed(2);
+
+      // Claude Code always sends stream: true and has no way to be told not
+      // to. The backend call above is already non-streaming, so the full
+      // response exists by this point — streaming just re-frames it as SSE
+      // rather than doing real incremental generation (see plan 005).
+      if (req.body.stream === true) {
+        streamAnthropicMessage(res, completion, reqModel);
+        logger.info(`🚀 Sent Anthropic message response (streamed) in ${elapsed}s`);
+        return;
+      }
+
+      const anthropicMessage = openAIToAnthropicMessage(completion, reqModel);
       logger.info(`🚀 Sending Anthropic message response in ${elapsed}s`);
       return res.status(200).json(anthropicMessage);
     } catch (err) {
