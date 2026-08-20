@@ -1,6 +1,6 @@
 import { createLibp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
-import { noise } from '@chainsafe/libp2p-noise';
+import { noise, pureJsCrypto } from '@chainsafe/libp2p-noise';
 import { identify, identifyPush } from '@libp2p/identify';
 import { ping } from '@libp2p/ping';
 import { mdns } from '@libp2p/mdns';
@@ -121,7 +121,17 @@ export const createLibp2pNode = async () => {
       tcp(),
       ...(isPublicNode ? [] : [circuitRelayTransport()]), // Only add circuit relay transport if not a public node
     ],
-    connectionEncrypters: [noise()],
+    // `pureJsCrypto`, not the default: @chainsafe/libp2p-noise routes
+    // ChaCha20-Poly1305 payloads >= 1200 bytes to node:crypto's
+    // createCipheriv('chacha20-poly1305'), which Bun does not implement
+    // ("Unknown cipher: chacha20-poly1305") — and our shipped binaries are
+    // built with `bun build --compile`. Small payloads take the package's WASM
+    // path, so the handshake, identify and ping all succeed and only real
+    // prompts and completions fail, mid-stream, as a dropped connection.
+    // The same gap exists in Electron; upstream guards that case but keys the
+    // guard on `isElectronMain`, which is false in a renderer or utility
+    // process. Pinning the pure-JS backend covers every runtime we ship on.
+    connectionEncrypters: [noise({ crypto: pureJsCrypto })],
     peerDiscovery,
     streamMuxers: [yamux()],
     
