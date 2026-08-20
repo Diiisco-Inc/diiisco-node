@@ -59,7 +59,30 @@ curl -fsSL https://diiisco.com/install.sh | sh -s -- --modify-path
 | `--system` | `DIIISCO_SYSTEM=1` | off (installs to `/usr/local/bin`) |
 | `--modify-path` | `DIIISCO_MODIFY_PATH=1` | off |
 
-**Windows:** download `diiisco-windows-x64.exe` from the [releases page](https://github.com/Diiisco-Inc/diiisco-node/releases/latest), or install [DIIISCO Desktop](https://diiisco.com), which ships the CLI and puts it on your `PATH`.
+**Windows:**
+
+```powershell
+irm https://diiis.co/install.ps1 | iex
+```
+
+Same contract as the shell installer — detects the platform, **verifies the SHA-256** against the published `SHA256SUMS`, and installs `diiisco.exe`. It installs to `%LOCALAPPDATA%\DIIISCO\bin`, so no Administrator rights are needed. Unlike Unix, Windows has no conventional user `bin` directory that's already on `PATH`, so the installer adds it to your **user** `PATH` in the registry; pass `-NoModifyPath` to skip that. It also installs [DIIISCO Desktop](https://diiis.co) by default — pass `-NoDesktop` for the CLI alone.
+
+`iex` cannot forward arguments, so pass flags through a script block (or use the environment variables):
+
+```powershell
+& ([scriptblock]::Create((irm https://diiis.co/install.ps1))) -Version v1.1.0
+& ([scriptblock]::Create((irm https://diiis.co/install.ps1))) -NoDesktop
+& ([scriptblock]::Create((irm https://diiis.co/install.ps1))) -System   # all users, needs an elevated terminal
+```
+
+| Flag | Environment variable | Default |
+|------|----------------------|---------|
+| `-Version VERSION` | `DIIISCO_VERSION` | latest release |
+| `-InstallDir DIR` | `DIIISCO_INSTALL_DIR` | `%LOCALAPPDATA%\DIIISCO\bin` |
+| `-System` | `DIIISCO_SYSTEM=1` | off (installs to `%ProgramFiles%\DIIISCO\bin`, needs elevation) |
+| `-NoDesktop` | `DIIISCO_NO_DESKTOP=1` | off (DIIISCO Desktop is installed) |
+| `-NoModifyPath` | `DIIISCO_NO_MODIFY_PATH=1` | off (`PATH` is updated) |
+| `-DesktopInteractive` | `DIIISCO_DESKTOP_INTERACTIVE=1` | off (the desktop installer runs silently) |
 
 **Already have DIIISCO Desktop?** You already have `diiisco` — the app bundles it. `diiisco version` says which copy you're running (`[desktop-bundled]` is updated by the app, `[standalone]` by re-running the installer).
 
