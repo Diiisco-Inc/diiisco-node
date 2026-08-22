@@ -73,10 +73,10 @@ All on-wire messages are msgpack-encoded (`msgpackr`) and typed by `role` field 
 
 **Message flow for an inference request:**
 1. API server receives `POST /v1/chat/completions`
-2. The requester counts its **own** input tokens; `MeshMessageQueue` (`src/messaging/meshMessageQueue.ts`) publishes a `quote-request` carrying `{ model, inputTokenCount, max_tokens, maxSpend }` — **not the prompt** — once the GossipSub mesh has a subscriber
+2. The requester counts its **own** input tokens (prompt **and** tool schemas — an agent tool's schemas are thousands of tokens the provider must be paid for); `MeshMessageQueue` (`src/messaging/meshMessageQueue.ts`) publishes a `quote-request` carrying `{ model, inputTokenCount, max_tokens, maxSpend }` — **not the prompt** — once the GossipSub mesh has a subscriber
 3. Provider nodes receive `quote-request` → `MessageProcessor.handleQuoteRequest()` → publish `quote-response` with their per-token rates (providers that can't serve within the budget don't quote)
 4. `quoteEngine` enriches each quote (provider DSCO balance, NFD status, response latency) and after `waitTime` ms selects one via `quoteSelectionFunction`, emitting `quote-selected-<id>`
-5. Requester sends `quote-accepted` **directly to the winning provider only**, now including the prompt content
+5. Requester sends `quote-accepted` **directly to the winning provider only**, now including the prompt content and any `tools` definitions
 6. Provider runs inference (generation capped to what the budget affords), **withholds** the answer, and sends `contract-created` carrying the x402 payment requirements for the metered charge (`min(actual, maxSpend)`)
 7. Requester checks the amount against its **local** `maxSpend`, signs the USDC transfer, and returns it in `contract-signed` (it refuses if the amount exceeds `maxSpend`, or if `maxSpend` is unset)
 8. Provider verifies the payment with the facilitator, releases the answer as `inference-response`, then settles on-chain in the background (facilitator settle, with a direct-to-algod self-submit fallback)
@@ -102,6 +102,8 @@ Collects `QuoteResponse` messages per request, enriches each into a `QuoteCandid
 ### HTTP API (`src/api/server.ts`)
 
 Express 5 server exposing an OpenAI-compatible API. All `/v1`, `/peers`, `/network`, and `/health/algorand` endpoints require `Authorization: Bearer <key>` when `bearerAuthentication` is true. `/health` is always unauthenticated.
+
+`/v1/messages` (+ `/v1/messages/count_tokens`) speaks the **Anthropic** Messages API, which is what `diiisco launch claude` points Claude Code at. `src/api/anthropicAdapter.ts` translates it to and from the internal OpenAI shape: text blocks, tool definitions (`input_schema` → `parameters`), `tool_use` → `tool_calls`, `tool_result` → `role: "tool"` messages, and back again. Claude Code always sends `stream: true`, so the completed response is re-framed as a batched SSE stream (one delta per content block) — there is no incremental generation anywhere in the node. Images and extended thinking are still dropped. `stop_reason: "tool_use"` is set from the blocks actually built, never from `finish_reason` alone.
 
 `preferSelf: true` (default) short-circuits the network auction — if the requested model is available locally, inference runs directly without broadcasting.
 

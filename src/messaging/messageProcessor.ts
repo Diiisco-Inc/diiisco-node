@@ -553,7 +553,9 @@ export class MessageProcessor {
    */
   private async budgetOutputCap(msg: { payload: any }): Promise<number | undefined> {
     const rates = getRatesPer1M(msg.payload.model);
-    const inputTokens = countInputTokens(msg.payload.inputs);
+    // Counted the same way the requester counted it (tools included), or the
+    // two sides disagree about what the budget affords.
+    const inputTokens = countInputTokens(msg.payload.inputs, msg.payload.tools);
     const plan = planBudget(inputTokens, rates, msg.payload.maxSpend, msg.payload.max_tokens);
     return plan.canServe ? plan.outputCap : undefined;
   }
