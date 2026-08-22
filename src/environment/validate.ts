@@ -18,13 +18,17 @@ export function validateEnvironment(env: Environment): string[] {
         'No wallet configured. Run `diiisco setup --public`, or enable local mode with `diiisco setup --local`.'
       );
     } else {
+      // The wallet key is not a config field any more — it is loaded from
+      // `algorand-key.json` — so these messages stay path-free and point at the
+      // command that manages it. (This module is shared with library consumers,
+      // which have no `~/.diiisco` at all.)
       if (!env.algorand.mnemonic || env.algorand.mnemonic.trim() === '') {
         errors.push(
-          'No wallet configured: `algorand.mnemonic` is empty. Run `diiisco setup --public`, or enable local mode with `diiisco setup --local`.'
+          'No wallet key found. Run `diiisco setup --public`, or enable local mode with `diiisco setup --local`.'
         );
       } else if (env.algorand.mnemonic.trim().split(/\s+/).length !== 25) {
         errors.push(
-          '`algorand.mnemonic` does not look like an Algorand mnemonic (expected 25 space-separated words). Re-run `diiisco setup --public`.'
+          'The wallet key is not an Algorand mnemonic (expected 25 space-separated words). Re-run `diiisco setup --public`.'
         );
       }
 

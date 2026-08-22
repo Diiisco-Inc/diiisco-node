@@ -1,11 +1,21 @@
 import { existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Environment, EnvironmentFile } from '../environment/environment.types';
 import { withDefaults } from '../environment/defaults';
 import { validateEnvironment } from '../environment/validate';
 import { resolveStrategies, StrategyError, strategyName } from '../environment/strategies';
 import { diiiscoHome, ensureHome, expandTilde } from './paths';
+import { ConfigError } from './errors';
+import {
+  KEY_FILENAME,
+  WalletKeyFile,
+  addressOf,
+  keyFilePathIn,
+  readKeyFileAt,
+  sameWallet,
+  writeKeyFileAt,
+} from './keystore';
 
 /** The config file's name since the CLI took ownership of `~/.diiisco`. */
 export const CONFIG_FILENAME = 'diiisco.config.json';
@@ -13,14 +23,10 @@ export const CONFIG_FILENAME = 'diiisco.config.json';
 /** The name used by the first CLI drafts; still read, with a deprecation notice. */
 export const LEGACY_CONFIG_FILENAME = 'config.json';
 
-export class ConfigError extends Error {
-  readonly hints: string[];
-  constructor(message: string, hints: string[] = []) {
-    super(message);
-    this.name = 'ConfigError';
-    this.hints = hints;
-  }
-}
+// Re-exported so the many `import { ConfigError } from '../config'` call sites
+// keep working; the class itself lives in `errors.ts` so `keystore.ts` can throw
+// it without an import cycle.
+export { ConfigError };
 
 /** Set by the global `--config <path>` flag; highest-priority location. */
 let configPathOverride: string | null = null;
@@ -126,18 +132,118 @@ export function readConfigFile(): EnvironmentFile | null {
 }
 
 /**
+ * Where the wallet key lives: beside the config file, so `DIIISCO_HOME`,
+ * `$DIIISCO_CONFIG` and `--config` all move the two together and an alternate
+ * config stays self-contained. In the ordinary case that is
+ * `~/.diiisco/algorand-key.json`.
+ */
+export function keyFilePath(): string {
+  return keyFilePathIn(dirname(configPath()));
+}
+
+export function keyFileExists(): boolean {
+  return existsSync(keyFilePath());
+}
+
+/** Read the wallet key file, or `null` when there is none. */
+export function readKeyFile(): WalletKeyFile | null {
+  return readKeyFileAt(keyFilePath());
+}
+
+/** Write the wallet key file (mode 0600), creating `~/.diiisco` if needed. */
+export function writeKeyFile(mnemonic: string): string {
+  const path = keyFilePath();
+  if (path.startsWith(diiiscoHome())) ensureHome();
+  writeKeyFileAt(path, mnemonic);
+  return path;
+}
+
+export interface WalletResolution {
+  /** The mnemonic to run with, if there is one. */
+  mnemonic?: string;
+  source: 'keyfile' | 'config' | 'none';
+  /** True when a copy still sits in the config file and wants moving out. */
+  needsMigration: boolean;
+}
+
+/**
+ * Decide which wallet a node should run as, given what is in the config file
+ * and what is in the key file.
+ *
+ * The key file wins, and a leftover copy of the *same* wallet in the config is
+ * just something to tidy up. Two **different** wallets is not a precedence
+ * question: picking either one silently changes which account is spending, so
+ * it stops here instead.
+ */
+export function resolveWalletKey(file: EnvironmentFile | null): WalletResolution {
+  const fromConfig = file?.algorand?.mnemonic?.trim();
+  const key = readKeyFile();
+
+  if (!key) {
+    if (!fromConfig) return { source: 'none', needsMigration: false };
+    return { mnemonic: fromConfig, source: 'config', needsMigration: true };
+  }
+
+  if (!fromConfig) return { mnemonic: key.mnemonic, source: 'keyfile', needsMigration: false };
+
+  if (sameWallet(key.mnemonic, fromConfig)) {
+    return { mnemonic: key.mnemonic, source: 'keyfile', needsMigration: true };
+  }
+
+  throw walletConflictError(key.address, fromConfig);
+}
+
+/**
+ * Two different wallets, named by address. The mnemonics themselves are never
+ * printed — the address is enough for the user to tell which is which.
+ */
+export function walletConflictError(keyFileAddress: string, configMnemonic: string): ConfigError {
+  let configAddress: string;
+  try {
+    configAddress = addressOf(configMnemonic);
+  } catch {
+    configAddress = '(not a valid mnemonic)';
+  }
+
+  return new ConfigError('Two different Algorand wallets are configured, so the node will not start.', [
+    `${keyFilePath()}  ${keyFileAddress}`,
+    `${configPath()}  ${configAddress}`,
+    'Neither file has been changed.',
+    `To keep the key file's wallet: delete \`algorand.mnemonic\` from ${configPath()}.`,
+    `To keep the config's wallet:   move ${KEY_FILENAME} aside and start again.`,
+  ]);
+}
+
+/**
  * The effective configuration: `DEFAULT_ENVIRONMENT` filled in with the config
- * file, strategy names resolved to functions.
+ * file, strategy names resolved to functions, and the wallet key read from
+ * `algorand-key.json`.
  *
  * The defaults fill gaps in a real config; they are **not** a substitute for
  * one. A missing file yields the bare defaults here — callers that would
  * actually run the node must gate on `requireConfig()` first.
  */
 export function loadConfig(): Environment {
-  return mergeConfig(readConfigFile());
+  const file = readConfigFile();
+  const wallet = resolveWalletKey(file);
+  const env = mergeConfig(file);
+
+  // Only fill in a block the config actually declares. A local-mode config with
+  // a leftover key file must stay local, and an `algorand`-less public config
+  // should keep failing `validateEnvironment` with its own message.
+  if (wallet.mnemonic && env.algorand) env.algorand.mnemonic = wallet.mnemonic;
+
+  return env;
 }
 
-/** Merge an already-parsed config file over the defaults. */
+/**
+ * Merge an already-parsed config file over the defaults.
+ *
+ * Deliberately does **not** consult the key file: `setup` and `config edit`
+ * validate an in-memory candidate that still carries its own mnemonic, and
+ * would trip over a key file holding the wallet they are about to replace.
+ * `loadConfig()` is the disk-backed path that resolves the wallet.
+ */
 export function mergeConfig(file: EnvironmentFile | null): Environment {
   let overrides: Partial<Environment> | null = null;
   if (file) {
@@ -196,6 +302,16 @@ export function writeConfigFile(config: EnvironmentFile, path = configPath()): s
     // Windows / exotic filesystems: best effort.
   }
   return path;
+}
+
+/**
+ * A copy of a config with the wallet key taken out — what actually gets
+ * written to `diiisco.config.json`. The key belongs in `algorand-key.json`.
+ */
+export function withoutMnemonic(config: EnvironmentFile): EnvironmentFile {
+  if (!config.algorand || config.algorand.mnemonic === undefined) return config;
+  const { mnemonic, ...algorand } = config.algorand;
+  return { ...config, algorand };
 }
 
 /** Render a config as the JSON that belongs on disk (functions → strategy names). */

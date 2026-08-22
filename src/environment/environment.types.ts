@@ -16,6 +16,16 @@ export interface AlgorandConfig {
 }
 
 /**
+ * The `algorand` block as it appears in `diiisco.config.json`.
+ *
+ * `mnemonic` is optional here because it does not belong in that file: the
+ * wallet key lives on its own in `~/.diiisco/algorand-key.json`. It is still
+ * *accepted* — a config written before the split, or by hand — and the node
+ * moves it to the key file on startup (`src/cli/keyMigration.ts`).
+ */
+export type AlgorandFileConfig = Omit<AlgorandConfig, 'mnemonic'> & { mnemonic?: string };
+
+/**
  * Per-1M-token rate. A bare `number` is shorthand for equal input/output rates
  * (`{ input: n, output: n }`) — keeps existing scalar configs working unchanged.
  */
@@ -151,9 +161,11 @@ export interface QuoteEngineFileConfig extends Omit<Partial<QuoteEngineConfig>, 
 
 /**
  * The on-disk shape of `diiisco.config.json`: `Environment` with the
- * function-valued fields widened to their JSON-expressible name form. Resolving
+ * function-valued fields widened to their JSON-expressible name form, and the
+ * wallet key made optional because it belongs in `algorand-key.json`. Resolving
  * it with `resolveStrategies()` yields a `Partial<Environment>`.
  */
-export type EnvironmentFile = Omit<Partial<Environment>, 'quoteEngine'> & {
+export type EnvironmentFile = Omit<Partial<Environment>, 'quoteEngine' | 'algorand'> & {
   quoteEngine?: QuoteEngineFileConfig;
+  algorand?: AlgorandFileConfig;
 };

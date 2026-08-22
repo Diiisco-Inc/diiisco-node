@@ -1,5 +1,6 @@
 import { Environment } from '../../environment/environment.types';
 import { apiEndpoint, assertValid, configExists, configPath, loadConfig, mergeConfig, requireConfig } from '../config';
+import { migrateWalletKey } from '../keyMigration';
 import {
   DaemonState,
   liveDaemon,
@@ -28,6 +29,13 @@ export interface StartOptions {
  */
 export async function runStart(options: StartOptions = {}): Promise<string> {
   requireConfig();
+
+  // Run the wallet-key migration here, in the foreground, so that two
+  // conflicting wallets are reported in the user's terminal rather than in a
+  // log file the daemon writes just before giving up. Idempotent, so the
+  // daemon's own call is a no-op.
+  const migration = migrateWalletKey();
+
   const existing = liveDaemon();
   const env = loadConfig();
   const endpoint = apiEndpoint(env);
@@ -38,6 +46,9 @@ export async function runStart(options: StartOptions = {}): Promise<string> {
       info(colour.dim(`  ${existing.state.endpoint || endpoint}`));
     }
     return existing.state.endpoint || endpoint;
+  }
+  if (migration.outcome === 'migrated' && !options.silent) {
+    info(`Moved your wallet key out of the config and into ${migration.keyFile} (mode 0600).`);
   }
   if (existing.stale && !options.silent) {
     warn('Removed a stale daemon.json (the recorded process was no longer running).');
@@ -138,6 +149,12 @@ export interface StatusReport {
    */
   controlChannel: boolean;
   health: { ok: boolean; status: number | null; error: string | null } | null;
+  /**
+   * Why the config could not be loaded, when it could not be. `status` still
+   * answers on a broken config rather than erroring, and this is what says so —
+   * otherwise e.g. two conflicting wallet keys look like a plain "stopped".
+   */
+  configError: string | null;
   algorand: AlgorandStatus | null;
   home: string;
   configPath: string;
@@ -162,9 +179,11 @@ export async function collectStatus(): Promise<StatusReport> {
   // missing (or unreadable) degrades to the defaults rather than throwing.
   const configured = configExists();
   let env: Environment;
+  let configError: string | null = null;
   try {
     env = loadConfig();
-  } catch {
+  } catch (err) {
+    configError = err instanceof Error ? err.message : String(err);
     env = mergeConfig(null);
   }
   const configuredEndpoint = apiEndpoint(env);
@@ -185,6 +204,7 @@ export async function collectStatus(): Promise<StatusReport> {
     owner: running ? recorded!.owner : null,
     controlChannel: running && recorded!.control !== undefined,
     health: null,
+    configError,
     algorand: null,
     home: diiiscoHome(),
     configPath: configPath(),
@@ -279,6 +299,7 @@ export async function runStatus(asJson: boolean): Promise<void> {
   if (!report.running) {
     info(`${colour.red('●')} DIIISCO node: ${colour.bold('stopped')}`);
     if (report.stale) info(colour.dim('  A stale daemon.json was found — the recorded process is gone.'));
+    if (report.configError) warn(report.configError);
     if (!report.configured) {
       info(`  config    ${colour.yellow('not configured')} — ${report.configPath}`);
       info(colour.dim('  set it up with: diiisco setup'));
@@ -300,6 +321,8 @@ export async function runStatus(asJson: boolean): Promise<void> {
   if (report.health && !report.health.ok) {
     info(`  health    ${colour.yellow(report.health.error ?? `HTTP ${report.health.status}`)}`);
   }
+
+  if (report.configError) warn(report.configError);
 
   const algo = report.algorand;
   if (algo) {

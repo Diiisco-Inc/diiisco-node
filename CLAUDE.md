@@ -52,14 +52,36 @@ There are three, and picking the wrong one is the classic mistake here:
 
 Config comes from one of three places:
 
-1. **`~/.diiisco/diiisco.config.json`** — how end users configure a node, created by `diiisco setup`. Mirrors the `Environment` interface; function-valued fields (`quoteSelectionFunction`) take strategy *names*, resolved by `src/environment/strategies.ts`. There is no implicit zero-config run: without this file the CLI exits **2** and tells the user to run `diiisco setup`.
+1. **`~/.diiisco/diiisco.config.json`** — how end users configure a node, created by `diiisco setup`. Mirrors the `Environment` interface; function-valued fields (`quoteSelectionFunction`) take strategy *names*, resolved by `src/environment/strategies.ts`. There is no implicit zero-config run: without this file the CLI exits **2** and tells the user to run `diiisco setup`. **The wallet mnemonic is not in this file** — see Wallet key below.
 2. **`configureEnvironment(overrides)`** — how library consumers (the desktop app) configure it.
 3. **`src/environment/environment.ts`** — an optional, **gitignored** contributor override loaded only by `src/dev.ts`. Copy `example.environment.ts` to create it. It typically holds a real mnemonic, so never commit it or read it into other tooling.
 
 Two modes:
 
-- **Public network** — requires `algorand` block with a wallet mnemonic and an `algorand.settlement` block (a `maxSpend` budget plus x402 config); settles payments in USDC via x402.
+- **Public network** — requires an `algorand` block (algod client, network, `algorand.settlement` with a `maxSpend` budget plus x402 config) and a wallet key; settles payments in USDC via x402.
 - **Private/local network** — omit `algorand`, add `local: { enabled: true, privateTopic: "..." }`. Quoting and settlement are skipped; an ephemeral signing key is generated instead.
+
+### Wallet key (`src/cli/keystore.ts`, `src/cli/keyMigration.ts`)
+
+On the CLI/desktop path the 25-word mnemonic lives **on its own** in
+`algorand-key.json` beside the config file (so `DIIISCO_HOME`, `$DIIISCO_CONFIG`
+and `--config` move the two together), mode `0600`. It is out of
+`diiisco.config.json` because that file gets hand-edited, pasted into issues and
+copied between machines, and the mnemonic is full spending authority.
+
+`loadConfig()` reads the key file and injects it into `env.algorand.mnemonic`, so
+everything downstream (`src/utils/algorand.ts`, settlement, signing) is unchanged
+— only the on-disk representation moved. `mergeConfig()` deliberately does *not*
+read the key file: `setup` and `config edit` validate an in-memory candidate that
+still carries its own mnemonic.
+
+A config that still holds `algorand.mnemonic` is migrated on startup
+(`runServe`, and `runStart` in the foreground so the user sees it): the key file
+is written **first**, then the config is rewritten without the field, so a crash
+between the two can never lose the key. If the two files name **different**
+wallets the node stops and writes to neither — picking one would silently change
+which account is spending. A source checkout's `src/environment/environment.ts`
+keeps its inline mnemonic and is unaffected.
 
 ### Transport layer (`src/libp2p/`)
 
@@ -114,6 +136,6 @@ The `diiisco` command, shipped as a self-contained Bun-compiled binary (no Node,
 - **Lifecycle is self-managed**, not PM2: `start` re-spawns the executable detached with an internal `__daemon` argument and records `{pid, endpoint, version, owner}` in `~/.diiisco/daemon.json`. `owner` (`cli` or `desktop`) lets the desktop app and the terminal share one daemon rather than fight over it.
 - **`launch <app>`** points an agent tool at the node by setting wire env vars (`anthropic`: `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_API_KEY` explicitly blanked; `openai`: `OPENAI_BASE_URL`/`OPENAI_API_KEY`) and spawning it with inherited stdio. Flags must precede the app name — everything after it is passed through to the tool verbatim.
 - **`--json` output** on `status`, `config show` and `launch --list` is a **contract consumed by DIIISCO Desktop**; changing those shapes breaks the app. Exit codes: 0 success, 1 failure, **2 not configured**.
-- Runtime state lives in `~/.diiisco/` (`DIIISCO_HOME` overrides).
+- Runtime state lives in `~/.diiisco/` (`DIIISCO_HOME` overrides): `diiisco.config.json`, `algorand-key.json`, `diiisco-peer-id.protobuf`, `daemon.json`, `logs/`. `config path --key` prints the key file's location — DIIISCO Desktop asks the binary rather than re-deriving the precedence.
 
-See `.claude/docs/diiisco-cli.md` for the full spec, including packaging, `install.sh`, and the Electrobun desktop integration.
+See `.claude/docs/plans/003-diiisco-cli.md` for the full spec, including packaging, `install.sh`, and the Electrobun desktop integration.
