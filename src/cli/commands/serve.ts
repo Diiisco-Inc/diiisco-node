@@ -6,6 +6,7 @@ import { ensureHome, expandTilde, logFile } from '../paths';
 import { recordControlChannel, startLogRotationWatcher } from '../daemon';
 import { ControlServer, generateControlToken, startControlServer } from '../control';
 import { colour, error, info, warn } from '../output';
+import { installProcessGuards } from '../../utils/processGuards';
 
 /**
  * If `Application.shutdown()` itself wedges, the process must still go away —
@@ -36,6 +37,10 @@ function reportMigration(): void {
  * here with `daemon: true`.
  */
 export async function runServe(options: { daemon?: boolean } = {}): Promise<void> {
+  // Installed first: a node that survives boot must also survive an aborted
+  // dial hours later, which is what takes nodes off the mesh.
+  installProcessGuards();
+
   // No implicit zero-config run: a node without a configured backend, an API
   // key and (on the public network) a wallet starts but serves nothing.
   requireConfig();
