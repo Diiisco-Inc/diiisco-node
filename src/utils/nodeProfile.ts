@@ -3,8 +3,9 @@ import { NodeProfile } from '../types/profile';
 import { nodeStats } from './nodeStats';
 import { isPublicNode } from '../libp2p/node';
 import { getMeshTopic } from './topic';
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 import algorand from './algorand';
+import { getRatesPer1M } from './quoteCreationMethods';
 
 let cachedVersion: string | undefined;
 
@@ -55,12 +56,16 @@ export const buildOwnProfile = (node: any, algo: algorand, availableModels: stri
   };
 
   if (environment.node?.publicStats !== false) {
-    const rates = environment.models.chargePer1MTokens;
     profile.stats = {
-      models: availableModels.map((id) => ({
-        id,
-        pricePer1MTokens: rates?.[id] ?? rates?.default,
-      })),
+      models: availableModels.map((id) => {
+        const { input, output } = getRatesPer1M(id);
+        return {
+          id,
+          pricePer1MTokens: input, // back-compat: legacy single rate = input rate
+          pricePerInputToken1M: input,
+          pricePerOutputToken1M: output,
+        };
+      }),
       connectedPeers: node.getConnections().length,
       meshReady: localMode || node.services.pubsub.getSubscribers(getMeshTopic()).length > 0,
       uptimeSeconds: nodeStats.uptimeSeconds,

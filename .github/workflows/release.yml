@@ -1,0 +1,481 @@
+# Tag-triggered release: build the executable matrix, run the smoke suite,
+# publish to GitHub Releases (spec §6.1–§6.3, §7.1).
+#
+#   git tag v1.1.0 && git push origin v1.1.0
+#
+# Layout
+#   build           one Linux runner cross-compiles every target (`bun build
+#                   --compile --target` needs no matching host) in both the
+#                   standalone and desktop-bundled variants
+#   sign-macos      Developer ID signing + notarization — SKIPPED when the
+#                   secrets are absent (§6.2)
+#   sign-windows    Authenticode signing — SKIPPED when the secrets are absent
+#   smoke           the compiled binary is exercised on Linux, macOS and Windows
+#   release         checksums + GitHub Release: the standalone artifacts *and*
+#                   the desktop-bundled ones (see the contract below)
+#
+# The signing jobs are deliberately guarded stubs. They document the exact steps
+# and inputs, and they no-op cleanly on a fork or before the certificates exist,
+# rather than failing the release or inventing credentials.
+#
+# ---------------------------------------------------------------------------
+# Contract with the diiisco-desktop repo
+# ---------------------------------------------------------------------------
+#
+# DIIISCO Desktop ships the CLI inside the app bundle (spec §9), so its build
+# needs the **desktop-bundled** variant of *this* tag — the one stamped
+# `DIIISCO_INSTALL_SOURCE=desktop-bundled`, so `diiisco version` and the update
+# check point at the app's updater rather than install.sh.
+#
+# An `actions/upload-artifact` cannot be fetched from another repository, so the
+# desktop-bundled binaries are published as release assets under their own
+# names:
+#
+#   diiisco-desktop-<os>-<arch>[.exe]   one per target, desktop-bundled
+#   SHA256SUMS.desktop                  checksums for exactly those
+#   diiisco-desktop-bundled.zip         the same binaries under their canonical
+#                                       `diiisco-<os>-<arch>` names, ready to
+#                                       unzip straight into DIIISCO_CLI_ARTIFACTS
+#
+# The desktop workflow consumes them for the **same tag**, e.g.
+#
+#   gh release download "$TAG" --repo Diiisco-Inc/diiisco-node \
+#     --pattern 'diiisco-desktop-bundled.zip' --dir /tmp
+#   unzip -d dist/cli /tmp/diiisco-desktop-bundled.zip
+#   DIIISCO_CLI_ARTIFACTS="$PWD/dist/cli" bun run build
+#
+# …or, per target:
+#
+#   gh release download "$TAG" --repo Diiisco-Inc/diiisco-node \
+#     --pattern 'diiisco-desktop-darwin-arm64' \
+#     --output dist/cli/diiisco-darwin-arm64
+#
+# `scripts/bundle-cli.ts` in the desktop repo looks for `diiisco-<os>-<arch>` in
+# that directory, which is why the zip keeps the unprefixed names and the
+# per-target download renames on the way in.
+#
+# ⚠ Never glob `diiisco-*` when downloading: that also matches the **standalone**
+# assets, which have exactly the canonical names, and bundling one of those into
+# the app would silently point every user's update hint at install.sh. The
+# desktop build should assert `diiisco version | grep '\[desktop-bundled\]'`
+# after copying.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version to build (e.g. v1.1.0). Artifacts only, no release is published.'
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  BUN_VERSION: '1.3.14'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Cross-compile every target from one runner.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Compile matrix
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Resolve the version
+        id: version
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.tag }}"
+            version="${version#v}"
+            [ -n "$version" ] || version="$(node -p "require('./package.json').version")"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # Version lockstep (spec §11). The desktop app bundles the CLI of the same
+      # tag and reports both versions, so a tag that disagrees with
+      # package.json ships two halves that claim different versions. Fail here,
+      # before anything is built or published.
+      - name: Check the version lockstep
+        if: github.ref_type == 'tag'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}."
+            echo "::error::Bump package.json (and src/cli/version.ts's FALLBACK_VERSION) or retag."
+            exit 1
+          fi
+          # The compiled binary takes its version from a --define, but a source
+          # checkout falls back to this constant; letting them drift makes
+          # `bun run src/cli.ts version` lie.
+          fallback="$(grep -oE "FALLBACK_VERSION = '[^']+'" src/cli/version.ts | cut -d"'" -f2)"
+          if [ "$fallback" != "$pkg" ]; then
+            echo "::error::src/cli/version.ts FALLBACK_VERSION (${fallback}) does not match package.json (${pkg})."
+            exit 1
+          fi
+          echo "Version lockstep OK: ${GITHUB_REF_NAME} = ${pkg}"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      # The status pages *are* embedded in the binary, from the committed
+      # `src/api/webManifest.generated.json`. Rebuilding them here is a check,
+      # not a build input: if the manifest does not match a fresh `web/` build,
+      # someone changed the UI without running `npm run build:web`, and the
+      # release would ship the previous status pages.
+      - name: Build the status pages
+        run: bun run build:web
+        continue-on-error: true
+
+      - name: Check the embedded status-page manifest is current
+        run: |
+          if [ -f dist/web/index.html ]; then
+            node scripts/build-web-manifest.mjs --check
+          else
+            echo "::warning::dist/web was not built — shipping the committed manifest unverified."
+          fi
+
+      - name: Build the standalone executables
+        env:
+          DIIISCO_VERSION: ${{ steps.version.outputs.version }}
+          DIIISCO_COMMIT: ${{ github.sha }}
+        run: bun scripts/build-binaries.mjs
+
+      # §9.4: the copy that ships inside DIIISCO Desktop is stamped
+      # desktop-bundled so `diiisco version` and the update check point at the
+      # app's updater instead of install.sh. The desktop repo picks these up
+      # from $DIIISCO_CLI_ARTIFACTS.
+      - name: Build the desktop-bundled executables
+        env:
+          DIIISCO_VERSION: ${{ steps.version.outputs.version }}
+          DIIISCO_COMMIT: ${{ github.sha }}
+        run: bun scripts/build-binaries.mjs --desktop
+
+      - name: Check the provenance stamps
+        run: |
+          ./dist/bin/diiisco-linux-x64 version
+          ./dist/bin/diiisco-linux-x64 version | grep -q '\[standalone\]'
+          ./dist/bin/desktop/diiisco-linux-x64 version | grep -q '\[desktop-bundled\]'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diiisco-standalone
+          path: dist/bin/diiisco-*
+          if-no-files-found: error
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diiisco-desktop-bundled
+          path: dist/bin/desktop/diiisco-*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # macOS signing + notarization (§6.2). Guarded stub.
+  # ---------------------------------------------------------------------------
+  sign-macos:
+    name: Sign and notarize (macOS)
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: diiisco-standalone
+          path: dist/bin
+
+      - name: Check for signing credentials
+        id: creds
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+        run: |
+          if [ -n "$CERTIFICATE" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::MACOS_CERTIFICATE_P12 is not set — shipping unsigned macOS binaries."
+            echo "::notice::Gatekeeper only quarantines browser downloads, so curl installs still run;"
+            echo "::notice::but the copy embedded in the DIIISCO Desktop bundle (§9.1) must be signed."
+          fi
+
+      # Requires, as repository secrets:
+      #   MACOS_CERTIFICATE_P12         base64 of the Developer ID Application .p12
+      #   MACOS_CERTIFICATE_PASSWORD    its password
+      #   MACOS_SIGNING_IDENTITY        e.g. "Developer ID Application: DIIISCO Inc (TEAMID)"
+      #   MACOS_NOTARY_KEY_P8           base64 of the App Store Connect .p8 key
+      #   MACOS_NOTARY_KEY_ID           the key's ID (e.g. ABC123DEFG)
+      #   MACOS_NOTARY_ISSUER_ID        the issuer UUID from App Store Connect
+      - name: Import the certificate
+        if: steps.creds.outputs.available == 'true'
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 32)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 900 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychain -d user -s "$keychain"
+          rm -f "$RUNNER_TEMP/certificate.p12"
+
+      # Notarization authenticates with an **App Store Connect API key**, not an
+      # Apple ID. notarytool accepts either, but the API key is not bound to a
+      # person: it survives someone leaving, it is revocable on its own without
+      # touching anyone's account, it is unaffected by password rotation or 2FA
+      # changes, and it is auditable per key in App Store Connect. An
+      # app-specific password is none of those things.
+      #
+      # The .p8 is downloadable exactly once when you create it. Store it
+      # base64-encoded, write it to a file only for the length of the job, and
+      # delete it afterwards — notarytool needs a path, not a value.
+      - name: Sign and notarize
+        if: steps.creds.outputs.available == 'true'
+        env:
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_KEY_P8: ${{ secrets.MACOS_NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          key_file="$(mktemp -t notary_key).p8"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$NOTARY_KEY_P8" | base64 --decode > "$key_file"
+
+          for binary in dist/bin/diiisco-darwin-*; do
+            codesign --force --timestamp --options runtime \
+              --sign "$IDENTITY" "$binary"
+            codesign --verify --strict --verbose=2 "$binary"
+
+            # notarytool takes an archive, not a bare Mach-O.
+            ditto -c -k --keepParent "$binary" "${binary}.zip"
+            xcrun notarytool submit "${binary}.zip" \
+              --key "$key_file" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" \
+              --wait
+            # A standalone executable cannot be stapled; Gatekeeper checks the
+            # notarization ticket online on first run.
+            rm -f "${binary}.zip"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: steps.creds.outputs.available == 'true'
+        with:
+          name: diiisco-macos-signed
+          path: dist/bin/diiisco-darwin-*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Windows Authenticode signing (§6.2). Guarded stub.
+  # ---------------------------------------------------------------------------
+  sign-windows:
+    name: Sign (Windows)
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: diiisco-standalone
+          path: dist/bin
+
+      - name: Check for signing credentials
+        id: creds
+        shell: bash
+        env:
+          CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+        run: |
+          if [ -n "$CERTIFICATE" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::WINDOWS_CERTIFICATE_PFX is not set — shipping an unsigned .exe."
+            echo "::notice::SmartScreen will warn on first run until the certificate is configured."
+          fi
+
+      # Requires, as repository secrets (share the desktop installer's cert):
+      #   WINDOWS_CERTIFICATE_PFX       base64 of the code-signing .pfx
+      #   WINDOWS_CERTIFICATE_PASSWORD  its password
+      - name: Sign the executable
+        if: steps.creds.outputs.available == 'true'
+        shell: pwsh
+        env:
+          CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'certificate.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERTIFICATE))
+          & signtool.exe sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 `
+            /f $pfx /p $env:CERTIFICATE_PASSWORD `
+            dist/bin/diiisco-windows-x64.exe
+          & signtool.exe verify /pa dist/bin/diiisco-windows-x64.exe
+          Remove-Item $pfx -Force
+
+      - uses: actions/upload-artifact@v4
+        if: steps.creds.outputs.available == 'true'
+        with:
+          name: diiisco-windows-signed
+          path: dist/bin/diiisco-windows-x64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Release-blocking smoke suite (§6.3) — run against the compiled binary.
+  # ---------------------------------------------------------------------------
+  smoke:
+    name: Smoke (${{ matrix.os }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: diiisco-linux-x64
+          - os: macos-latest
+            artifact: diiisco-darwin-arm64
+          - os: windows-latest
+            artifact: diiisco-windows-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: diiisco-standalone
+          path: dist/bin
+
+      # Also downloaded so the desktop-variant provenance check has something to
+      # assert against.
+      - uses: actions/download-artifact@v4
+        with:
+          name: diiisco-desktop-bundled
+          path: dist/bin/desktop
+
+      - name: Make the binaries executable
+        if: runner.os != 'Windows'
+        run: chmod +x dist/bin/diiisco-* dist/bin/desktop/diiisco-*
+
+      - name: Install shellcheck
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run the smoke suite
+        env:
+          DIIISCO_BINARY: dist/bin/${{ matrix.artifact }}
+        run: bun test
+
+  # ---------------------------------------------------------------------------
+  # Publish. Both variants: the standalone artifacts users install, and the
+  # desktop-bundled ones the diiisco-desktop repo downloads for the same tag
+  # (see the contract at the top of this file). A CI artifact is not reachable
+  # across repositories, which is why the desktop set is a release asset too.
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publish
+    needs: [build, smoke, sign-macos, sign-windows]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: diiisco-standalone
+          path: dist/bin
+
+      # NOTE: only the standalone macOS binaries pass through sign-macos today.
+      # Before the desktop app can notarize (§9.1 — a .app cannot contain an
+      # unsigned Mach-O), the signing job needs to cover this set as well.
+      - uses: actions/download-artifact@v4
+        with:
+          name: diiisco-desktop-bundled
+          path: dist/bin/desktop
+
+      # Overlay the signed builds when the signing jobs produced any; the
+      # unsigned originals stand in otherwise.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: diiisco-macos-signed
+          path: dist/bin
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: diiisco-windows-signed
+          path: dist/bin
+
+      # Regenerated after signing: signing rewrites the executables, so the
+      # checksums produced during the build no longer describe what ships.
+      - name: Generate SHA256SUMS
+        working-directory: dist/bin
+        run: |
+          rm -f SHA256SUMS
+          sha256sum diiisco-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # The desktop set, published under names that cannot be confused with the
+      # standalone ones. Two shapes, because the desktop workflow may want
+      # either: a zip that unpacks straight into DIIISCO_CLI_ARTIFACTS with the
+      # canonical `diiisco-<os>-<arch>` names `scripts/bundle-cli.ts` looks for,
+      # and per-target assets it can download and rename with `gh release
+      # download --output`.
+      - name: Package the desktop-bundled artifacts
+        run: |
+          set -euo pipefail
+          chmod +x dist/bin/desktop/diiisco-*
+
+          # 1. The zip, with canonical names.
+          (cd dist/bin/desktop && rm -f SHA256SUMS && sha256sum diiisco-* > SHA256SUMS)
+          mkdir -p dist/desktop
+          (cd dist/bin/desktop && zip -X -9 ../../desktop/diiisco-desktop-bundled.zip diiisco-* SHA256SUMS)
+
+          # 2. Per-target assets, prefixed so a `diiisco-*` glob cannot pick up
+          #    a desktop binary by accident and vice versa.
+          for source in dist/bin/desktop/diiisco-*; do
+            name="$(basename "$source")"
+            cp "$source" "dist/desktop/diiisco-desktop-${name#diiisco-}"
+          done
+          (cd dist/desktop && sha256sum diiisco-desktop-* > SHA256SUMS.desktop)
+
+          ls -l dist/desktop
+          cat dist/desktop/SHA256SUMS.desktop
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/bin/diiisco-*
+            dist/bin/SHA256SUMS
+            dist/desktop/diiisco-desktop-*
+            dist/desktop/SHA256SUMS.desktop
+            install.sh
+          generate_release_notes: true
+          fail_on_unmatched_files: true

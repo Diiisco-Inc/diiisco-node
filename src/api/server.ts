@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from "cors";
 import { requireBearer } from "../utils/endpoint";
-import environment from "../environment/environment";
+import environment from "../environment/runtime";
 import { sha256 } from "js-sha256";
 import { EventEmitter } from 'events';
 import { encode } from "msgpackr";
@@ -12,13 +12,14 @@ import { MeshMessageQueue } from '../messaging/meshMessageQueue';
 import { Connection } from 'libp2p-tcp';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
-import { OpenAIInferenceModel, pickGenerationParams } from '../utils/models';
+import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
 import OpenAI from 'openai';
 import {
   validateMessagesRequest,
   validateCountTokensRequest,
   anthropicToOpenAIInputs,
   openAIToAnthropicMessage,
+  streamAnthropicMessage,
   anthropicError,
   AnthropicMessagesRequest,
 } from './anthropicAdapter';
@@ -30,7 +31,12 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   const app = express();
   const port = environment.api.port || 8080;
   app.use(cors());
-  app.use(express.json());
+  // Express's json() defaults to a 100kb body limit — easily exceeded by a real
+  // agent request (system prompt + full tool schemas + conversation history),
+  // which throws PayloadTooLargeError before this app's own routes ever see the
+  // request. Raised well below the 32MB ceiling clients like Claude Code apply
+  // on their own end, so DIIISCO's own limit is never the thing that trips first.
+  app.use(express.json({ limit: '25mb' }));
 
   if (environment.api.bearerAuthentication) {
     app.use("/v1", requireBearer);
@@ -51,8 +57,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   app.get('/health/algorand', async (req, res) => {
     try {
       const diagnostics = await algo.getDiagnostics();
+      // Healthy on the public network when algod is reachable and the wallet is
+      // opted into USDC (required to settle x402 payments).
       const ok = diagnostics.localMode
-        || (diagnostics.algodReachable && diagnostics.contractRegistered);
+        || (diagnostics.algodReachable && !!diagnostics.usdc?.optedIn);
       res.status(ok ? 200 : 503).json(diagnostics);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -169,8 +177,16 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       fromWalletAddr: algo.account.addr.toString(),
       timestamp: Date.now(),
       id: sha256(Date.now().toString() + JSON.stringify(body)).slice(0, 56),
+      // Broadcast to every provider — so it carries only what's needed to quote:
+      // the model, our own input-token count, budget, and output cap. The prompt
+      // content stays local and goes only to the winning provider (quote-accepted),
+      // and so do the tool schemas — but they are counted here, because an agent
+      // tool's schemas are thousands of tokens the provider must be paid for.
       payload: {
-        ...body
+        model: body.model,
+        inputTokenCount: countInputTokens(body.inputs, body.tools),
+        max_tokens: body.max_tokens,
+        maxSpend: environment.algorand?.settlement?.maxSpend,
       }
     };
 
@@ -184,14 +200,24 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       nodeEvents.once(`quote-selected-${quoteMessage.id}`, async (quote: { msg: QuoteResponse, from: string }) => {
         logger.info(`✅ Quote selected for request ID ${quoteMessage.id}. Served by ${quote.from.toString()}. Sending quote-accepted message.`);
 
+        // Negotiate settlement: pick our highest-preference method the provider
+        // also offers. Escrow has been retired, so x402 is the only method.
+        const providerMethods = quote.msg.payload?.quote?.settlementMethods ?? ['x402'];
+        const localPreference = environment.algorand?.settlement?.methods ?? ['x402'];
+        const settlementMethod = localPreference.find((m) => providerMethods.includes(m)) ?? providerMethods[0];
+
         let acceptance: QuoteAccepted = {
           role: 'quote-accepted',
           to: quote.from.toString(),
           timestamp: Date.now(),
           id: quote.msg.id,
           fromWalletAddr: algo.account.addr.toString(),
+          // Sent directly to the winning provider only — so this is where the
+          // prompt content (body) is revealed, alongside the selected quote.
           payload: {
+            ...body,
             ...quote.msg.payload,
+            settlementMethod,
           }
         };
 
@@ -244,18 +270,23 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       return res.status(400).json(validationError);
     }
 
-    if (req.body.stream === true) {
-      return res.status(400).json(
-        anthropicError("invalid_request_error", "Streaming (stream: true) is not yet supported on this endpoint.")
-      );
-    }
-
     const { model: reqModel, inputs, params } = anthropicToOpenAIInputs(req.body as AnthropicMessagesRequest);
 
     try {
       const completion = await runInference({ model: reqModel, inputs, ...params });
-      const anthropicMessage = openAIToAnthropicMessage(completion, reqModel);
       const elapsed = ((Date.now() - requestStartedAt) / 1000).toFixed(2);
+
+      // Claude Code always sends stream: true and has no way to be told not
+      // to. The backend call above is already non-streaming, so the full
+      // response exists by this point — streaming just re-frames it as SSE
+      // rather than doing real incremental generation (see plan 005).
+      if (req.body.stream === true) {
+        streamAnthropicMessage(res, completion, reqModel);
+        logger.info(`🚀 Sent Anthropic message response (streamed) in ${elapsed}s`);
+        return;
+      }
+
+      const anthropicMessage = openAIToAnthropicMessage(completion, reqModel);
       logger.info(`🚀 Sending Anthropic message response in ${elapsed}s`);
       return res.status(200).json(anthropicMessage);
     } catch (err) {
@@ -277,8 +308,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       );
     }
 
-    const { model: reqModel, inputs } = anthropicToOpenAIInputs(req.body as AnthropicMessagesRequest);
-    const input_tokens = await model.countEmbeddings(reqModel, inputs);
+    const { model: reqModel, inputs, params } = anthropicToOpenAIInputs(req.body as AnthropicMessagesRequest);
+    const input_tokens = await model.countEmbeddings(reqModel, inputs, params.tools);
     return res.status(200).json({ input_tokens });
   });
 

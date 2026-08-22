@@ -4,7 +4,7 @@ import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@
 import { peerIdFromPrivateKey } from '@libp2p/peer-id'
 import type { PrivateKey } from '@libp2p/interface'
 import type { PeerId } from '@libp2p/interface'
-import environment from '../environment/environment'
+import environment from '../environment/runtime'
 import { logger } from '../utils/logger'
 
 /**

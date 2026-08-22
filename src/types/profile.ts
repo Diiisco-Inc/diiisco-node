@@ -6,7 +6,8 @@
  * `node.publicStats: false`.
  */
 export interface NodeProfileStats {
-  models: { id: string; pricePer1MTokens?: number }[];
+  // pricePer1MTokens retained for back-compat (= input rate); input/output split added.
+  models: { id: string; pricePer1MTokens?: number; pricePerInputToken1M?: number; pricePerOutputToken1M?: number }[];
   connectedPeers: number;
   meshReady: boolean;
   uptimeSeconds: number;

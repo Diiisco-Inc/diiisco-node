@@ -17,7 +17,6 @@ export function NavChip() {
       <a href="https://diiisco.com/docs/welcome" target="_blank" rel="noopener noreferrer" className="chip-item">
         Docs
       </a>
-      <div className="chip-divider" />
     </div>
   );
 }

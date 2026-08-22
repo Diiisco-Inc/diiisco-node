@@ -1,7 +1,7 @@
 import { PubSubMessage } from '../types/messages';
 import { logger } from '../utils/logger';
 import { DirectMessagingHandler } from './directMessaging';
-import environment from '../environment/environment';
+import environment from '../environment/runtime';
 import { encode } from 'msgpackr';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from '../utils/defaults';
 import { getMeshTopic } from '../utils/topic';

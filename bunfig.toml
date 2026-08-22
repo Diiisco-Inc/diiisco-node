@@ -1,0 +1,20 @@
+# Bun configuration for diiisco-node.
+#
+# Bun is the runtime the CLI ships on (spec §5): `bun run src/cli.ts` in
+# development, `bun build --compile` for the released executables. Node 22 is
+# still supported for the library build (`dist/index.js`) that DIIISCO Desktop
+# and other consumers import, so `package-lock.json` is kept alongside
+# `bun.lock` during the transition.
+
+telemetry = false
+
+[install]
+# msgpackr-extract is the only native module in the tree. It is an optional
+# accelerator with a pure-JS fallback and is excluded from the compiled
+# binaries; installing it locally is still useful for the Node build.
+optional = true
+
+[test]
+# Keep `bun test` to the smoke suite. Without this, Bun would also try to run
+# anything test-shaped under web/ or node_modules.
+root = "test"

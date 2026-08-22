@@ -4,7 +4,7 @@ import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnec
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
 import algorand from "./utils/algorand";
-import environment from "./environment/environment";
+import environment from "./environment/runtime";
 import { Environment } from "./environment/environment.types";
 import { OpenAIInferenceModel } from "./utils/models";
 import quoteEngine from "./utils/quoteEngine";
@@ -64,7 +64,7 @@ class Application extends EventEmitter {
     this.env = environment;
     this.algo = new algorand();
     this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`, this);
-    this.quoteMgr = new quoteEngine(this);
+    this.quoteMgr = new quoteEngine(this, this.algo);
   }
   
   private createReconnectionDependencies(): ReconnectionDependencies {
@@ -365,22 +365,16 @@ class Application extends EventEmitter {
 }
 
 export { Application };
-export { configureEnvironment } from './environment/environment';
+export { configureEnvironment } from './environment/runtime';
+export { DEFAULT_ENVIRONMENT, withDefaults } from './environment/defaults';
+export { validateEnvironment } from './environment/validate';
+export { installProcessGuards } from './utils/processGuards';
 export type { Environment } from './environment/environment.types';
 
-const isMainModule = import.meta.url.replace('%20', ' ') === `file://${process.argv[1]}`
-  || typeof process.env.pm_id !== 'undefined';
-
-if (isMainModule) {
-  const app = new Application();
-  process.on('SIGTERM', () => app.shutdown('SIGTERM'));
-  process.on('SIGINT', () => app.shutdown('SIGINT'));
-  app.start().catch(err => {
-    if (err.message === "PeerID not found.") {
-      logger.error('🚨  Application failed to start: PeerID not found.');
-    } else {
-      logger.error('🚨  Application failed to start:', err);
-    }
-    process.exit(1);
-  });
-}
+// This module is a pure library export — it never starts the node on import.
+// Entry points live elsewhere so the same `Application` can be embedded by the
+// CLI, the desktop app or a library consumer without a main-module guard racing
+// them:
+//   • `src/cli.ts` — the `diiisco` binary (`diiisco serve` / `diiisco start`)
+//   • `src/dev.ts` — the repo/PM2 workflow, applying a local
+//     `src/environment/environment.ts` override when one exists
