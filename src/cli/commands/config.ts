@@ -8,23 +8,31 @@ import {
   ConfigError,
   configLocation,
   configPath,
+  keyFilePath,
   loadConfig,
   mergeConfig,
+  readKeyFile,
   redactConfig,
   requireConfig,
+  walletConflictError,
+  withoutMnemonic,
   writeConfigFile,
+  writeKeyFile,
 } from '../config';
+import { sameWallet } from '../keystore';
 import { colour, die, info, json, print, setQuiet, success, warn } from '../output';
 
 export interface ConfigOptions {
   subcommand: string | undefined;
   asJson: boolean;
+  /** `config path --key`: print the wallet key file's path instead. */
+  key?: boolean;
 }
 
 export async function runConfig(options: ConfigOptions): Promise<void> {
   switch (options.subcommand) {
     case 'path':
-      return runConfigPath();
+      return runConfigPath(options.key === true);
     case 'show':
       return runConfigShow(options.asJson);
     case 'edit':
@@ -37,9 +45,15 @@ export async function runConfig(options: ConfigOptions): Promise<void> {
   }
 }
 
-/** Prints the path whether or not the file exists — this must work unconfigured. */
-function runConfigPath(): void {
-  print(configPath());
+/**
+ * Prints the path whether or not the file exists — this must work unconfigured.
+ *
+ * `--key` prints the wallet key file instead, so the desktop app and any script
+ * have one authoritative answer rather than re-deriving the `--config` /
+ * `$DIIISCO_CONFIG` / `$DIIISCO_HOME` precedence for themselves.
+ */
+function runConfigPath(key: boolean): void {
+  print(key ? keyFilePath() : configPath());
 }
 
 function runConfigShow(asJson: boolean): void {
@@ -76,6 +90,9 @@ function runConfigShow(asJson: boolean): void {
  * Open the config in `$EDITOR` and install the result only if it parses and
  * validates. The original is never touched until the replacement is known good,
  * and a rejected draft is kept so the user does not lose their edits.
+ *
+ * The draft is a copy of the config, which no longer holds the wallet key — so
+ * the file left behind in the temp dir on a rejected edit is not a secret.
  */
 async function runConfigEdit(): Promise<void> {
   requireConfig();
@@ -116,7 +133,23 @@ async function runConfigEdit(): Promise<void> {
 
   if (problems.length > 0) rejectDraft(draft, ...problems);
 
-  writeConfigFile(parsed, target);
+  // A hand-pasted mnemonic follows the same rule as startup: the same wallet is
+  // moved into the key file, a different one is refused. `config edit` is not
+  // the place to silently swap which account is spending.
+  const pasted = parsed.algorand?.mnemonic?.trim();
+  if (pasted) {
+    const stored = readKeyFile();
+    if (stored && !sameWallet(stored.mnemonic, pasted)) {
+      const conflict = walletConflictError(stored.address, pasted);
+      rejectDraft(draft, conflict.message, ...conflict.hints);
+    }
+    if (!stored) {
+      const keyFile = writeKeyFile(pasted);
+      success(`Moved the wallet key you pasted into ${keyFile} (mode 0600).`);
+    }
+  }
+
+  writeConfigFile(withoutMnemonic(parsed), target);
   unlinkSync(draft);
   success(`Updated ${target}.`);
   if (location.legacy) {

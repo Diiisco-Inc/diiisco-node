@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { Application, configureEnvironment } from '../../index';
 import { assertValid, loadConfig, requireConfig } from '../config';
+import { migrateWalletKey } from '../keyMigration';
 import { ensureHome, expandTilde, logFile } from '../paths';
 import { recordControlChannel, startLogRotationWatcher } from '../daemon';
 import { ControlServer, generateControlToken, startControlServer } from '../control';
@@ -15,6 +16,21 @@ import { colour, error, info, warn } from '../output';
 const SHUTDOWN_WATCHDOG_MS = 30_000;
 
 /**
+ * Move a config-borne wallet key into `algorand-key.json`, and say so once.
+ *
+ * Silent when there is nothing to move, which is every start after the first.
+ */
+function reportMigration(): void {
+  const { outcome, keyFile } = migrateWalletKey();
+  if (outcome === 'migrated') {
+    info(`${colour.cyan('▸')} Moved your wallet key out of the config and into ${keyFile} (mode 0600).`);
+    info(colour.dim('  The config file no longer holds a spending key. Back up the key file.'));
+  } else if (outcome === 'stripped') {
+    info(colour.dim(`  Removed a duplicate wallet key from the config; ${keyFile} is unchanged.`));
+  }
+}
+
+/**
  * Run the node in the foreground. This is also the body of the daemon: `start`
  * re-spawns the executable with the internal `__daemon` argument, which lands
  * here with `daemon: true`.
@@ -24,6 +40,11 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
   // key and (on the public network) a wallet starts but serves nothing.
   requireConfig();
   ensureHome();
+
+  // A node set up before the wallet key was split out still has its mnemonic in
+  // diiisco.config.json. Move it into `algorand-key.json` before anything reads
+  // the config. A conflict between the two files throws, and the node stops.
+  reportMigration();
 
   const env = loadConfig();
 

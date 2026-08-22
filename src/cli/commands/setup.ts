@@ -9,10 +9,14 @@ import {
   generatePrivateTopic,
   mergeConfig,
   readConfigFile,
+  readKeyFile,
   redactConfig,
   serializeConfig,
+  withoutMnemonic,
   writeConfigFile,
+  writeKeyFile,
 } from '../config';
+import { assertMnemonic as assertUsableMnemonic, sameWallet } from '../keystore';
 import { Prompter, readStdin } from '../prompt';
 import { colour, die, info, print, setQuiet, success, warn } from '../output';
 
@@ -67,12 +71,30 @@ export async function runSetup(options: SetupOptions): Promise<void> {
       throw new ConfigError('That configuration would not start:', problems);
     }
 
+    const mnemonic = config.algorand?.mnemonic;
+
     if (options.print) {
-      print(serializeConfig(config));
+      // `--print` writes nothing, so it must not emit a spending key either:
+      // what goes to stdout is the config file, and the config file no longer
+      // holds a wallet.
+      if (mnemonic !== undefined && !isStoredKey(mnemonic)) {
+        die(
+          '`--print` writes nothing, so it cannot store a wallet key.',
+          'Re-run without --print to set the wallet up properly.'
+        );
+      }
+      print(serializeConfig(withoutMnemonic(config)));
       return;
     }
 
-    writeConfigFile(config, path);
+    // The wallet key is written first: if this run dies between the two writes,
+    // the key still exists on disk rather than only in the user's terminal.
+    if (mnemonic !== undefined) {
+      const keyFile = writeKeyFile(mnemonic);
+      success(`Wrote ${keyFile} (mode 0600) — this file is your wallet.`);
+    }
+
+    writeConfigFile(withoutMnemonic(config), path);
     success(`Wrote ${path} (mode 0600).`);
     info('');
     info(colour.bold('Summary'));
@@ -82,6 +104,12 @@ export async function runSetup(options: SetupOptions): Promise<void> {
   } finally {
     prompt.close();
   }
+}
+
+/** True when this mnemonic is already the one in `algorand-key.json`. */
+function isStoredKey(mnemonic: string): boolean {
+  const stored = readKeyFile();
+  return stored !== null && sameWallet(stored.mnemonic, mnemonic);
 }
 
 function readExistingConfig(path: string, force: boolean): EnvironmentFile | null {
@@ -213,9 +241,10 @@ async function buildWallet(
 }
 
 /**
- * Where a wallet comes from, in priority order: `--mnemonic-stdin`, the
- * mnemonic already in the config, then an interactive choice between pasting
- * one and generating a fresh account.
+ * Where a wallet comes from, in priority order: `--mnemonic-stdin`, the wallet
+ * already on this machine (`algorand-key.json`, or a not-yet-migrated config),
+ * then an interactive choice between pasting one and generating a fresh
+ * account.
  *
  * A mnemonic is never accepted as a command-line argument (it would land in the
  * shell history and in `ps` output), and a wallet is never generated silently
@@ -233,7 +262,9 @@ async function resolveMnemonic(
     return mnemonicFromStdin;
   }
 
-  const current = existing.algorand?.mnemonic;
+  // The key file is where a wallet lives now; the config is the pre-migration
+  // fallback, so "keep" works on a machine that has not started the new node yet.
+  const current = readKeyFile()?.mnemonic ?? existing.algorand?.mnemonic;
 
   if (!prompt.interactive) {
     if (current) return current;
@@ -258,7 +289,7 @@ async function resolveMnemonic(
     const mnemonic = algosdk.secretKeyToMnemonic(account.sk);
     prompt.write('');
     prompt.write(`  Generated account: ${account.addr.toString()}`);
-    prompt.write('  Its 25-word mnemonic is stored in your config file (mode 0600) and nowhere else.');
+    prompt.write('  Its 25-word mnemonic is stored in algorand-key.json (mode 0600) and nowhere else.');
     prompt.write('  Back that file up: losing it loses the wallet, and anyone who reads it owns the funds.');
     prompt.write('  The account needs a small ALGO balance before the node can opt into USDC and DSCO.');
     prompt.write('');
@@ -271,15 +302,12 @@ async function resolveMnemonic(
   return pasted;
 }
 
+/** The keystore's check, in `die()` form — setup reports rather than throws. */
 function assertMnemonic(mnemonic: string): void {
-  const words = mnemonic.split(/\s+/);
-  if (words.length !== 25) {
-    die(`That is ${words.length} word(s); an Algorand mnemonic is 25.`);
-  }
   try {
-    algosdk.mnemonicToSecretKey(mnemonic);
+    assertUsableMnemonic(mnemonic);
   } catch (err: any) {
-    die(`That mnemonic is not valid: ${err?.message ?? err}`);
+    die(err?.message ?? String(err));
   }
 }
 

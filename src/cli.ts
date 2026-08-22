@@ -131,6 +131,7 @@ async function main(argv: string[]): Promise<void> {
       return runConfig({
         subcommand: parsed.positionals[0],
         asJson: flagBoolean(parsed, 'json'),
+        key: flagBoolean(parsed, 'key'),
       });
     }
 

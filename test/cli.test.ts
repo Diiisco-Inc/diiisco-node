@@ -8,8 +8,9 @@
  */
 import { afterAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import algosdk from 'algosdk';
 import { NO_BINARY_REASON, binary, makeHome, removeHome, run } from './helpers';
 
 const suite = binary ? describe : describe.skip;
@@ -102,6 +103,76 @@ suite('compiled binary — command surface', () => {
     }
   });
 
+  test('config path --key answers without a config file too', () => {
+    // The desktop app asks the binary where the wallet key lives rather than
+    // re-deriving the DIIISCO_HOME / DIIISCO_CONFIG precedence itself, and it
+    // asks before the machine is set up.
+    const empty = makeHome('diiisco-cli-keypath-');
+    try {
+      const result = run(['config', 'path', '--key'], { home: empty });
+      expect(result.code).toBe(0);
+      expect(result.stdout.trim()).toBe(join(empty, 'algorand-key.json'));
+    } finally {
+      removeHome(empty);
+    }
+  });
+
+  test('two different wallet keys stop `start` before it spawns anything', () => {
+    // The wallet key belongs in algorand-key.json. When the config still names
+    // a *different* wallet, choosing either one would silently change which
+    // account is spending — so the node refuses, in the foreground, and leaves
+    // both files for the user to reconcile.
+    const home = makeHome('diiisco-cli-conflict-');
+    try {
+      const alice = algosdk.generateAccount();
+      const bob = algosdk.generateAccount();
+      const configFile = join(home, 'diiisco.config.json');
+      const keyFile = join(home, 'algorand-key.json');
+
+      writeFileSync(
+        configFile,
+        JSON.stringify({
+          models: { enabled: false, baseURL: 'http://localhost', port: 11434, apiKey: '' },
+          api: { enabled: true, bearerAuthentication: false, keys: ['diiisco'], port: 8099 },
+          libp2pBootstrapServers: [],
+          algorand: {
+            mnemonic: algosdk.secretKeyToMnemonic(bob.sk),
+            network: 'testnet',
+            client: { address: 'https://testnet-api.algonode.cloud/', port: 443, token: '' },
+            settlement: { methods: ['x402'], maxSpend: 0.1 },
+          },
+        }, null, 2),
+        { encoding: 'utf8', mode: 0o600 }
+      );
+      writeFileSync(
+        keyFile,
+        JSON.stringify({
+          version: 1,
+          mnemonic: algosdk.secretKeyToMnemonic(alice.sk),
+          address: alice.addr.toString(),
+          updatedAt: new Date().toISOString(),
+        }, null, 2),
+        { encoding: 'utf8', mode: 0o600 }
+      );
+
+      const configBefore = readFileSync(configFile, 'utf8');
+      const keyBefore = readFileSync(keyFile, 'utf8');
+
+      const result = run(['start'], { home, timeoutMs: 30_000 });
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain('Two different Algorand wallets are configured');
+      expect(result.stderr).toContain(alice.addr.toString());
+      expect(result.stderr).toContain(bob.addr.toString());
+
+      // No daemon, and neither file touched.
+      expect(existsSync(join(home, 'daemon.json'))).toBe(false);
+      expect(readFileSync(configFile, 'utf8')).toBe(configBefore);
+      expect(readFileSync(keyFile, 'utf8')).toBe(keyBefore);
+    } finally {
+      removeHome(home);
+    }
+  });
+
   describe('the not-configured gate (§3.3)', () => {
     for (const command of ['start', 'restart', 'serve']) {
       test(`${command} exits 2 and names the wizard`, () => {
@@ -145,8 +216,36 @@ suite('compiled binary — command surface', () => {
       // --print must not create the file.
       const after = run(['status', '--json'], { home: empty });
       expect(JSON.parse(after.stdout).configured).toBe(false);
+
+      // Local mode has no wallet, so there is nothing to write a key file for.
+      expect(existsSync(join(empty, 'algorand-key.json'))).toBe(false);
     } finally {
       removeHome(empty);
+    }
+  });
+
+  test('setup --public writes the wallet key to its own file, not the config', () => {
+    const home = makeHome('diiisco-cli-setup-public-');
+    try {
+      const account = algosdk.generateAccount();
+      const result = run(
+        ['setup', '--public', '--yes', '--network', 'testnet', '--max-spend', '0.05', '--mnemonic-stdin'],
+        { home, input: `${algosdk.secretKeyToMnemonic(account.sk)}\n`, timeoutMs: 30_000 }
+      );
+      expect(result.code).toBe(0);
+
+      const key = JSON.parse(readFileSync(join(home, 'algorand-key.json'), 'utf8'));
+      expect(key.address).toBe(account.addr.toString());
+
+      const config = JSON.parse(readFileSync(join(home, 'diiisco.config.json'), 'utf8'));
+      expect(config.algorand.mnemonic).toBeUndefined();
+      expect(config.algorand.network).toBe('testnet');
+
+      // And the effective view still resolves a wallet — redacted.
+      const shown = JSON.parse(run(['config', 'show', '--json'], { home }).stdout);
+      expect(shown.algorand.mnemonic).toBe('<redacted>');
+    } finally {
+      removeHome(home);
     }
   });
 });

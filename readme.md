@@ -118,7 +118,7 @@ diiisco <command> [flags]
   logs [-f] [-n N]       Show (or follow) the daemon log
   serve                  Run the node in the foreground (Ctrl-C to stop)
   launch <app> [flags]   Point an agent tool at a node, starting one if needed
-  config show|path|edit  Inspect or edit the config file
+  config show|path|edit  Inspect or edit the config file (`path --key` for the wallet key)
   version                Print version, commit and install source
   help                   Print usage
 ```
@@ -146,10 +146,16 @@ Everything the CLI writes lives under `~/.diiisco/` (override with `DIIISCO_HOME
 ```
 ~/.diiisco/
   diiisco.config.json       your config, mode 0600
+  algorand-key.json         your wallet key, mode 0600 — back this up
   diiisco-peer-id.protobuf  this node's identity
   daemon.json               pid / state file
   logs/diiisco.log          daemon log, rotated at 10 MB
 ```
+
+The wallet key is kept **out** of the config file on purpose: the config is the
+file you hand-edit, paste into an issue and copy between machines, and those
+25 words are full spending authority over the account. `diiisco config path --key`
+prints where it lives.
 
 Exit codes: `0` success, `1` failure, **`2` not configured** — so a script can tell "run `diiisco setup`" apart from a real error.
 
@@ -162,6 +168,8 @@ Exit codes: `0` success, `1` failure, **`2` not configured** — so a script can
 - **Node.js 22** — only for the source checkout below; the `diiisco` binary needs no runtime
 
 > ⚠️ **Never share your mnemonic.** Never enter it on a device you don't control.
+> The CLI keeps it in `~/.diiisco/algorand-key.json` (mode `0600`) and nowhere
+> else — back that file up, and treat it the way you would a private key.
 
 ---
 
@@ -241,6 +249,11 @@ There are two places a node reads its configuration from, with the **same shape*
 | **CLI / desktop app** | `~/.diiisco/diiisco.config.json` (JSON, mode `0600`) | `diiisco setup`, `diiisco config edit` |
 | **Source checkout** | `src/environment/environment.ts` (TypeScript, gitignored) | you |
 
+On the CLI/desktop path the wallet key is the one exception: it lives on its own
+in `~/.diiisco/algorand-key.json`, not in the config file. A source checkout is
+unaffected — `src/environment/environment.ts` is already gitignored and keeps
+its inline `mnemonic`.
+
 Every key documented below is valid in both. The JSON file takes **strategy names** where the TypeScript interface takes functions — `"quoteSelectionFunction": "selectHighestStakeQuote"` — and they are resolved on load. Anything you leave out falls back to the committed defaults in `src/environment/defaults.ts`.
 
 Resolution order for the JSON file: `--config <path>`, then `$DIIISCO_CONFIG`, then `$DIIISCO_HOME/diiisco.config.json`, then `~/.diiisco/diiisco.config.json`.
@@ -274,7 +287,8 @@ const environment: Environment = {
     }
   },
   algorand: {
-    mnemonic: "YOUR_25_WORD_MNEMONIC",   // The wallet address is derived from this
+    // No `mnemonic` here on the CLI/desktop path — it lives in
+    // ~/.diiisco/algorand-key.json. In a source checkout, set it here.
     network: "mainnet",
     client: {
       address: "https://mainnet-api.algonode.cloud/",
@@ -388,7 +402,7 @@ For single-machine or LAN setups you can omit `libp2pBootstrapServers` entirely 
 
 | Field | Description |
 |---|---|
-| `mnemonic` | Your 25-word mnemonic passphrase — the wallet address is derived from this |
+| `mnemonic` | Your 25-word mnemonic passphrase — the wallet address is derived from this. **On the CLI/desktop path this belongs in `~/.diiisco/algorand-key.json`, not here**; a copy left in the config is moved there on the next `diiisco start`. Source checkouts still set it in `src/environment/environment.ts`. |
 | `network` | `"mainnet"` or `"testnet"` — selects the USDC ASA and CAIP-2 id used for settlement |
 | `client.address` | Algod API endpoint |
 | `client.port` | Algod API port |

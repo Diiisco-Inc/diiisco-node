@@ -1,7 +1,7 @@
 import { colour, print } from '../output';
 import { versionLine } from '../version';
 import { diiiscoHome, logFile } from '../paths';
-import { configPath } from '../config';
+import { configPath, keyFilePath } from '../config';
 
 export function runHelp(): void {
   const b = colour.bold;
@@ -40,7 +40,8 @@ ${b('setup')}
   --max-spend USDC     Ceiling on a single request, public mode only
   --mnemonic-stdin     Read the wallet mnemonic from stdin (never from argv)
   --print              Print the config instead of writing it
-  ${d('A mnemonic is only ever read from stdin or an echo-off prompt.')}
+  ${d('A mnemonic is only ever read from stdin or an echo-off prompt, and is')}
+  ${d('stored on its own in algorand-key.json — never in the config file.')}
 
 ${b('launch')}
   diiisco launch claude              Start (if needed) and open Claude Code against your node
@@ -59,11 +60,12 @@ ${b('launch')}
 
 ${b('config')}
   diiisco config show [--json]       Effective config, with the mnemonic and API keys redacted
-  diiisco config path                Print the config file path
+  diiisco config path [--key]        Print the config file path, or the wallet key file's
   diiisco config edit                Open it in \$EDITOR and validate before saving
 
 ${b('Files')}
   ${configPath()}
+  ${keyFilePath()} ${d('(your wallet — back it up)')}
   ${logFile()}
   ${d(`Override the location with DIIISCO_CONFIG, or the directory with DIIISCO_HOME (currently ${diiiscoHome()}).`)}
 

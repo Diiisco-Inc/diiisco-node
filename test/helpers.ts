@@ -51,12 +51,21 @@ export interface RunResult {
   stderr: string;
 }
 
-/** Run the CLI to completion with an isolated home. Never throws on a non-zero exit. */
-export function run(args: string[], options: { home?: string; env?: Record<string, string>; timeoutMs?: number } = {}): RunResult {
+/**
+ * Run the CLI to completion with an isolated home. Never throws on a non-zero exit.
+ *
+ * `input` is piped to stdin — the only way to hand the CLI a mnemonic, which it
+ * deliberately never accepts as an argument.
+ */
+export function run(
+  args: string[],
+  options: { home?: string; env?: Record<string, string>; timeoutMs?: number; input?: string } = {}
+): RunResult {
   if (!binary) throw new Error(NO_BINARY_REASON);
   const result = spawnSync(binary, args, {
     encoding: 'utf8',
     timeout: options.timeoutMs ?? 60_000,
+    ...(options.input === undefined ? {} : { input: options.input }),
     env: {
       ...process.env,
       ...(options.home ? { DIIISCO_HOME: options.home } : {}),
