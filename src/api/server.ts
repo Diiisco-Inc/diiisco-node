@@ -179,10 +179,12 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       id: sha256(Date.now().toString() + JSON.stringify(body)).slice(0, 56),
       // Broadcast to every provider — so it carries only what's needed to quote:
       // the model, our own input-token count, budget, and output cap. The prompt
-      // content stays local and goes only to the winning provider (quote-accepted).
+      // content stays local and goes only to the winning provider (quote-accepted),
+      // and so do the tool schemas — but they are counted here, because an agent
+      // tool's schemas are thousands of tokens the provider must be paid for.
       payload: {
         model: body.model,
-        inputTokenCount: countInputTokens(body.inputs),
+        inputTokenCount: countInputTokens(body.inputs, body.tools),
         max_tokens: body.max_tokens,
         maxSpend: environment.algorand?.settlement?.maxSpend,
       }
@@ -306,8 +308,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       );
     }
 
-    const { model: reqModel, inputs } = anthropicToOpenAIInputs(req.body as AnthropicMessagesRequest);
-    const input_tokens = await model.countEmbeddings(reqModel, inputs);
+    const { model: reqModel, inputs, params } = anthropicToOpenAIInputs(req.body as AnthropicMessagesRequest);
+    const input_tokens = await model.countEmbeddings(reqModel, inputs, params.tools);
     return res.status(200).json({ input_tokens });
   });
 
