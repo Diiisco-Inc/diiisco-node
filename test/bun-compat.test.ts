@@ -4,7 +4,9 @@
  * Bun's Node-API surface is broad but not identical to Node 22, and these are
  * the places the dependency tree actually depends on the difference:
  *
- *   1. `node:net` socket behaviour used by `@libp2p/tcp`
+ *   1. `node:net` socket behaviour used by `@libp2p/tcp` — both that a dial
+ *      works at all, and that an *aborted* dial does not take the process down
+ *      (see `src/libp2p/bunSafeTcp.ts` and `src/utils/processGuards.ts`)
  *   2. `node:dgram` multicast used by `@libp2p/mdns` — the one local-mode
  *      discovery depends on, and the most likely to differ
  *   3. the absence of `process.send` (the PM2 readiness signal is guarded)
@@ -24,8 +26,14 @@ import { tcp } from '@libp2p/tcp';
 import { lpStream } from '@libp2p/utils';
 import { yamux } from '@libp2p/yamux';
 import { createLibp2p } from 'libp2p';
+import { multiaddr } from '@multiformats/multiaddr';
 import type { Connection, Stream } from '@libp2p/interface';
-import { multicastAvailable } from './helpers';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { bunSafeTcp } from '../src/libp2p/bunSafeTcp';
+import { multicastAvailable, repoRoot, sleep } from './helpers';
 
 /**
  * Each test owns its nodes and stops them before the next one starts. mDNS
@@ -87,6 +95,108 @@ describe('Bun compatibility (§5.3)', () => {
       await connection.close();
     });
   }, 60_000);
+
+  describe('node:net — an aborted dial must not kill the process', () => {
+    // The failure this guards against, in order:
+    //
+    //   1. @libp2p/tcp builds its socket config by spreading the whole dial
+    //      options object, so `options.signal` reaches `net.connect()`.
+    //   2. On abort, Bun destroys the socket with `signal.reason` verbatim — a
+    //      DOMException — and defers the 'error' event to the next tick. (Node
+    //      wraps the reason in a real AbortError and emits nothing, because
+    //      libp2p has already destroyed the socket by then.)
+    //   3. libp2p's own abort handler runs first and calls `done()`, which
+    //      removes the socket's 'error' listener.
+    //   4. The event lands on an emitter with no listener, and since a
+    //      DOMException is not a JSC Error, node:events raises
+    //      ERR_UNHANDLED_ERROR rather than rethrowing the abort — uncatchable
+    //      from the dial's own try/catch, and fatal.
+    //
+    // Every aborted dial is a candidate: the 30s keep-alive ping, the
+    // dialProtocol timeout in direct messaging, kad-dht queries, and the
+    // @libp2p/random-walk teardown AutoNAT triggers whenever it stops walking.
+
+    /** TEST-NET-1 — reserved and never routed, so the connect stays pending until we abort it. */
+    const UNROUTABLE = '/ip4/192.0.2.1/tcp/4242';
+
+    /** The bare minimum ComponentLogger @libp2p/tcp asks its components for. */
+    function stubLogger(): any {
+      const make = (): any => {
+        const log: any = () => {};
+        log.error = () => {};
+        log.trace = () => {};
+        log.enabled = false;
+        log.newScope = () => make();
+        return log;
+      };
+      return { forComponent: () => make() };
+    }
+
+    test('bunSafeTcp keeps the signal out of net.connect(), so the abort is survivable', async () => {
+      const transport = bunSafeTcp()({ logger: stubLogger() }) as any;
+      const controller = new AbortController();
+
+      const dial = transport._connect(multiaddr(UNROUTABLE), {
+        signal: controller.signal,
+        upgrader: {} as any,
+      });
+
+      setTimeout(() => controller.abort(), 50);
+      await expect(dial).rejects.toThrow();
+
+      // The unhandled 'error' event would arrive a tick after the destroy. If
+      // the shielding has regressed, this whole test process is gone before the
+      // sleep resolves and the suite reports a crash rather than a failure.
+      await sleep(500);
+      expect(transport._connect).toBeInstanceOf(Function);
+    }, 15_000);
+
+    test('installProcessGuards() survives the raw failure that bunSafeTcp avoids', () => {
+      // Driven out-of-process because the thing under test is whether the
+      // *process* lives: an assertion inside this one could never run if it did
+      // not. Both variants reproduce @libp2p/tcp's exact sequence by hand, so
+      // the guard is exercised even if the transport shielding is ever removed.
+      const script = (guarded: boolean) => `
+import net from 'node:net';
+${guarded ? `import { installProcessGuards } from ${JSON.stringify(join(repoRoot, 'src/utils/processGuards.ts'))};\ninstallProcessGuards();` : ''}
+const controller = new AbortController();
+const socket = net.connect({ host: '192.0.2.1', port: 4242, signal: controller.signal });
+const onError = () => {};
+socket.on('error', onError);
+controller.signal.addEventListener('abort', () => {
+  socket.removeListener('error', onError);   // @libp2p/tcp's done()
+  socket.destroy();                          // .catch(() => rawSocket?.destroy())
+});
+setTimeout(() => controller.abort(), 50);
+setTimeout(() => { console.log('survived'); process.exit(0); }, 600);
+`;
+
+      const dir = mkdtempSync(join(tmpdir(), 'diiisco-abort-'));
+      try {
+        const run = (guarded: boolean) => {
+          const file = join(dir, `${guarded ? 'guarded' : 'bare'}.ts`);
+          writeFileSync(file, script(guarded), 'utf8');
+          return spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: 30_000 });
+        };
+
+        const guarded = run(true);
+        expect(guarded.status).toBe(0);
+        expect(guarded.stdout).toContain('survived');
+
+        // Not asserted as a failure: this documents the runtime bug the guard
+        // exists for, and a Bun release that fixes it should not turn CI red —
+        // it should tell us the workaround can go.
+        const bare = run(false);
+        if (bare.status === 0) {
+          console.warn('note: Bun no longer crashes on an aborted dial — bunSafeTcp/processGuards may be removable');
+        } else {
+          expect(bare.stderr).toContain('ERR_UNHANDLED_ERROR');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 60_000);
+  });
 
   test('node:dgram — two nodes find each other over mDNS multicast', async () => {
     if (!(await multicastAvailable())) {

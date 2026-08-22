@@ -1,5 +1,5 @@
 import { createLibp2p } from 'libp2p';
-import { tcp } from '@libp2p/tcp';
+import { bunSafeTcp } from './bunSafeTcp';
 import { noise, pureJsCrypto } from '@chainsafe/libp2p-noise';
 import { identify, identifyPush } from '@libp2p/identify';
 import { ping } from '@libp2p/ping';
@@ -118,7 +118,11 @@ export const createLibp2pNode = async () => {
       faultTolerance: isPublicNode ? FaultTolerance.FATAL_ALL : FaultTolerance.NO_FATAL,
     },
     transports: [
-      tcp(),
+      // Not `tcp()`: under Bun an aborted dial hands its AbortSignal to
+      // net.connect(), which destroys the socket with a DOMException after
+      // libp2p has removed the 'error' listener — killing the process. See
+      // src/libp2p/bunSafeTcp.ts.
+      bunSafeTcp(),
       ...(isPublicNode ? [] : [circuitRelayTransport()]), // Only add circuit relay transport if not a public node
     ],
     // `pureJsCrypto`, not the default: @chainsafe/libp2p-noise routes

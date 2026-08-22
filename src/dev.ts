@@ -17,12 +17,16 @@
 import { Application, configureEnvironment } from './index';
 import type { Environment } from './environment/environment.types';
 import { logger } from './utils/logger';
+import { installProcessGuards } from './utils/processGuards';
 
 // Assembled at runtime so bundlers cannot statically resolve (and therefore
 // cannot fail on) the gitignored module.
 const LOCAL_ENVIRONMENT_MODULE = ['.', 'environment', 'environment'].join('/');
 
 async function main(): Promise<void> {
+  // Before anything opens a socket: an aborted dial must not take the node down.
+  installProcessGuards();
+
   try {
     const local = await import(/* @vite-ignore */ LOCAL_ENVIRONMENT_MODULE) as { default?: Partial<Environment> };
     if (local?.default) {
