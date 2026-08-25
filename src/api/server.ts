@@ -13,6 +13,7 @@ import { Connection } from 'libp2p-tcp';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
+import { ModelAvailability } from '../utils/modelAvailability';
 import OpenAI from 'openai';
 import {
   validateMessagesRequest,
@@ -27,7 +28,7 @@ import { getMeshTopic } from '../utils/topic';
 import { registerStatusPages } from './statusPages';
 import { nodeStats } from '../utils/nodeStats';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, availableModels?: string[]) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability) => {
   const app = express();
   const port = environment.api.port || 8080;
   app.use(cors());
@@ -47,7 +48,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
   // Public status pages (unauthenticated by design — see src/api/statusPages.ts)
   if (environment.node?.statusPages !== false) {
-    registerStatusPages({ app, node, nodeEvents, algo, messageRouter, availableModels: availableModels ?? [] });
+    registerStatusPages({ app, node, nodeEvents, algo, messageRouter, models });
   }
 
   app.get('/health', (req, res) => {
@@ -166,7 +167,9 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     nodeStats.inferencesRequested++;
 
     const preferSelf = environment.quoteEngine.preferSelf !== false;
-    if (preferSelf && model && availableModels?.includes(body.model)) {
+    // Verified live: a node whose backend has stopped used to short-circuit to
+    // itself and 500, rather than letting a peer that can serve the model win.
+    if (preferSelf && model && models && await models.ensureAvailable(body.model)) {
       logger.info(`⚡ Serving request locally (preferSelf). Model: ${body.model}`);
       return model.getResponse(body.model, body.inputs, params);
     }

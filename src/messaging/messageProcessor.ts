@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
 import environment from "../environment/runtime";
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
+import { ModelAvailability } from "../utils/modelAvailability";
 import quoteEngine from "../utils/quoteEngine";
 import {
   PubSubMessage,
@@ -42,7 +43,7 @@ export class MessageProcessor {
   private algo: algorand;
   private model: OpenAIInferenceModel;
   private quoteMgr: quoteEngine;
-  private availableModels: string[];
+  private models: ModelAvailability;
   private nodeEvents: EventEmitter;
   private messageRouter: MessageRouter;
   private env: Environment;
@@ -58,7 +59,7 @@ export class MessageProcessor {
     algo: algorand,
     model: OpenAIInferenceModel,
     quoteMgr: quoteEngine,
-    availableModels: string[],
+    models: ModelAvailability,
     nodeEvents: EventEmitter,
     messageRouter: MessageRouter,
     ownPeerId: string,
@@ -67,7 +68,7 @@ export class MessageProcessor {
     this.algo = algo;
     this.model = model;
     this.quoteMgr = quoteMgr;
-    this.availableModels = availableModels;
+    this.models = models;
     this.nodeEvents = nodeEvents;
     this.messageRouter = messageRouter;
     this.env = environment;
@@ -242,7 +243,10 @@ export class MessageProcessor {
       return;
     }
 
-    const models_list = await this.model.getModels();
+    // The monitor's snapshot, not a fresh backend call: a `list-models` is a
+    // network-wide broadcast, and a node with a stopped backend must answer
+    // with nothing rather than throw.
+    const models_list = this.models.models();
     const response: ListModelsResponse = {
       role: 'list-models-response',
       timestamp: Date.now(),
@@ -310,7 +314,7 @@ export class MessageProcessor {
       to: sourcePeerId,
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: {
-        profile: buildOwnProfile(this.node, this.algo, this.availableModels),
+        profile: buildOwnProfile(this.node, this.algo, this.models.list()),
       }
     };
     response.signature = await this.algo.signObject(response);
@@ -344,7 +348,11 @@ export class MessageProcessor {
   }
 
   private async handleQuoteRequest(msg: QuoteRequest, sourcePeerId: string) {
-    if (!this.availableModels.includes(msg.payload.model)) {
+    // Verified against the backend rather than a startup snapshot, and checked
+    // first: an unserveable model must cost a localhost probe, not an on-chain
+    // lookup. A node whose backend has stopped drops out of the auction here.
+    if (!(await this.models.ensureAvailable(msg.payload.model))) {
+      logger.debug(`🚫 Not quoting ${msg.payload.model} — not currently served by this node.`);
       return;
     }
 
@@ -531,8 +539,18 @@ export class MessageProcessor {
 
   /** Resolve a (possibly speculative) inference result, capping output if given. */
   private async runInference(msg: { id: string; payload: any }, outputCap?: number): Promise<any> {
-    return (await this.speculativeCache.resolve(msg.id))
-      ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs, this.genParams(msg.payload, outputCap));
+    const cached = await this.speculativeCache.resolve(msg.id);
+    if (cached) return cached;
+
+    try {
+      return await this.model.getResponse(msg.payload.model, msg.payload.inputs, this.genParams(msg.payload, outputCap));
+    } catch (err) {
+      // The backend just failed us mid-request. Re-probe before the next quote
+      // rather than waiting out the poll interval, so this node stops quoting
+      // for a model it cannot serve on the very next request.
+      this.models.invalidate();
+      throw err;
+    }
   }
 
   /** Generation params for the runtime, with the budget-derived output cap applied. */
