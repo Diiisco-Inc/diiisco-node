@@ -68,6 +68,42 @@ export function validateEnvironment(env: Environment): string[] {
     if (!Number.isInteger(env.models.port) || env.models.port <= 0 || env.models.port > 65535) {
       errors.push(`\`models.port\` must be a port number between 1 and 65535 (got ${env.models.port}).`);
     }
+
+    const availability = env.models.availability;
+    if (availability) {
+      // checkIntervalMs may be 0 — that disables the background poll, leaving
+      // the quote-path freshness check as the only probe.
+      if (availability.checkIntervalMs !== undefined && (!Number.isInteger(availability.checkIntervalMs) || availability.checkIntervalMs < 0)) {
+        errors.push(`\`models.availability.checkIntervalMs\` must be a whole number of milliseconds, 0 or greater (got ${availability.checkIntervalMs}).`);
+      }
+      if (availability.freshForMs !== undefined && (!Number.isInteger(availability.freshForMs) || availability.freshForMs < 0)) {
+        errors.push(`\`models.availability.freshForMs\` must be a whole number of milliseconds, 0 or greater (got ${availability.freshForMs}).`);
+      }
+      if (availability.timeoutMs !== undefined && (!Number.isInteger(availability.timeoutMs) || availability.timeoutMs <= 0)) {
+        errors.push(`\`models.availability.timeoutMs\` must be a whole number of milliseconds greater than 0 (got ${availability.timeoutMs}).`);
+      }
+    }
+  }
+
+  const quoteEngine = env.quoteEngine;
+  if (quoteEngine) {
+    if (quoteEngine.auctionTimeout !== undefined) {
+      if (!(quoteEngine.auctionTimeout > 0)) {
+        errors.push(`\`quoteEngine.auctionTimeout\` must be greater than 0 (got ${quoteEngine.auctionTimeout}).`);
+      } else if (quoteEngine.auctionTimeout <= quoteEngine.waitTime) {
+        // Not fatal, but it can only ever abandon the auction before the engine
+        // has finished collecting quotes.
+        errors.push(
+          `\`quoteEngine.auctionTimeout\` (${quoteEngine.auctionTimeout}ms) is not greater than \`quoteEngine.waitTime\` (${quoteEngine.waitTime}ms), so every request would time out before a quote could be selected. Raise it above the wait time.`
+        );
+      }
+    }
+    if (quoteEngine.inferenceTimeout !== undefined && !(quoteEngine.inferenceTimeout > 0)) {
+      errors.push(`\`quoteEngine.inferenceTimeout\` must be greater than 0 (got ${quoteEngine.inferenceTimeout}).`);
+    }
+    if (quoteEngine.maxRetries !== undefined && (!Number.isInteger(quoteEngine.maxRetries) || quoteEngine.maxRetries < 0)) {
+      errors.push(`\`quoteEngine.maxRetries\` must be a whole number, 0 or greater (got ${quoteEngine.maxRetries}).`);
+    }
   }
 
   if (env.api.enabled) {

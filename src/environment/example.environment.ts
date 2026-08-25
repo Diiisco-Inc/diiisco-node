@@ -17,7 +17,15 @@ const environment: Environment = {
       // actual charge from real token usage, capped at the quoted maximum).
       default: 0.01703,
       "gpt-oss:20b": { input: 0.02, output: 0.06 }, // Per-model split-rate override
-    }
+    },
+    // How often the node re-checks that the backend is really serving these
+    // models. Stop Ollama and the node stops quoting rather than winning
+    // auctions it cannot honour. The defaults shown are the built-in ones.
+    availability: {
+      checkIntervalMs: 30000,               // Background re-probe interval; 0 disables polling
+      freshForMs: 10000,                    // Max snapshot age tolerated when answering a quote-request
+      timeoutMs: 2000,                      // Per-probe timeout on the backend
+    },
   },
   algorand: {
     mnemonic: "YOUR_ALGORAND_MNEMONIC_HERE", // Wallet identity + signing key; the address is derived from this
@@ -61,6 +69,9 @@ const environment: Environment = {
     // Optional: override pricing with a custom function (same signature as
     // createStandardQuote) for dynamic/surge pricing. Defaults to the standard quote.
     preferSelf: true,                       // Serve requests locally when the model is available, bypassing the network
+    auctionTimeout: 6000,                   // Give up if no quote is selected in time (default waitTime + 5000)
+    inferenceTimeout: 300000,               // Overall deadline for one auction attempt (ms)
+    maxRetries: 1,                          // Re-auctions after a provider reports inference-failed
   },
   libp2pBootstrapServers: [
     "lon.diiisco.algo",
