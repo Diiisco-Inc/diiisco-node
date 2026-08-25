@@ -32,7 +32,7 @@
     needs Administrator it tells you what to run rather than running it.
 
 .PARAMETER Version
-    Release tag to install, e.g. v1.0.6 (default: latest). Env: DIIISCO_VERSION
+    Release tag to install, e.g. v1.0.7 (default: latest). Env: DIIISCO_VERSION
 
 .PARAMETER InstallDir
     Where to put diiisco.exe. Env: DIIISCO_INSTALL_DIR
@@ -76,7 +76,7 @@
 
 .EXAMPLE
     # From a downloaded copy (a .ps1 off the internet is blocked by default):
-    powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version v1.0.6
+    powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version v1.0.7
 #>
 [CmdletBinding()]
 param(
@@ -397,7 +397,7 @@ function Invoke-DiiiscoInstall {
         if (-not $tag) {
             Stop-Install 'Could not work out the latest DIIISCO release.' @(
                 'Check your network, or pin a version:',
-                '  $env:DIIISCO_VERSION = "v1.0.6"; irm https://diiis.co/install.ps1 | iex',
+                '  $env:DIIISCO_VERSION = "v1.0.7"; irm https://diiis.co/install.ps1 | iex',
                 "Releases: $BaseUrl"
             )
         }
