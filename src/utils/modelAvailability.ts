@@ -103,9 +103,13 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     return this.ids.has(id);
   }
 
-  /** Never probed yet, or the snapshot has aged past `freshForMs`. */
+  /**
+   * Never probed yet, or the snapshot has aged past `freshForMs`. The
+   * comparison is `>=` so that `freshForMs: 0` means what it reads as — probe
+   * on every quote — rather than "probe at most once per millisecond".
+   */
   private isStale(): boolean {
-    return this.checkedAt === 0 || Date.now() - this.checkedAt > this.freshForMs;
+    return this.checkedAt === 0 || Date.now() - this.checkedAt >= this.freshForMs;
   }
 
   invalidate(): void {
