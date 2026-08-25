@@ -27,6 +27,12 @@ import {
 import { getMeshTopic } from '../utils/topic';
 import { registerStatusPages } from './statusPages';
 import { nodeStats } from '../utils/nodeStats';
+import {
+  NoProviderError,
+  InferenceTimeoutError,
+  statusForInferenceError,
+  messageForInferenceError,
+} from './inferenceErrors';
 
 export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability) => {
   const app = express();
@@ -124,12 +130,33 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
   app.get('/v1/models', async (req, res) => {
     try {
-      nodeEvents.once('model-list-compiled', (response: ListModelsResponse) => {
+      // `model-list-compiled` only ever fires once some peer replies, so an
+      // unanswered broadcast used to hang this route too. Fall back to what
+      // this node itself serves once the collection window has passed.
+      const listWaitTime = environment.api?.networkWaitTime || 10000;
+      let answered = false;
+      let fallbackTimer: ReturnType<typeof setTimeout>;
+
+      const onCompiled = (response: ListModelsResponse) => {
+        if (answered) return;
+        answered = true;
+        clearTimeout(fallbackTimer);
         res.status(200).send({
             "object": "list",
             "data": response,
         });
-      });
+      };
+      nodeEvents.once('model-list-compiled', onCompiled);
+
+      fallbackTimer = setTimeout(() => {
+        if (answered) return;
+        answered = true;
+        nodeEvents.off('model-list-compiled', onCompiled);
+        res.status(200).send({
+          "object": "list",
+          "data": models?.models() ?? [],
+        });
+      }, listWaitTime);
 
       const modelListMessage: ListModelsRequest = {
        role: "list-models",
@@ -144,6 +171,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${modelListMessage.id}`);
       }).catch((err: Error) => {
         logger.error(`❌ Error dispatching model list message: ${err}`);
+        if (answered) return;
+        answered = true;
+        clearTimeout(fallbackTimer);
+        nodeEvents.off('model-list-compiled', onCompiled);
         return res.status(500).send({ error: "No peers available to handle the request." });
       });
     } catch (error) {
@@ -162,24 +193,41 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
    * directly; otherwise it goes through the mesh quote auction and resolves
    * when the matching `inference-response` arrives.
    */
-  const runInference = async (body: any): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
-    const params = pickGenerationParams(body);
-    nodeStats.inferencesRequested++;
+  /** How long to wait for the auction to pick a quote before giving up. */
+  const auctionTimeoutMs = (): number =>
+    environment.quoteEngine.auctionTimeout ?? (environment.quoteEngine.waitTime || 1000) + 5000;
 
-    const preferSelf = environment.quoteEngine.preferSelf !== false;
-    // Verified live: a node whose backend has stopped used to short-circuit to
-    // itself and 500, rather than letting a peer that can serve the model win.
-    if (preferSelf && model && models && await models.ensureAvailable(body.model)) {
-      logger.info(`⚡ Serving request locally (preferSelf). Model: ${body.model}`);
-      return model.getResponse(body.model, body.inputs, params);
-    }
+  /** Overall deadline for one auction attempt, end to end. */
+  const inferenceTimeoutMs = (): number => environment.quoteEngine.inferenceTimeout ?? 300_000;
 
+  /**
+   * One trip through the mesh auction: broadcast a quote-request, accept the
+   * selected quote, and resolve when the answer comes back.
+   *
+   * Two deadlines bound it, because nothing else does — a provider whose
+   * backend has stopped simply stops talking, and without these the HTTP
+   * request hung forever:
+   *
+   *  - the **auction** deadline fires if no quote is selected, meaning nobody
+   *    on the network is serving the model (→ `NoProviderError`, 503);
+   *  - the **overall** deadline covers the whole quote → accept → contract →
+   *    answer choreography (→ `InferenceTimeoutError`, 504).
+   *
+   * Every exit path runs `cleanup()`, so listeners and timers never outlive
+   * the request that made them.
+   */
+  const runAuction = async (
+    body: any,
+    attempt: number
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
       from: node.peerId.toString(),
       fromWalletAddr: algo.account.addr.toString(),
       timestamp: Date.now(),
-      id: sha256(Date.now().toString() + JSON.stringify(body)).slice(0, 56),
+      // The attempt number keeps a retry's id distinct from the attempt it
+      // replaces, so their events and listeners can't collide.
+      id: sha256(`${Date.now()}:${attempt}:${JSON.stringify(body)}`).slice(0, 56),
       // Broadcast to every provider — so it carries only what's needed to quote:
       // the model, our own input-token count, budget, and output cap. The prompt
       // content stays local and goes only to the winning provider (quote-accepted),
@@ -194,14 +242,39 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     };
 
     quoteMessage.signature = await algo.signObject(quoteMessage);
+    const id = quoteMessage.id;
 
     return await new Promise<OpenAI.Chat.Completions.ChatCompletion>((resolve, reject) => {
-      nodeEvents.once(`inference-response-${quoteMessage.id}`, (response: InferenceResponse) => {
-        resolve(response.payload.completion);
-      });
+      let settled = false;
+      let quoteSelected = false;
+      let auctionTimer: ReturnType<typeof setTimeout> | undefined;
+      let overallTimer: ReturnType<typeof setTimeout> | undefined;
 
-      nodeEvents.once(`quote-selected-${quoteMessage.id}`, async (quote: { msg: QuoteResponse, from: string }) => {
-        logger.info(`✅ Quote selected for request ID ${quoteMessage.id}. Served by ${quote.from.toString()}. Sending quote-accepted message.`);
+      const cleanup = () => {
+        nodeEvents.off(`inference-response-${id}`, onResponse);
+        nodeEvents.off(`quote-selected-${id}`, onSelected);
+        clearTimeout(auctionTimer);
+        clearTimeout(overallTimer);
+      };
+
+      // Exactly one outcome per attempt, and it always tidies up after itself.
+      const settle = (action: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        action();
+      };
+
+      function onResponse(response: InferenceResponse) {
+        settle(() => resolve(response.payload.completion));
+      }
+
+      async function onSelected(quote: { msg: QuoteResponse, from: string }) {
+        quoteSelected = true;
+        clearTimeout(auctionTimer);
+        if (settled) return;
+
+        logger.info(`✅ Quote selected for request ID ${id}. Served by ${quote.from.toString()}. Sending quote-accepted message.`);
 
         // Negotiate settlement: pick our highest-preference method the provider
         // also offers. Escrow has been retired, so x402 is the only method.
@@ -224,20 +297,54 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
           }
         };
 
-        acceptance.signature = await algo.signObject(acceptance);
-        await messageRouter.sendMessage(acceptance, quote.from.toString());
-        logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}`);
-      });
+        try {
+          acceptance.signature = await algo.signObject(acceptance);
+          await messageRouter.sendMessage(acceptance, quote.from.toString());
+          logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}`);
+        } catch (err) {
+          settle(() => reject(err as Error));
+        }
+      }
+
+      nodeEvents.once(`inference-response-${id}`, onResponse);
+      nodeEvents.once(`quote-selected-${id}`, onSelected);
+
+      const overallMs = inferenceTimeoutMs();
+      overallTimer = setTimeout(
+        () => settle(() => reject(new InferenceTimeoutError(body.model, overallMs))),
+        overallMs
+      );
 
       meshQueue.enqueue(quoteMessage).then(() => {
-        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${quoteMessage.id}`);
+        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${id}`);
+        // Armed only once the request is actually on the wire, and skipped if a
+        // quote somehow beat us to it.
+        if (!settled && !quoteSelected) {
+          auctionTimer = setTimeout(
+            () => settle(() => reject(new NoProviderError(body.model))),
+            auctionTimeoutMs()
+          );
+        }
       }).catch((err: Error) => {
         logger.error(`❌ Error dispatching quote request: ${err}`);
-        nodeEvents.removeAllListeners(`inference-response-${quoteMessage.id}`);
-        nodeEvents.removeAllListeners(`quote-selected-${quoteMessage.id}`);
-        reject(err);
+        settle(() => reject(err));
       });
     });
+  };
+
+  const runInference = async (body: any): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
+    const params = pickGenerationParams(body);
+    nodeStats.inferencesRequested++;
+
+    const preferSelf = environment.quoteEngine.preferSelf !== false;
+    // Verified live: a node whose backend has stopped used to short-circuit to
+    // itself and 500, rather than letting a peer that can serve the model win.
+    if (preferSelf && model && models && await models.ensureAvailable(body.model)) {
+      logger.info(`⚡ Serving request locally (preferSelf). Model: ${body.model}`);
+      return model.getResponse(body.model, body.inputs, params);
+    }
+
+    return runAuction(body, 1);
   };
 
   app.post(`/v1/chat/completions`, async (req, res) => {
@@ -259,7 +366,13 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       logger.info(`🚀 Sending inference response in ${elapsed}s`);
       return res.status(200).send(completion);
     } catch (err) {
-      return res.status(500).send({ error: "No peers available to handle the request." });
+      // 503 when nothing on the network serves the model, 504 on a deadline —
+      // a specific status and message is what tells an operator their backend
+      // is off, instead of a request that never returns.
+      const status = statusForInferenceError(err);
+      const message = messageForInferenceError(err);
+      logger.warn(`❌ /v1/chat/completions failed (${status}): ${message}`);
+      return res.status(status).send({ error: message });
     }
   });
 
@@ -293,9 +406,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       logger.info(`🚀 Sending Anthropic message response in ${elapsed}s`);
       return res.status(200).json(anthropicMessage);
     } catch (err) {
-      return res.status(500).json(
-        anthropicError("api_error", "No peers available to handle the request.")
-      );
+      const status = statusForInferenceError(err);
+      const message = messageForInferenceError(err);
+      logger.warn(`❌ /v1/messages failed (${status}): ${message}`);
+      return res.status(status).json(anthropicError("api_error", message));
     }
   });
 
