@@ -30,6 +30,7 @@ import { nodeStats } from '../utils/nodeStats';
 import {
   NoProviderError,
   InferenceTimeoutError,
+  ProviderFailedError,
   statusForInferenceError,
   messageForInferenceError,
 } from './inferenceErrors';
@@ -183,16 +184,6 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     }
   })
 
-  /**
-   * Run an inference request expressed in the internal OpenAI shape
-   * (`{ model, inputs, ...generationParams }`) and resolve to a raw OpenAI
-   * ChatCompletion. Shared by the OpenAI (`/v1/chat/completions`) and
-   * Anthropic (`/v1/messages`) API layers so dispatch stays identical.
-   *
-   * If `preferSelf` and the model is available locally, inference runs
-   * directly; otherwise it goes through the mesh quote auction and resolves
-   * when the matching `inference-response` arrives.
-   */
   /** How long to wait for the auction to pick a quote before giving up. */
   const auctionTimeoutMs = (): number =>
     environment.quoteEngine.auctionTimeout ?? (environment.quoteEngine.waitTime || 1000) + 5000;
@@ -218,7 +209,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
    */
   const runAuction = async (
     body: any,
-    attempt: number
+    attempt: number,
+    excluded: Set<string>
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
@@ -250,8 +242,13 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       let auctionTimer: ReturnType<typeof setTimeout> | undefined;
       let overallTimer: ReturnType<typeof setTimeout> | undefined;
 
+      // The provider we accepted, so an `inference-failed` from anyone else can
+      // be ignored rather than cancelling this request.
+      let selectedProviders: Set<string> = new Set();
+
       const cleanup = () => {
         nodeEvents.off(`inference-response-${id}`, onResponse);
+        nodeEvents.off(`inference-failed-${id}`, onFailed);
         nodeEvents.off(`quote-selected-${id}`, onSelected);
         clearTimeout(auctionTimer);
         clearTimeout(overallTimer);
@@ -269,10 +266,34 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         settle(() => resolve(response.payload.completion));
       }
 
+      function onFailed(failure: { from: string; model: string; reason: string }) {
+        // Only the provider whose quote we accepted may abandon this request.
+        if (!selectedProviders.has(failure.from)) {
+          logger.warn(`🚫 Ignoring inference-failed for ${id} from ${failure.from} — not the selected provider.`);
+          return;
+        }
+        settle(() => reject(new ProviderFailedError(body.model, failure.from, failure.reason)));
+      }
+
       async function onSelected(quote: { msg: QuoteResponse, from: string }) {
         quoteSelected = true;
         clearTimeout(auctionTimer);
         if (settled) return;
+
+        // A quote may arrive over a relay, so the peer id that answers can
+        // differ from the one the provider stamped on the quote. Accept a
+        // failure signed by either.
+        selectedProviders = new Set(
+          [quote.from?.toString(), quote.msg.payload?.quote?.providerPeerId].filter(Boolean) as string[]
+        );
+
+        const failedProvider = [...selectedProviders].find((peerId) => excluded.has(peerId));
+        if (failedProvider) {
+          // The auction handed us back a provider that already failed this
+          // request. Don't send it the prompt again.
+          settle(() => reject(new NoProviderError(body.model)));
+          return;
+        }
 
         logger.info(`✅ Quote selected for request ID ${id}. Served by ${quote.from.toString()}. Sending quote-accepted message.`);
 
@@ -307,6 +328,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       }
 
       nodeEvents.once(`inference-response-${id}`, onResponse);
+      nodeEvents.on(`inference-failed-${id}`, onFailed);
       nodeEvents.once(`quote-selected-${id}`, onSelected);
 
       const overallMs = inferenceTimeoutMs();
@@ -332,6 +354,16 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     });
   };
 
+  /**
+   * Run an inference request expressed in the internal OpenAI shape
+   * (`{ model, inputs, ...generationParams }`) and resolve to a raw OpenAI
+   * ChatCompletion. Shared by the OpenAI (`/v1/chat/completions`) and
+   * Anthropic (`/v1/messages`) API layers so dispatch stays identical.
+   *
+   * If `preferSelf` and the model is available locally, inference runs
+   * directly; otherwise it goes through the mesh quote auction, retrying with
+   * a fresh auction if the selected provider reports it cannot serve after all.
+   */
   const runInference = async (body: any): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
     const params = pickGenerationParams(body);
     nodeStats.inferencesRequested++;
@@ -344,7 +376,21 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       return model.getResponse(body.model, body.inputs, params);
     }
 
-    return runAuction(body, 1);
+    // A provider that reports `inference-failed` is excluded and the request is
+    // re-auctioned: the usual cause is a backend stopped between quote and
+    // inference, and the rest of the network can still serve it.
+    const maxRetries = environment.quoteEngine.maxRetries ?? 1;
+    const excluded = new Set<string>();
+
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await runAuction(body, attempt, excluded);
+      } catch (err) {
+        if (!(err instanceof ProviderFailedError) || attempt > maxRetries) throw err;
+        excluded.add(err.providerPeerId);
+        logger.warn(`♻️ ${err.message} Re-auctioning (attempt ${attempt + 1} of ${maxRetries + 1}).`);
+      }
+    }
   };
 
   app.post(`/v1/chat/completions`, async (req, res) => {

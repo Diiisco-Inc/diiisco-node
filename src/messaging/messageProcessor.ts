@@ -10,6 +10,8 @@ import {
   QuoteResponse,
   QuoteAccepted,
   InferenceResponse,
+  InferenceFailed,
+  InferenceFailureReason,
   ContractSigned,
   ContractCreated,
   ListModelsRequest,
@@ -204,6 +206,9 @@ export class MessageProcessor {
           break;
         case 'inference-response':
           await this.handleInferenceResponse(msg as InferenceResponse, sourcePeerId);
+          break;
+        case 'inference-failed':
+          await this.handleInferenceFailed(msg as InferenceFailed, sourcePeerId);
           break;
         default:
           logger.warn(`⚠️ Unknown message role: ${(msg as any).role}`);
@@ -424,6 +429,21 @@ export class MessageProcessor {
    * the actual metered charge before the answer is released.
    */
   private async handleQuoteAccepted(msg: QuoteAccepted, sourcePeerId: string) {
+    try {
+      await this.serveAcceptedQuote(msg, sourcePeerId);
+    } catch (err) {
+      // Going quiet here is what used to hang the requester for its whole
+      // deadline. Tell it instead, so it can re-auction to somebody else.
+      logger.error(`❌ Could not serve accepted quote ${msg.id}: ${(err as Error).message}`);
+      // `runInference` invalidated the availability snapshot on the way out, so
+      // this re-probes: it distinguishes "the backend is gone" from a one-off
+      // error, and leaves the node correctly filtered for the next quote too.
+      const stillServing = await this.models.ensureAvailable(msg.payload?.model);
+      await this.sendInferenceFailed(msg, sourcePeerId, stillServing ? 'error' : 'backend-unavailable');
+    }
+  }
+
+  private async serveAcceptedQuote(msg: QuoteAccepted, sourcePeerId: string) {
     // Local mode / self-served quotes settle nothing — answer immediately.
     if (this.env.local?.enabled || sourcePeerId === this.ownPeerId) {
       const completion = await this.runInference(msg);
@@ -435,7 +455,8 @@ export class MessageProcessor {
     // provider never spends more compute than the budget pays for.
     const outputCap = await this.budgetOutputCap(msg);
     if (outputCap === undefined) {
-      logger.warn(`❌ Cannot serve ${msg.id} within the requester's budget; dropping.`);
+      logger.warn(`❌ Cannot serve ${msg.id} within the requester's budget.`);
+      await this.sendInferenceFailed(msg, sourcePeerId, 'budget-exceeded');
       return;
     }
 
@@ -529,7 +550,18 @@ export class MessageProcessor {
       return;
     }
 
-    const completion = this.takeCompletion(msg.id) ?? await this.runInference(msg);
+    let completion: any;
+    try {
+      completion = this.takeCompletion(msg.id) ?? await this.runInference(msg);
+    } catch (err) {
+      // The payment verified but the answer cannot be produced. Nothing has
+      // been settled on-chain yet (that happens below), so the requester is
+      // not out of pocket — but it must be told, not left waiting.
+      logger.error(`❌ Could not produce the answer for paid quote ${msg.id}: ${(err as Error).message}`);
+      const stillServing = await this.models.ensureAvailable(msg.payload?.model);
+      await this.sendInferenceFailed(msg, sourcePeerId, stillServing ? 'error' : 'backend-unavailable');
+      return;
+    }
     await this.sendInferenceResponse(msg, sourcePeerId, completion);
 
     // Settlement (the on-chain txn) is off the critical path — the requester
@@ -626,6 +658,45 @@ export class MessageProcessor {
       clearTimeout(entry.timer);
       this.pendingCompletions.delete(id);
     }
+  }
+
+  /**
+   * Provider side. Tell the requester this quote cannot be served, so it can
+   * re-auction immediately rather than waiting out its deadline. Carries no
+   * completion and no prompt — only the model and a coarse reason.
+   */
+  private async sendInferenceFailed(msg: { id: string; payload: any }, sourcePeerId: string, reason: InferenceFailureReason) {
+    let response: InferenceFailed = {
+      role: 'inference-failed',
+      to: sourcePeerId,
+      timestamp: Date.now(),
+      id: msg.id,
+      fromWalletAddr: this.algo.account.addr.toString(),
+      payload: { model: msg.payload?.model, reason },
+    };
+    try {
+      response.signature = await this.algo.signObject(response);
+      await this.messageRouter.sendMessage(response, sourcePeerId);
+      logger.info(`📤 Sent inference-failed (${reason}) to ${sourcePeerId}`);
+    } catch (err) {
+      // Best-effort: the requester's deadline is the backstop.
+      logger.warn(`⚠️ Could not send inference-failed for ${msg.id}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Requester side. A provider bowed out. The API layer decides whether to
+   * re-auction; it also checks that this came from the provider it actually
+   * selected, so a bystander cannot cancel someone else's request.
+   */
+  private async handleInferenceFailed(msg: InferenceFailed, sourcePeerId: string) {
+    logger.warn(`📥 Received inference-failed from ${sourcePeerId} for ${msg.id} (${msg.payload?.reason})`);
+    this.nodeEvents.emit(`inference-failed-${msg.id}`, {
+      from: sourcePeerId,
+      fromWalletAddr: msg.fromWalletAddr,
+      model: msg.payload?.model,
+      reason: msg.payload?.reason ?? 'error',
+    });
   }
 
   /** Requester side. The answer arrived; surface it to the API. */
