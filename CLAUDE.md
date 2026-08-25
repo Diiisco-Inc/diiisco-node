@@ -61,6 +61,8 @@ Two modes:
 - **Public network** — requires an `algorand` block (algod client, network, `algorand.settlement` with a `maxSpend` budget plus x402 config) and a wallet key; settles payments in USDC via x402.
 - **Private/local network** — omit `algorand`, add `local: { enabled: true, privateTopic: "..." }`. Quoting and settlement are skipped; an ephemeral signing key is generated instead.
 
+**Model availability** (`models.availability`) governs how often the node re-checks that its backend really serves the models it advertises: `checkIntervalMs` (default 30000, `0` disables the background poll), `freshForMs` (default 10000 — the maximum snapshot age tolerated when answering a `quote-request`) and `timeoutMs` (default 2000). Probes are single-flight and fail closed: one failed probe empties the served set, and the node stops quoting until the backend answers again.
+
 ### Wallet key (`src/cli/keystore.ts`, `src/cli/keyMigration.ts`)
 
 On the CLI/desktop path the 25-word mnemonic lives **on its own** in
@@ -96,7 +98,7 @@ All on-wire messages are msgpack-encoded (`msgpackr`) and typed by `role` field 
 **Message flow for an inference request:**
 1. API server receives `POST /v1/chat/completions`
 2. The requester counts its **own** input tokens (prompt **and** tool schemas — an agent tool's schemas are thousands of tokens the provider must be paid for); `MeshMessageQueue` (`src/messaging/meshMessageQueue.ts`) publishes a `quote-request` carrying `{ model, inputTokenCount, max_tokens, maxSpend }` — **not the prompt** — once the GossipSub mesh has a subscriber
-3. Provider nodes receive `quote-request` → `MessageProcessor.handleQuoteRequest()` → publish `quote-response` with their per-token rates (providers that can't serve within the budget don't quote)
+3. Provider nodes receive `quote-request` → `MessageProcessor.handleQuoteRequest()` → publish `quote-response` with their per-token rates. A provider only quotes for a model its backend is **currently** serving — availability is re-verified against the backend here (`src/utils/modelAvailability.ts`), not read from a startup snapshot — and providers that can't serve within the budget don't quote
 4. `quoteEngine` enriches each quote (provider DSCO balance, NFD status, response latency) and after `waitTime` ms selects one via `quoteSelectionFunction`, emitting `quote-selected-<id>`
 5. Requester sends `quote-accepted` **directly to the winning provider only**, now including the prompt content and any `tools` definitions
 6. Provider runs inference (generation capped to what the budget affords), **withholds** the answer, and sends `contract-created` carrying the x402 payment requirements for the metered charge (`min(actual, maxSpend)`)
@@ -105,7 +107,9 @@ All on-wire messages are msgpack-encoded (`msgpackr`) and typed by `role` field 
 
 **Local mode** skips settlement entirely — `quote-accepted` triggers inference and returns `inference-response` directly.
 
-**Message routing** (`src/messaging/messageRouter.ts`): discovery-phase messages (`quote-request`, `list-models`, `list-network`) go via GossipSub broadcast. Post-selection messages (`quote-accepted`, `contract-*`, `inference-response`) use direct libp2p streams (`DirectMessagingHandler`) with GossipSub fallback.
+**When a provider can't deliver.** If inference fails at any point after the quote was accepted — the operator stopped Ollama between steps 5 and 6 is the usual case — the provider sends `inference-failed` (model + a coarse reason, never the prompt or a partial answer) and re-probes its own backend, so it drops out of the next auction. The requester excludes that provider and re-auctions the request (`quoteEngine.maxRetries`, default 1). Backing all of this up, the requester holds two deadlines: `quoteEngine.auctionTimeout` (no quote selected → 503) and `quoteEngine.inferenceTimeout` (no answer → 504). A request that can't be served now fails; it does not hang.
+
+**Message routing** (`src/messaging/messageRouter.ts`): discovery-phase messages (`quote-request`, `list-models`, `list-network`) go via GossipSub broadcast. Post-selection messages (`quote-accepted`, `contract-*`, `inference-response`, `inference-failed`) use direct libp2p streams (`DirectMessagingHandler`) with GossipSub fallback.
 
 All messages are signed with the Algorand account key and verified by `MessageProcessor.process()` before any handling.
 
