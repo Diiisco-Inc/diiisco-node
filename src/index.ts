@@ -7,8 +7,8 @@ import algorand from "./utils/algorand";
 import environment from "./environment/runtime";
 import { Environment } from "./environment/environment.types";
 import { OpenAIInferenceModel } from "./utils/models";
+import { ModelAvailability, ModelAvailabilityMonitor } from "./utils/modelAvailability";
 import quoteEngine from "./utils/quoteEngine";
-import OpenAI from "openai";
 import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
 import { MessageRouter } from './messaging/messageRouter';
@@ -25,7 +25,7 @@ class Application extends EventEmitter {
   private node: any;
   private algo: algorand;
   private model: OpenAIInferenceModel;
-  private availableModels: string[] = [];
+  private models: ModelAvailability;
   private quoteMgr: quoteEngine;
   private topics: string[] = [];
   private env: Environment;
@@ -64,6 +64,7 @@ class Application extends EventEmitter {
     this.env = environment;
     this.algo = new algorand();
     this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`, this);
+    this.models = new ModelAvailabilityMonitor(this.model);
     this.quoteMgr = new quoteEngine(this, this.algo);
   }
   
@@ -107,14 +108,12 @@ class Application extends EventEmitter {
     // Initialize Algorand for DSCO Payments
     await this.algo.initialize(this.node.peerId.toString());
 
-    // Load available models FIRST before initializing message processor
-    if (this.env.models.enabled) {
-      const models = await this.model.getModels();
-      this.availableModels = models.filter((m: OpenAI.Models.Model) => m.object == 'model').map((modelInfo: OpenAI.Models.Model) => {
-        logger.info(`🤖 Serving Model: ${modelInfo.id}`);
-        return modelInfo.id;
-      });
-    }
+    // Probe the backend once before we start quoting, then keep the set live.
+    // A backend that isn't up yet is a warning, not a fatal error: this used to
+    // be a bare `getModels()` whose rejection took the whole node down, so the
+    // node could not be started before Ollama.
+    await this.models.refresh();
+    this.models.start();
 
     // Initialize direct messaging if enabled
     const directMessagingConfig = this.env.directMessaging || DEFAULT_DIRECT_MESSAGING_CONFIG;
@@ -146,7 +145,7 @@ class Application extends EventEmitter {
       this.algo,
       this.model,
       this.quoteMgr,
-      this.availableModels,
+      this.models,
       this,
       this.messageRouter,
       this.node.peerId.toString(),
@@ -165,7 +164,7 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.availableModels);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models);
       this.apiServer = server;
     }
 
@@ -336,8 +335,9 @@ class Application extends EventEmitter {
         });
       }
 
-      // 2. Stop background services (health checks)
+      // 2. Stop background services (health checks, backend availability poll)
       stopConnectionHealthCheck();
+      this.models.stop();
 
       // 3. Unsubscribe from pubsub topics
       for (const topic of this.topics) {
