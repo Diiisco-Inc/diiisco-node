@@ -1,10 +1,12 @@
 import { readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
+import { join } from 'node:path'
 import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@libp2p/crypto/keys'
 import { peerIdFromPrivateKey } from '@libp2p/peer-id'
 import type { PrivateKey } from '@libp2p/interface'
 import type { PeerId } from '@libp2p/interface'
 import environment from '../environment/runtime'
+import { resolvePath } from '../utils/paths'
 import { logger } from '../utils/logger'
 
 /**
@@ -23,15 +25,20 @@ export class PeerIdManager {
   static async loadOrCreate(fileName: string): Promise<{ peerId: PeerId; privateKey: PrivateKey }> {
     let privateKey: PrivateKey
     let peerId: PeerId
-    const sanitizedPath = environment.peerIdStorage.path.replace('~', process.env.HOME || '').replace(/\/$/, '');
+    // `resolvePath` expands `~` via `os.homedir()`. It used to be expanded with
+    // `process.env.HOME`, which is unset on Windows — so `~/.diiisco` became
+    // `/.diiisco` and the identity landed at the root of the system drive.
+    const configuredPath = environment.peerIdStorage.path;
+    const sanitizedPath = resolvePath(configuredPath);
 
     // Check the existence of the protobuf folder
     if (!existsSync(sanitizedPath)) {
-      throw new Error(`Directory does not exist: ${sanitizedPath}`)
+      const from = configuredPath === sanitizedPath ? '' : ` (from "${configuredPath}")`;
+      throw new Error(`Directory does not exist: ${sanitizedPath}${from}`)
     }
 
     // Now Make the File Path
-    const filePath = `${sanitizedPath}/${fileName}`;
+    const filePath = join(sanitizedPath, fileName);
     
     if (existsSync(filePath)) {
       logger.info(`📁 Loading existing private key from ${filePath}`)

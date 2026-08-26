@@ -1,12 +1,14 @@
 import { mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { Application, configureEnvironment } from '../../index';
 import { assertValid, loadConfig, requireConfig } from '../config';
 import { migrateWalletKey } from '../keyMigration';
-import { ensureHome, expandTilde, logFile } from '../paths';
+import { ensureHome, logFile, resolvePath, userHome } from '../paths';
 import { recordControlChannel, startLogRotationWatcher } from '../daemon';
 import { ControlServer, generateControlToken, startControlServer } from '../control';
 import { colour, error, info, warn } from '../output';
 import { installProcessGuards } from '../../utils/processGuards';
+import { logger } from '../../utils/logger';
 
 /**
  * If `Application.shutdown()` itself wedges, the process must still go away —
@@ -32,6 +34,38 @@ function reportMigration(): void {
 }
 
 /**
+ * On Windows, record where the home directory came from.
+ *
+ * `.diiisco` used to be created at the root of the system drive, and the chain
+ * from Explorer through the desktop app's launcher to this process has several
+ * hops that could drop `USERPROFILE` — one of them is a launcher binary whose
+ * source we do not have. One line in the log answers that for good.
+ */
+function logHomeResolution(): void {
+  if (process.platform !== 'win32') return;
+  const shown = (value: string | undefined) => (value && value.trim() !== '' ? value : '<unset>');
+  let resolved: string;
+  try {
+    resolved = userHome();
+  } catch (err: any) {
+    resolved = `<unresolved: ${err?.message ?? err}>`;
+  }
+  logger.info(
+    `🏠 home resolution: USERPROFILE=${shown(process.env.USERPROFILE)} ` +
+      `HOMEDRIVE=${shown(process.env.HOMEDRIVE)} HOMEPATH=${shown(process.env.HOMEPATH)} ` +
+      `HOME=${shown(process.env.HOME)} os.homedir=${shown(safeHomedir())} → ${resolved}`
+  );
+}
+
+function safeHomedir(): string | undefined {
+  try {
+    return homedir();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Run the node in the foreground. This is also the body of the daemon: `start`
  * re-spawns the executable with the internal `__daemon` argument, which lands
  * here with `daemon: true`.
@@ -40,6 +74,8 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
   // Installed first: a node that survives boot must also survive an aborted
   // dial hours later, which is what takes nodes off the mesh.
   installProcessGuards();
+
+  logHomeResolution();
 
   // No implicit zero-config run: a node without a configured backend, an API
   // key and (on the public network) a wallet starts but serves nothing.
@@ -56,7 +92,7 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
   // The peer-id store must exist before libp2p starts, or the node fails deep
   // inside PeerIdManager with "Directory does not exist".
   try {
-    mkdirSync(expandTilde(env.peerIdStorage.path), { recursive: true });
+    mkdirSync(resolvePath(env.peerIdStorage.path), { recursive: true });
   } catch (err: any) {
     error(`Could not create the peer identity directory "${env.peerIdStorage.path}": ${err?.message ?? err}`);
     process.exit(1);
