@@ -163,7 +163,7 @@ The comments below are for reading only. `diiisco.config.json` is parsed as stri
 
 ```jsonc
 {
-  "peerIdStorage": { "path": "~/.diiisco" },
+  // "peerIdStorage": { "path": "/absolute/path" },  // Optional; defaults to the DIIISCO home
   "models": {
     "enabled": true,
     "baseURL": "http://localhost",
@@ -216,7 +216,7 @@ The comments below are for reading only. `diiisco.config.json` is parsed as stri
 
 ### 🔒 Private network
 
-Remove the `algorand` block and add a `local` block. Everything else stays the same, and each node still needs its own `peerIdStorage` path.
+Remove the `algorand` block and add a `local` block. Everything else stays the same, and each node still needs its own DIIISCO home (set `DIIISCO_HOME`, or give each node its own `peerIdStorage.path`).
 
 ```jsonc
 {
@@ -246,9 +246,15 @@ For single-machine or LAN setups you can omit `libp2pBootstrapServers` entirely 
 
 ### `peerIdStorage`
 
-| Field | Description |
-|---|---|
-| `path` | Directory where `diiisco-peer-id.protobuf` is stored. This file is your node's persistent libp2p identity, so back it up. |
+| Field | Default | Description |
+|---|---|---|
+| `path` | the DIIISCO home | Directory where `diiisco-peer-id.protobuf` is stored. This file is your node's persistent libp2p identity, so back it up. |
+
+Leave `peerIdStorage` out and the identity lives in the DIIISCO home alongside
+everything else, so `DIIISCO_HOME` moves the whole node in one go — that is
+almost always what you want. If you do set it, give it an **absolute** path. A
+leading `~` is expanded via `os.homedir()` (`%USERPROFILE%` on Windows), but an
+absolute path is unambiguous.
 
 ### `models`
 

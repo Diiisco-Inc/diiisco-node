@@ -61,6 +61,17 @@ Two modes:
 - **Public network** — requires an `algorand` block (algod client, network, `algorand.settlement` with a `maxSpend` budget plus x402 config) and a wallet key; settles payments in USDC via x402.
 - **Private/local network** — omit `algorand`, add `local: { enabled: true, privateTopic: "..." }`. Quoting and settlement are skipped; an ephemeral signing key is generated instead.
 
+**Paths.** Home and `~` resolution lives in `src/utils/paths.ts` (`userHome`,
+`expandTilde`, `resolvePath`, `diiiscoHome`), re-exported by `src/cli/paths.ts`
+so `src/libp2p/` can use it without importing the CLI layer. `~` expands via
+`os.homedir()` — `%USERPROFILE%` on Windows — **never** `$HOME`, which is unset
+there; expanding it with `$HOME` is how the peer identity used to be written to
+`C:\.diiisco`. `userHome()` throws rather than falling back to the cwd or a
+filesystem root, so a stripped environment fails loudly; `DIIISCO_HOME` is the
+escape hatch. `loadConfig()` normalises `peerIdStorage.path` to an absolute path,
+and `createDefaultEnvironment()` resolves its default, so the `dev.ts` and
+library-consumer paths (which never run `mergeConfig()`) get an absolute one too.
+
 **Model availability** (`models.availability`) governs how often the node re-checks that its backend really serves the models it advertises: `checkIntervalMs` (default 30000, `0` disables the background poll), `freshForMs` (default 10000 — the maximum snapshot age tolerated when answering a `quote-request`) and `timeoutMs` (default 2000). Probes are single-flight and fail closed: one failed probe empties the served set, and the node stops quoting until the backend answers again.
 
 ### Wallet key (`src/cli/keystore.ts`, `src/cli/keyMigration.ts`)
