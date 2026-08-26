@@ -30,7 +30,7 @@ const DEFAULT_QUOTE_TTL_SECONDS = 120;
  * This is a network-wide constant; do not vary it per node.
  */
 const DIIISCO_RESOURCE: ResourceInfo = {
-  url: "https://diiisco.com/x402",
+  url: "https://x402.diiisco.com/",
   serviceName: "DIIISCO",
   description: "DIIISCO. Algorand's decentralized AI compute network, paid per token in USDC via x402.",
   iconUrl: "https://asset.diiisco.com/diiisco-logomark.png",
