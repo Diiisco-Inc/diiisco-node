@@ -37,6 +37,48 @@ const DIIISCO_RESOURCE: ResourceInfo = {
   tags: ["ai", "llm", "inference", "p2p", "x402-global-challenge", "diiisco"],
 };
 
+/**
+ * DIIISCO's **merchant** identity — who is selling, as opposed to what is sold.
+ *
+ * A different layer from `DIIISCO_RESOURCE` above, and easy to conflate with
+ * it. The resource block describes one endpoint and is catalogued by `url`; the
+ * merchant record describes the seller, is keyed by the **receiving wallet
+ * address**, and spans every resource that wallet is paid for. Setting one does
+ * not populate the other — the facilitator holds a merchant record per wallet
+ * with `name`, `logo`, `categories` and `website` all null until this is
+ * declared, even when the resource identity is already complete.
+ *
+ * Because every node settles from its own wallet, each node is a **separate**
+ * merchant record. Without this, nodes appear in the sellers catalog as
+ * anonymous wallet addresses; with it, they all read "DIIISCO".
+ *
+ * Undeclared, the facilitator falls back to scraping the domain (OpenGraph
+ * tags, `llms.txt`, `agent-card.json`). Declaring it is how DIIISCO controls
+ * its own listing. Keep in sync with `MERCHANT_INFO` in
+ * `diiisco-x402/src/payment/discovery.ts` — one identity, one catalog.
+ */
+const DIIISCO_MERCHANT = {
+  info: {
+    name: "DIIISCO",
+    website: "https://diiisco.com",
+    logo: "https://asset.diiisco.com/diiisco-logomark.png",
+    categories: ["ai", "llm", "inference", "p2p", "algorand"],
+  },
+  // JSON Schema the facilitator validates `info` against; `name` is the only
+  // required field.
+  schema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    type: "object",
+    required: ["name"],
+    properties: {
+      name: { type: "string" },
+      website: { type: "string" },
+      logo: { type: "string" },
+      categories: { type: "array", items: { type: "string" } },
+    },
+  },
+};
+
 export interface X402SettlementConfig {
   account: algosdk.Account; // the node's own wallet (provider payTo + requester signer)
   network: "mainnet" | "testnet";
@@ -193,6 +235,11 @@ export class X402Settlement implements SettlementProvider {
       // Shared DIIISCO service identity so the facilitator's Bazaar catalogs
       // every node's payment under one resource (see DIIISCO_RESOURCE).
       resource: DIIISCO_RESOURCE,
+      // Seller identity for the merchant catalog, attributed to the payee —
+      // `requirements.payTo`, i.e. the provider node being paid. Both ends of a
+      // DIIISCO settlement are DIIISCO, so this reads "DIIISCO" whichever side
+      // the facilitator credits it to (see DIIISCO_MERCHANT).
+      extensions: { "x402-merchant": DIIISCO_MERCHANT },
       accepted: requirements,
       payload: result.payload,
     };
