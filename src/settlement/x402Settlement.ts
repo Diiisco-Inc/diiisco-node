@@ -143,7 +143,7 @@ export class X402Settlement implements SettlementProvider {
       amount: args.amount.toString(),
       payTo: this.account.addr.toString(),
       maxTimeoutSeconds: this.quoteTtlSeconds,
-      extra: { decimals: USDC_DECIMALS },
+      extra: { decimals: USDC_DECIMALS, tag: "x402-global-challenge" },
     };
     return requirements;
   }
