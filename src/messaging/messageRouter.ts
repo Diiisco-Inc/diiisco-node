@@ -30,6 +30,7 @@ export class MessageRouter {
       'contract-created',
       'contract-signed',
       'inference-response',
+      'inference-failed',
       'node-profile',
       'node-profile-response',
     ];

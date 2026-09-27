@@ -96,6 +96,34 @@ export interface InferenceResponse {
   signature?: string;
 }
 
+/**
+ * Why a provider could not serve an accepted quote. Deliberately coarse: it is
+ * sent to a peer, so it must not leak anything about the prompt or the backend
+ * beyond "don't wait for me".
+ */
+export type InferenceFailureReason = 'backend-unavailable' | 'budget-exceeded' | 'error';
+
+/**
+ * Provider → requester: the accepted quote cannot be served after all, usually
+ * because the inference backend stopped between the quote and the request.
+ *
+ * Without this the provider simply goes quiet and the requester waits out its
+ * whole deadline; with it the requester can immediately re-auction to somebody
+ * else. Carries no completion and no prompt.
+ */
+export interface InferenceFailed {
+  role: "inference-failed";
+  to: string;
+  timestamp: number;
+  id: string;
+  fromWalletAddr: string;
+  payload: {
+    model: string;
+    reason: InferenceFailureReason;
+  };
+  signature?: string;
+}
+
 export interface ListModelsRequest {
   role: "list-models";
   timestamp: number;
@@ -174,6 +202,7 @@ export type PubSubMessage = (
   | ContractCreated
   | ContractSigned
   | InferenceResponse
+  | InferenceFailed
   | ListModelsRequest
   | ListModelsResponse
   | ListNetworkRequest

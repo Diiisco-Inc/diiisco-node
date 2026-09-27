@@ -129,8 +129,15 @@ export class OpenAIInferenceModel {
     }
   }
 
-  async getModels() {
-    const resp = await this.openai.models.list();
+  /**
+   * List the models the backend is currently serving.
+   *
+   * The optional `signal` is how `ModelAvailabilityMonitor` bounds its liveness
+   * probe. It is deliberately per-call rather than a client-wide `timeout`: the
+   * same client runs real inference, which is legitimately slow.
+   */
+  async getModels(signal?: AbortSignal) {
+    const resp = await this.openai.models.list(signal ? { signal } : undefined);
     return resp.data;
   }
 

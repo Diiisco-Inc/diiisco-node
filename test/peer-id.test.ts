@@ -137,3 +137,43 @@ daemonSuite('peer identity written by the compiled daemon', () => {
     run(['stop'], { home, timeoutMs: 30_000 });
   }, 180_000);
 });
+
+/**
+ * A config that pins `peerIdStorage.path` takes a different branch through
+ * `mergeConfig` than one that omits it, and that branch used to hand the raw
+ * string — tilde and all — to `PeerIdManager`, which expanded it with
+ * `process.env.HOME`. On Windows, where `HOME` is unset, `~/.diiisco` became
+ * `/.diiisco` and the identity was written to the root of the system drive.
+ *
+ * On a Unix host the old code got the right answer by luck (`HOME` is set), so
+ * this does not reproduce the Windows failure — `test/paths.test.ts` covers the
+ * resolution order with an injected platform. What this does cover end-to-end
+ * is that the pinned branch is expanded at all, by a real compiled daemon.
+ *
+ * `HOME`/`USERPROFILE` are pointed at the throwaway home so `~` expands there
+ * and the developer's real `~/.diiisco` is never touched.
+ */
+daemonSuite('a pinned tilde peerIdStorage.path', () => {
+  let home: string;
+
+  beforeAll(async () => {
+    home = makeHome('diiisco-peerid-tilde-');
+    writeOfflineConfig(home, await freePort(), { peerIdStorage: { path: '~/.diiisco' } });
+  });
+
+  afterAll(() => {
+    forceStop(home);
+    removeHome(home);
+  });
+
+  test('resolves under the home directory, not the filesystem root', () => {
+    const env = { HOME: home, USERPROFILE: home };
+    expect(run(['start'], { home, env, timeoutMs: 60_000 }).code).toBe(0);
+
+    expect(existsSync(join(home, '.diiisco', 'diiisco-peer-id.protobuf'))).toBe(true);
+    expect(existsSync('/.diiisco')).toBe(false);
+
+    expect(peerIdViaNode(join(home, '.diiisco', 'diiisco-peer-id.protobuf'))).toMatch(/^12D3KooW/);
+    run(['stop'], { home, env, timeoutMs: 30_000 });
+  }, 120_000);
+});

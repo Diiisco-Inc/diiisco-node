@@ -9,6 +9,7 @@ import environment from '../environment/runtime';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
 import { buildOwnProfile } from '../utils/nodeProfile';
+import { ModelAvailability } from '../utils/modelAvailability';
 import { NodeProfile, DirectoryEntry, ModelStats } from '../types/profile';
 import { NodeProfileRequest, NetworkNode } from '../types/messages';
 import { logger } from '../utils/logger';
@@ -44,11 +45,14 @@ interface StatusPagesDeps {
   nodeEvents: EventEmitter;
   algo: algorand;
   messageRouter: MessageRouter;
-  availableModels: string[];
+  models?: ModelAvailability;
 }
 
-export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter, availableModels }: StatusPagesDeps) => {
+export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter, models }: StatusPagesDeps) => {
   const ownPeerId = node.peerId.toString();
+  // Read live on every call, so a stopped backend empties the advertised model
+  // list without a restart.
+  const servedModels = (): string[] => models?.list() ?? [];
   const profileWaitTime = environment.api.profileWaitTime || PROFILE_WAIT_DEFAULT;
   const profileCacheTtl = environment.api.profileCacheTtl || PROFILE_CACHE_TTL_DEFAULT;
 
@@ -119,7 +123,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
    */
   const getProfile = async (peerId: string): Promise<NodeProfile | null> => {
     if (peerId === ownPeerId) {
-      return buildOwnProfile(node, algo, availableModels);
+      return buildOwnProfile(node, algo, servedModels());
     }
 
     const cached = profileCache.get(peerId);
@@ -192,7 +196,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     const sorted = [...entries.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || b.lastSeen - a.lastSeen);
 
     // The serving node itself, pinned to the top.
-    const own = buildOwnProfile(node, algo, availableModels);
+    const own = buildOwnProfile(node, algo, servedModels());
     sorted.unshift({
       peerId: ownPeerId,
       displayName: own.displayName,
@@ -223,7 +227,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       [...peerIds].map((peerId) => getProfile(peerId).catch(() => null))
     );
     const profiles: NodeProfile[] = [
-      buildOwnProfile(node, algo, availableModels),
+      buildOwnProfile(node, algo, servedModels()),
       ...remote.filter((p): p is NodeProfile => p !== null),
     ];
 
@@ -372,7 +376,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   app.get('/', (req, res) => sendShell(res, req));
 
   app.get('/node.json', (_req, res) => {
-    sendJson(res, buildOwnProfile(node, algo, availableModels));
+    sendJson(res, buildOwnProfile(node, algo, servedModels()));
   });
 
   app.get('/nodes.json', (_req, res) => {

@@ -1,6 +1,24 @@
 import { Environment } from './environment.types';
 import { selectHighestStakeQuote } from '../utils/quoteSelectionMethods';
 import { deepMerge } from '../utils/deepMerge';
+import { diiiscoHome } from '../utils/paths';
+
+/**
+ * `~/.diiisco`, already resolved.
+ *
+ * The literal `~` used to be the default, which meant the `src/dev.ts` and
+ * library-consumer paths — neither of which runs `mergeConfig()` — handed an
+ * unexpanded tilde to libp2p. Falling back to the literal keeps importing the
+ * library working on a machine whose home directory cannot be resolved at all;
+ * such a node fails later, with a message, rather than at import time.
+ */
+function defaultHome(): string {
+  try {
+    return diiiscoHome();
+  } catch {
+    return '~/.diiisco';
+  }
+}
 
 /**
  * Zero-config defaults for a DIIISCO node.
@@ -18,7 +36,7 @@ import { deepMerge } from '../utils/deepMerge';
 export function createDefaultEnvironment(): Environment {
   return {
     peerIdStorage: {
-      path: '~/.diiisco',
+      path: defaultHome(),
     },
     models: {
       enabled: true,

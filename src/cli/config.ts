@@ -5,7 +5,7 @@ import { Environment, EnvironmentFile } from '../environment/environment.types';
 import { withDefaults } from '../environment/defaults';
 import { validateEnvironment } from '../environment/validate';
 import { resolveStrategies, StrategyError, strategyName } from '../environment/strategies';
-import { diiiscoHome, ensureHome, expandTilde } from './paths';
+import { diiiscoHome, ensureHome, expandTilde, resolvePath } from './paths';
 import { ConfigError } from './errors';
 import {
   KEY_FILENAME,
@@ -260,9 +260,13 @@ export function mergeConfig(file: EnvironmentFile | null): Environment {
   // Keep everything inside one directory: unless the user pinned an explicit
   // `peerIdStorage.path`, the peer identity lives alongside the config and the
   // logs, so `DIIISCO_HOME` isolates a node completely.
-  if (!file?.peerIdStorage?.path) {
-    env.peerIdStorage = { ...env.peerIdStorage, path: diiiscoHome() };
-  }
+  //
+  // A pinned path is *normalised*, not passed through: `~/.diiisco` in a config
+  // file — which is what the desktop app writes and what the readme used to
+  // show — must become an absolute path here, before anything downstream tries
+  // to expand it for itself.
+  const pinned = file?.peerIdStorage?.path;
+  env.peerIdStorage = { ...env.peerIdStorage, path: pinned ? resolvePath(pinned) : diiiscoHome() };
 
   return env;
 }

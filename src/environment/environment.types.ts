@@ -44,6 +44,19 @@ export interface ModelsConfig {
     default: number;
     [key: string]: number;
   };
+  availability?: ModelAvailabilityConfig;
+}
+
+/**
+ * How aggressively the node re-verifies that its inference backend is actually
+ * serving the models it advertises. The startup snapshot used to stand for the
+ * life of the process, so a node whose backend was stopped kept quoting for
+ * models it could no longer run. See `src/utils/modelAvailability.ts`.
+ */
+export interface ModelAvailabilityConfig {
+  checkIntervalMs?: number; // default 30000 — background re-probe interval; 0 disables polling
+  freshForMs?: number;      // default 10000 — max snapshot age tolerated on the quote path
+  timeoutMs?: number;       // default 2000 — per-probe timeout on the backend
 }
 
 export interface ApiConfig {
@@ -64,6 +77,9 @@ export interface QuoteEngineConfig {
   quoteCreationFunction?: QuoteCreationFunction;                              // override to price dynamically; default = createStandardQuote
   optimisticInference?: boolean;  // default true — provider starts inference in parallel with createQuote
   maxSpeculativeJobs?: number;    // default 2 — max concurrent speculative inference jobs
+  auctionTimeout?: number;        // default waitTime + 5000 — give up if no quote is selected in time
+  inferenceTimeout?: number;      // default 300000 — overall deadline for one auction attempt
+  maxRetries?: number;            // default 1 — re-auctions after a provider reports inference-failed
 }
 
 export interface PeerIdStorageConfig {

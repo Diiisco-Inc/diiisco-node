@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
 import environment from "../environment/runtime";
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
+import { ModelAvailability } from "../utils/modelAvailability";
 import quoteEngine from "../utils/quoteEngine";
 import {
   PubSubMessage,
@@ -9,6 +10,8 @@ import {
   QuoteResponse,
   QuoteAccepted,
   InferenceResponse,
+  InferenceFailed,
+  InferenceFailureReason,
   ContractSigned,
   ContractCreated,
   ListModelsRequest,
@@ -42,7 +45,7 @@ export class MessageProcessor {
   private algo: algorand;
   private model: OpenAIInferenceModel;
   private quoteMgr: quoteEngine;
-  private availableModels: string[];
+  private models: ModelAvailability;
   private nodeEvents: EventEmitter;
   private messageRouter: MessageRouter;
   private env: Environment;
@@ -58,7 +61,7 @@ export class MessageProcessor {
     algo: algorand,
     model: OpenAIInferenceModel,
     quoteMgr: quoteEngine,
-    availableModels: string[],
+    models: ModelAvailability,
     nodeEvents: EventEmitter,
     messageRouter: MessageRouter,
     ownPeerId: string,
@@ -67,7 +70,7 @@ export class MessageProcessor {
     this.algo = algo;
     this.model = model;
     this.quoteMgr = quoteMgr;
-    this.availableModels = availableModels;
+    this.models = models;
     this.nodeEvents = nodeEvents;
     this.messageRouter = messageRouter;
     this.env = environment;
@@ -204,6 +207,9 @@ export class MessageProcessor {
         case 'inference-response':
           await this.handleInferenceResponse(msg as InferenceResponse, sourcePeerId);
           break;
+        case 'inference-failed':
+          await this.handleInferenceFailed(msg as InferenceFailed, sourcePeerId);
+          break;
         default:
           logger.warn(`⚠️ Unknown message role: ${(msg as any).role}`);
           return false;
@@ -242,7 +248,10 @@ export class MessageProcessor {
       return;
     }
 
-    const models_list = await this.model.getModels();
+    // The monitor's snapshot, not a fresh backend call: a `list-models` is a
+    // network-wide broadcast, and a node with a stopped backend must answer
+    // with nothing rather than throw.
+    const models_list = this.models.models();
     const response: ListModelsResponse = {
       role: 'list-models-response',
       timestamp: Date.now(),
@@ -310,7 +319,7 @@ export class MessageProcessor {
       to: sourcePeerId,
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: {
-        profile: buildOwnProfile(this.node, this.algo, this.availableModels),
+        profile: buildOwnProfile(this.node, this.algo, this.models.list()),
       }
     };
     response.signature = await this.algo.signObject(response);
@@ -344,7 +353,11 @@ export class MessageProcessor {
   }
 
   private async handleQuoteRequest(msg: QuoteRequest, sourcePeerId: string) {
-    if (!this.availableModels.includes(msg.payload.model)) {
+    // Verified against the backend rather than a startup snapshot, and checked
+    // first: an unserveable model must cost a localhost probe, not an on-chain
+    // lookup. A node whose backend has stopped drops out of the auction here.
+    if (!(await this.models.ensureAvailable(msg.payload.model))) {
+      logger.debug(`🚫 Not quoting ${msg.payload.model} — not currently served by this node.`);
       return;
     }
 
@@ -416,6 +429,21 @@ export class MessageProcessor {
    * the actual metered charge before the answer is released.
    */
   private async handleQuoteAccepted(msg: QuoteAccepted, sourcePeerId: string) {
+    try {
+      await this.serveAcceptedQuote(msg, sourcePeerId);
+    } catch (err) {
+      // Going quiet here is what used to hang the requester for its whole
+      // deadline. Tell it instead, so it can re-auction to somebody else.
+      logger.error(`❌ Could not serve accepted quote ${msg.id}: ${(err as Error).message}`);
+      // `runInference` invalidated the availability snapshot on the way out, so
+      // this re-probes: it distinguishes "the backend is gone" from a one-off
+      // error, and leaves the node correctly filtered for the next quote too.
+      const stillServing = await this.models.ensureAvailable(msg.payload?.model);
+      await this.sendInferenceFailed(msg, sourcePeerId, stillServing ? 'error' : 'backend-unavailable');
+    }
+  }
+
+  private async serveAcceptedQuote(msg: QuoteAccepted, sourcePeerId: string) {
     // Local mode / self-served quotes settle nothing — answer immediately.
     if (this.env.local?.enabled || sourcePeerId === this.ownPeerId) {
       const completion = await this.runInference(msg);
@@ -427,7 +455,8 @@ export class MessageProcessor {
     // provider never spends more compute than the budget pays for.
     const outputCap = await this.budgetOutputCap(msg);
     if (outputCap === undefined) {
-      logger.warn(`❌ Cannot serve ${msg.id} within the requester's budget; dropping.`);
+      logger.warn(`❌ Cannot serve ${msg.id} within the requester's budget.`);
+      await this.sendInferenceFailed(msg, sourcePeerId, 'budget-exceeded');
       return;
     }
 
@@ -521,7 +550,18 @@ export class MessageProcessor {
       return;
     }
 
-    const completion = this.takeCompletion(msg.id) ?? await this.runInference(msg);
+    let completion: any;
+    try {
+      completion = this.takeCompletion(msg.id) ?? await this.runInference(msg);
+    } catch (err) {
+      // The payment verified but the answer cannot be produced. Nothing has
+      // been settled on-chain yet (that happens below), so the requester is
+      // not out of pocket — but it must be told, not left waiting.
+      logger.error(`❌ Could not produce the answer for paid quote ${msg.id}: ${(err as Error).message}`);
+      const stillServing = await this.models.ensureAvailable(msg.payload?.model);
+      await this.sendInferenceFailed(msg, sourcePeerId, stillServing ? 'error' : 'backend-unavailable');
+      return;
+    }
     await this.sendInferenceResponse(msg, sourcePeerId, completion);
 
     // Settlement (the on-chain txn) is off the critical path — the requester
@@ -531,8 +571,18 @@ export class MessageProcessor {
 
   /** Resolve a (possibly speculative) inference result, capping output if given. */
   private async runInference(msg: { id: string; payload: any }, outputCap?: number): Promise<any> {
-    return (await this.speculativeCache.resolve(msg.id))
-      ?? await this.model.getResponse(msg.payload.model, msg.payload.inputs, this.genParams(msg.payload, outputCap));
+    const cached = await this.speculativeCache.resolve(msg.id);
+    if (cached) return cached;
+
+    try {
+      return await this.model.getResponse(msg.payload.model, msg.payload.inputs, this.genParams(msg.payload, outputCap));
+    } catch (err) {
+      // The backend just failed us mid-request. Re-probe before the next quote
+      // rather than waiting out the poll interval, so this node stops quoting
+      // for a model it cannot serve on the very next request.
+      this.models.invalidate();
+      throw err;
+    }
   }
 
   /** Generation params for the runtime, with the budget-derived output cap applied. */
@@ -608,6 +658,45 @@ export class MessageProcessor {
       clearTimeout(entry.timer);
       this.pendingCompletions.delete(id);
     }
+  }
+
+  /**
+   * Provider side. Tell the requester this quote cannot be served, so it can
+   * re-auction immediately rather than waiting out its deadline. Carries no
+   * completion and no prompt — only the model and a coarse reason.
+   */
+  private async sendInferenceFailed(msg: { id: string; payload: any }, sourcePeerId: string, reason: InferenceFailureReason) {
+    let response: InferenceFailed = {
+      role: 'inference-failed',
+      to: sourcePeerId,
+      timestamp: Date.now(),
+      id: msg.id,
+      fromWalletAddr: this.algo.account.addr.toString(),
+      payload: { model: msg.payload?.model, reason },
+    };
+    try {
+      response.signature = await this.algo.signObject(response);
+      await this.messageRouter.sendMessage(response, sourcePeerId);
+      logger.info(`📤 Sent inference-failed (${reason}) to ${sourcePeerId}`);
+    } catch (err) {
+      // Best-effort: the requester's deadline is the backstop.
+      logger.warn(`⚠️ Could not send inference-failed for ${msg.id}: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Requester side. A provider bowed out. The API layer decides whether to
+   * re-auction; it also checks that this came from the provider it actually
+   * selected, so a bystander cannot cancel someone else's request.
+   */
+  private async handleInferenceFailed(msg: InferenceFailed, sourcePeerId: string) {
+    logger.warn(`📥 Received inference-failed from ${sourcePeerId} for ${msg.id} (${msg.payload?.reason})`);
+    this.nodeEvents.emit(`inference-failed-${msg.id}`, {
+      from: sourcePeerId,
+      fromWalletAddr: msg.fromWalletAddr,
+      model: msg.payload?.model,
+      reason: msg.payload?.reason ?? 'error',
+    });
   }
 
   /** Requester side. The answer arrived; surface it to the API. */

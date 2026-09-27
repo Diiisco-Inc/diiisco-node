@@ -163,7 +163,7 @@ The comments below are for reading only. `diiisco.config.json` is parsed as stri
 
 ```jsonc
 {
-  "peerIdStorage": { "path": "~/.diiisco" },
+  // "peerIdStorage": { "path": "/absolute/path" },  // Optional; defaults to the DIIISCO home
   "models": {
     "enabled": true,
     "baseURL": "http://localhost",
@@ -216,7 +216,7 @@ The comments below are for reading only. `diiisco.config.json` is parsed as stri
 
 ### 🔒 Private network
 
-Remove the `algorand` block and add a `local` block. Everything else stays the same, and each node still needs its own `peerIdStorage` path.
+Remove the `algorand` block and add a `local` block. Everything else stays the same, and each node still needs its own DIIISCO home (set `DIIISCO_HOME`, or give each node its own `peerIdStorage.path`).
 
 ```jsonc
 {
@@ -246,9 +246,15 @@ For single-machine or LAN setups you can omit `libp2pBootstrapServers` entirely 
 
 ### `peerIdStorage`
 
-| Field | Description |
-|---|---|
-| `path` | Directory where `diiisco-peer-id.protobuf` is stored. This file is your node's persistent libp2p identity, so back it up. |
+| Field | Default | Description |
+|---|---|---|
+| `path` | the DIIISCO home | Directory where `diiisco-peer-id.protobuf` is stored. This file is your node's persistent libp2p identity, so back it up. |
+
+Leave `peerIdStorage` out and the identity lives in the DIIISCO home alongside
+everything else, so `DIIISCO_HOME` moves the whole node in one go — that is
+almost always what you want. If you do set it, give it an **absolute** path. A
+leading `~` is expanded via `os.homedir()` (`%USERPROFILE%` on Windows), but an
+absolute path is unambiguous.
 
 ### `models`
 
@@ -259,6 +265,11 @@ For single-machine or LAN setups you can omit `libp2pBootstrapServers` entirely 
 | `port` | `11434` | Port of your LLM backend (Ollama default) |
 | `apiKey` | `""` | API key for the LLM backend, if required |
 | `chargePer1MTokens` | (none) | USDC price per 1M tokens. A bare number sets equal input/output rates; use `{ input, output }` to price them separately. `default` applies to all models; add per-model keys to override. |
+| `availability.checkIntervalMs` | `30000` | How often (ms) to re-check which models the backend is actually serving. `0` disables the background poll. |
+| `availability.freshForMs` | `10000` | Maximum age (ms) of that check when answering a quote request. Older than this and the node re-probes before quoting. |
+| `availability.timeoutMs` | `2000` | How long (ms) to wait for the backend to answer a check before treating it as down. |
+
+Your node re-checks its backend rather than trusting the list it built at startup. Stop Ollama and the node stops quoting within `checkIntervalMs` — it will not win auctions it can't honour — and starts again on its own when the backend comes back. No restart, and no need to start the backend before the node.
 
 ### `algorand` (public network only)
 
@@ -301,6 +312,9 @@ On startup, the node automatically opts into the DSCO and USDC assets if not alr
 | `quoteSelectionFunction` | `selectHighestStakeQuote` | Strategy, or list of strategies tried in order, used to choose among received quotes |
 | `quoteCreationFunction` | `createStandardQuote` | Optional override for how the node prices its own quotes. Supply a function with the same signature for dynamic or surge pricing. Defaults to per-token rates from `chargePer1MTokens`. |
 | `preferSelf` | `true` | If `true` and the requested model is available locally, serve it directly without broadcasting to the network |
+| `auctionTimeout` | `waitTime` + 5000 | How long (ms) to wait for a quote to be selected. Past this the request fails with `503` — nothing on the network is serving that model. |
+| `inferenceTimeout` | `300000` | Overall deadline (ms) for one auction attempt. Past this the request fails with `504`. |
+| `maxRetries` | `1` | How many times to re-auction to a different provider after one reports it cannot serve the request. |
 
 **Quote selection strategies:**
 

@@ -1,6 +1,6 @@
-import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { diiiscoHome } from '../utils/paths';
 
 /**
  * Every runtime artefact the CLI and the desktop app share lives under one
@@ -15,27 +15,12 @@ import { isAbsolute, join, resolve } from 'node:path';
  *
  * `DIIISCO_HOME` overrides the location. `~` resolves via `os.homedir()`, which
  * is `%USERPROFILE%` on Windows.
+ *
+ * The resolution itself lives in `src/utils/paths.ts` — `src/libp2p/` needs it
+ * too and must not import the CLI layer — and is re-exported here so every
+ * existing `from '../paths'` import site is unaffected.
  */
-export function userHome(): string {
-  return homedir() || process.env.HOME || process.env.USERPROFILE || process.cwd();
-}
-
-/** Expand a leading `~` in a config path. */
-export function expandTilde(p: string): string {
-  if (p === '~') return userHome();
-  if (p.startsWith('~/') || p.startsWith('~\\')) return join(userHome(), p.slice(2));
-  return p;
-}
-
-/** The DIIISCO home directory (`DIIISCO_HOME`, else `~/.diiisco`). */
-export function diiiscoHome(): string {
-  const override = process.env.DIIISCO_HOME;
-  if (override && override.trim() !== '') {
-    const expanded = expandTilde(override.trim());
-    return isAbsolute(expanded) ? expanded : resolve(expanded);
-  }
-  return join(userHome(), '.diiisco');
-}
+export { diiiscoHome, expandTilde, resolvePath, userHome, HomeResolutionError } from '../utils/paths';
 
 export function daemonStatePath(): string {
   return join(diiiscoHome(), 'daemon.json');
