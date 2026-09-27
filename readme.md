@@ -1,4 +1,4 @@
-<img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/diiisco-logo.png?raw=true" width="1000" />
+<img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/diiisco-wordmark-black.png?raw=true" width="480" />
 
 
 <p align="center">

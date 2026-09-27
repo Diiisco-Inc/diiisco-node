@@ -1,8 +1,8 @@
 /* Styling follows diiisco.com: white background, monochrome palette
    (shadcn-style neutral scale). The brand font (League Spartan) appears only
    inside the logo image; everything else uses the system sans stack. The
-   node's CSP allowlists asset.diiisco.com for the logo — see
-   src/api/statusPages.ts. */
+   logo is bundled with the pages (web/src/assets), so they need no external
+   origin — see the CSP in src/api/statusPages.ts. */
 
 :root {
   --background: #ffffff;

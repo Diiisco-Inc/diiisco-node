@@ -298,13 +298,13 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     join(moduleDir, '..', '..', 'dist', 'web'),
   ]);
 
-  // Scripts stay locked to 'self' (the XSS backstop); the logo loads from the
-  // DIIISCO asset host, the only external origin the pages need.
+  // Scripts stay locked to 'self' (the XSS backstop). The logo is bundled with
+  // the pages, so they need no external origin and work on an offline network.
   const CSP = [
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: https://asset.diiisco.com",
+    "img-src 'self' data:",
     "connect-src 'self'",
   ].join('; ');
 
