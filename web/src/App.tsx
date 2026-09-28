@@ -3,10 +3,9 @@ import { Home } from './pages/Home';
 import { Directory } from './pages/Directory';
 import { Profile } from './pages/Profile';
 import { NavChip } from './components/NavChip';
-
-// Served from the DIIISCO asset host (allowed in the node's CSP) so branding
-// is controlled centrally rather than shipped with every node build.
-const LOGO_URL = 'https://asset.diiisco.com/diiisco-logo.png';
+// Bundled (a ~5 KB, 3x-for-34px render) rather than loaded from the asset
+// host, so the header still renders on a node with no internet access.
+import wordmark from './assets/diiisco-wordmark.png';
 
 function Routes() {
   const path = usePath();
@@ -25,7 +24,7 @@ export function App() {
     <RouterProvider>
       <header className="site-header">
         <Link to="https://diiisco.com" className="brand">
-          <img src={LOGO_URL} alt="DIIISCO" className="brand-logo" />
+          <img src={wordmark} alt="DIIISCO" className="brand-logo" />
         </Link>
         <NavChip />
       </header>

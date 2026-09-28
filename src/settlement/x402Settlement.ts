@@ -33,7 +33,7 @@ const DIIISCO_RESOURCE: ResourceInfo = {
   url: "https://x402.diiisco.com/v1/chat/completions",
   serviceName: "DIIISCO",
   description: "DIIISCO. Algorand's decentralized AI compute network, paid per token in USDC via x402.",
-  iconUrl: "https://asset.diiisco.com/diiisco-logomark.png",
+  iconUrl: "https://asset.diiisco.com/diiisco-logomark-black.png",
   tags: ["ai", "llm", "inference", "p2p", "x402-global-challenge", "diiisco"],
 };
 
@@ -61,7 +61,7 @@ const DIIISCO_MERCHANT = {
   info: {
     name: "DIIISCO",
     website: "https://diiisco.com",
-    logo: "https://asset.diiisco.com/diiisco-logomark.png",
+    logo: "https://asset.diiisco.com/diiisco-logomark-black.png",
     categories: ["ai", "llm", "inference", "p2p", "algorand"],
   },
   // JSON Schema the facilitator validates `info` against; `name` is the only
