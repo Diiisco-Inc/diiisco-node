@@ -319,7 +319,7 @@ export class MessageProcessor {
       to: sourcePeerId,
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: {
-        profile: buildOwnProfile(this.node, this.algo, this.models.list()),
+        profile: buildOwnProfile(this.node, this.algo, this.models.list(), (id) => this.models.kindOf(id)),
       }
     };
     response.signature = await this.algo.signObject(response);
