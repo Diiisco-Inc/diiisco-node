@@ -2,7 +2,8 @@
 // profile shape changes.
 
 export interface NodeProfileStats {
-  models: { id: string; pricePer1MTokens?: number }[];
+  // `kind` is only present for models that are not chat models.
+  models: { id: string; pricePer1MTokens?: number; kind?: 'embedding' | 'decision' }[];
   connectedPeers: number;
   meshReady: boolean;
   uptimeSeconds: number;
@@ -26,6 +27,7 @@ export interface NodeProfile {
 
 export interface ModelStats {
   model: string;
+  kind?: 'embedding' | 'decision';
   nodes: number;
   minPrice: number | null;
   maxPrice: number | null;

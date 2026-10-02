@@ -1,6 +1,7 @@
 import { NodeProfile } from '../types/profile';
 import { nodeStats } from './nodeStats';
 import { isPublicNode } from '../libp2p/node';
+import type { ModelKind } from '../types/models';
 import { getMeshTopic } from './topic';
 import environment from '../environment/runtime';
 import algorand from './algorand';
@@ -13,7 +14,12 @@ import { version } from './version';
  * Shared by the status page routes (serving `/node.json`) and the
  * `node-profile` message handler (answering queries from relays).
  */
-export const buildOwnProfile = (node: any, algo: algorand, availableModels: string[]): NodeProfile => {
+export const buildOwnProfile = (
+  node: any,
+  algo: algorand,
+  availableModels: string[],
+  kindOf: (id: string) => ModelKind = () => 'chat'
+): NodeProfile => {
   const localMode = environment.local?.enabled === true;
 
   let role: NodeProfile['role'] = 'direct';
@@ -41,8 +47,12 @@ export const buildOwnProfile = (node: any, algo: algorand, availableModels: stri
     profile.stats = {
       models: availableModels.map((id) => {
         const { input, output } = getRatesPer1M(id);
+        const kind = kindOf(id);
         return {
           id,
+          // Only the notable kinds are published: a chat model is the default,
+          // and leaving the key off keeps an ordinary node's profile unchanged.
+          ...(kind !== 'chat' ? { kind } : {}),
           pricePer1MTokens: input, // back-compat: legacy single rate = input rate
           pricePerInputToken1M: input,
           pricePerOutputToken1M: output,

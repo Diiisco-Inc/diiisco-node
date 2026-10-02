@@ -6,6 +6,22 @@ function Badge({ kind, children }: { kind: string; children: ReactNode }) {
   return <span className={`badge badge-${kind}`}>{children}</span>;
 }
 
+const KIND_CHIPS = {
+  decision: { label: 'Decision', title: 'Decision model: answers typed questions through /v1/systemone rather than chatting.' },
+  embedding: { label: 'Embedding', title: 'Embedding model: turns text into vectors; it cannot chat.' },
+} as const;
+
+/** Marks a model that is not a chat model. Chat models, the default, get no chip. */
+function KindChip({ kind }: { kind?: string }) {
+  if (kind !== 'decision' && kind !== 'embedding') return null;
+  const { label, title } = KIND_CHIPS[kind];
+  return (
+    <span className={`badge badge-kind badge-kind-${kind}`} title={title}>
+      {label}
+    </span>
+  );
+}
+
 export function ProfileCard({ profile }: { profile: NodeProfile }) {
   const title = profile.displayName || shortPeerId(profile.peerId);
 
@@ -81,7 +97,10 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
                 <tbody>
                   {profile.stats.models.map((m) => (
                     <tr key={m.id}>
-                      <td className="mono">{m.id}</td>
+                      <td className="mono">
+                        {m.id}
+                        <KindChip kind={m.kind} />
+                      </td>
                       <td>{m.pricePer1MTokens != null ? `$${m.pricePer1MTokens}` : '—'}</td>
                     </tr>
                   ))}

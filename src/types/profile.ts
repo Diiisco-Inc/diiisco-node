@@ -1,3 +1,5 @@
+import type { ModelKind } from './models';
+
 /**
  * Public profile of a node, served unauthenticated on the status pages
  * (`/node.json`, `/nodes/{peerId}.json`) and exchanged over the mesh via the
@@ -7,7 +9,14 @@
  */
 export interface NodeProfileStats {
   // pricePer1MTokens retained for back-compat (= input rate); input/output split added.
-  models: { id: string; pricePer1MTokens?: number; pricePerInputToken1M?: number; pricePerOutputToken1M?: number }[];
+  models: {
+    id: string;
+    pricePer1MTokens?: number;
+    pricePerInputToken1M?: number;
+    pricePerOutputToken1M?: number;
+    /** Present only for models that are not `chat`; absent means a chat model (or an older node). */
+    kind?: Exclude<ModelKind, 'chat'>;
+  }[];
   connectedPeers: number;
   meshReady: boolean;
   uptimeSeconds: number;
@@ -36,6 +45,8 @@ export interface NodeProfile {
  */
 export interface ModelStats {
   model: string;
+  /** The model's non-chat kind as reported by the first node that serves it; absent for chat models. */
+  kind?: Exclude<ModelKind, 'chat'>;
   nodes: number;
   minPrice: number | null;
   maxPrice: number | null;
