@@ -17,7 +17,7 @@ ${b('Commands')}
   start                  Start the node as a background daemon
   stop                   Stop the background daemon
   restart                Restart the daemon
-  status [--json]        Show daemon status (pid, uptime, /health, Algorand summary)
+  status [--json]        Show daemon status (pid, uptime, health, Algorand summary)
   logs [-f] [-n N]       Show (or follow) daemon logs (default 100 lines)
   serve                  Run the node in the foreground (Ctrl-C to stop)
   launch <app> [flags]   Point an agent tool at a DIIISCO node, starting one if needed

@@ -8,8 +8,9 @@ import {
   readDaemonState,
   spawnDaemon,
   stopDaemon,
-  waitForHealth,
+  waitForReady,
 } from '../daemon';
+import { requestStatus } from '../control';
 import { diiiscoHome, logFile } from '../paths';
 import { colour, die, info, json, setQuiet, success, warn } from '../output';
 import { version } from '../version';
@@ -54,11 +55,14 @@ export async function runStart(options: StartOptions = {}): Promise<string> {
     warn('Removed a stale daemon.json (the recorded process was no longer running).');
   }
 
+  const apiEnabled = env.api.enabled !== false;
+
   // Something is already bound to the API port — a `diiisco serve` in another
   // terminal, or an unrelated service. Starting anyway would spawn a daemon
   // that fails to bind while `/health` (answered by the other process) makes it
-  // look like a success.
-  if ((await probe(endpoint, '/health', 2000)).ok) {
+  // look like a success. A node without an API binds nothing, so there is
+  // nothing to collide with.
+  if (apiEnabled && (await probe(endpoint, '/health', 2000)).ok) {
     die(
       `${endpoint} is already being served, but not by a daemon this CLI started.`,
       'If that is a `diiisco serve` in another terminal, stop it there.',
@@ -73,17 +77,27 @@ export async function runStart(options: StartOptions = {}): Promise<string> {
   const { pid } = spawnDaemon(endpoint);
   if (!options.silent) info(`Starting DIIISCO node (pid ${pid})…`);
 
-  const healthy = await waitForHealth(endpoint, options.timeoutMs ?? START_HEALTH_TIMEOUT_MS);
-  if (!healthy) {
+  const timeoutMs = options.timeoutMs ?? START_HEALTH_TIMEOUT_MS;
+  const ready = await waitForReady({ endpoint, apiEnabled, pid, timeoutMs });
+  if (!ready.ready) {
+    if (ready.reason === 'exited') {
+      die(
+        `The node (pid ${pid}) exited while starting.`,
+        `Check the log: diiisco logs -n 50`
+      );
+    }
     die(
-      `The node did not answer ${endpoint}/health within ${(options.timeoutMs ?? START_HEALTH_TIMEOUT_MS) / 1000}s.`,
+      apiEnabled
+        ? `The node did not finish starting within ${timeoutMs / 1000}s (no answer from ${endpoint}/health).`
+        : `The node did not report that it had finished starting within ${timeoutMs / 1000}s.`,
       `Check the log: diiisco logs -n 50`,
       `The process (pid ${pid}) may still be starting; run \`diiisco status\` again in a moment.`
     );
   }
 
   if (!options.silent) {
-    success(`DIIISCO node running on ${endpoint} (pid ${pid}).`);
+    if (apiEnabled) success(`DIIISCO node running on ${endpoint} (pid ${pid}).`);
+    else success(`DIIISCO node running with the API disabled — inference only (pid ${pid}).`);
     info(colour.dim(`  logs: ${logFile()}`));
   }
   return endpoint;
@@ -148,6 +162,12 @@ export interface StatusReport {
    * token themselves are secrets and are never reported.
    */
   controlChannel: boolean;
+  /**
+   * Whether the node serves the HTTP API. When false there is no `/health`, so
+   * `health` is answered over the control channel instead. Additive: older
+   * consumers that do not know this field are unaffected.
+   */
+  apiEnabled: boolean;
   health: { ok: boolean; status: number | null; error: string | null } | null;
   /**
    * Why the config could not be loaded, when it could not be. `status` still
@@ -203,6 +223,7 @@ export async function collectStatus(): Promise<StatusReport> {
     version: running ? recorded!.version : null,
     owner: running ? recorded!.owner : null,
     controlChannel: running && recorded!.control !== undefined,
+    apiEnabled: env.api.enabled !== false,
     health: null,
     configError,
     algorand: null,
@@ -213,6 +234,23 @@ export async function collectStatus(): Promise<StatusReport> {
   };
 
   if (!running) return report;
+
+  // A node that serves no API has no `/health`; ask the daemon itself.
+  if (!report.apiEnabled) {
+    const control = recorded!.control;
+    if (!control) {
+      report.health = { ok: false, status: null, error: 'the API is disabled and this daemon did not record a control channel' };
+      return report;
+    }
+    const answer = await requestStatus(control.port, control.token);
+    const up = answer.ok && answer.status?.ready === true;
+    report.health = {
+      ok: up,
+      status: null,
+      error: up ? null : answer.ok ? 'the node is still starting' : answer.error,
+    };
+    return report;
+  }
 
   const health = await probe(endpoint, '/health');
   report.health = { ok: health.ok, status: health.status, error: health.error };
@@ -312,10 +350,12 @@ export async function runStatus(asJson: boolean): Promise<void> {
   }
 
   const healthy = report.health?.ok === true;
-  info(`${healthy ? colour.green('●') : colour.yellow('●')} DIIISCO node: ${colour.bold(healthy ? 'running' : 'running (API not responding)')}`);
+  const unhealthy = report.apiEnabled ? 'running (API not responding)' : 'running (not ready)';
+  info(`${healthy ? colour.green('●') : colour.yellow('●')} DIIISCO node: ${colour.bold(healthy ? 'running' : unhealthy)}`);
   info(`  pid       ${report.pid}`);
   info(`  uptime    ${formatUptime(report.uptimeSeconds)}`);
-  info(`  endpoint  ${report.endpoint}`);
+  if (report.apiEnabled) info(`  endpoint  ${report.endpoint}`);
+  else info(`  api       ${colour.dim('disabled — inference only')}`);
   info(`  version   ${report.version}`);
   info(`  owner     ${report.owner}`);
   if (report.health && !report.health.ok) {
