@@ -115,6 +115,10 @@ export function validateEnvironment(env: Environment): string[] {
     }
   }
 
+  if (env.power?.preventSleep !== undefined && typeof env.power.preventSleep !== 'boolean') {
+    errors.push(`\`power.preventSleep\` must be true or false (got ${JSON.stringify(env.power.preventSleep)}).`);
+  }
+
   if (!env.peerIdStorage?.path) {
     errors.push('`peerIdStorage.path` is empty. Set it to a directory the node may write its peer identity to (default "~/.diiisco").');
   }

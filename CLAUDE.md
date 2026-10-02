@@ -100,6 +100,8 @@ keeps its inline mnemonic and is unaffected.
 
 `node.ts` creates the libp2p node: TCP transport, Noise encryption, Yamux muxing, GossipSub pubsub, Kademlia DHT, mDNS, AutoNAT, circuit relay, and a keep-alive ping loop. Bootstrap servers accept raw multiaddrs **or** `.diiisco.algo` NFD names (resolved via `nfdToNodeAddress`). The peer identity is persisted as `diiisco-peer-id.protobuf` at the path in `peerIdStorage.path`.
 
+**Sleep.** A node that serves has to stay reachable, so while it runs the daemon holds the OS's idle-sleep assertion (`src/utils/keepAwake.ts`: `caffeinate -i -w <pid>` on macOS, a hidden PowerShell holding `SetThreadExecutionState` on Windows, `systemd-inhibit … cat` on Linux — the last two are tied to the node by a stdin pipe, so they cannot outlive it). It is on by default (`power.preventSleep: false` opts out), never fails the node, and does not fight a lid-close or an explicit Sleep. When the machine sleeps anyway, `startSleepDetector` notices the wall-clock jump and `recoverAfterWake` (in `reconnection.ts`) retries the bootstrap dial on a backoff until a connection exists, then waits for mesh subscribers and re-announces the subscription if there are none.
+
 `reconnection.ts` provides health-check polling and exponential-backoff reconnect logic. `meshReadinessMonitor.ts` tracks GossipSub mesh readiness using events rather than polling.
 
 ### Messaging pipeline

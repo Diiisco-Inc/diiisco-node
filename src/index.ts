@@ -1,6 +1,7 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
 import { setLocalAddressProvider } from './libp2p/localAddresses';
-import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck, stopConnectionHealthCheck } from './libp2p/reconnection';
+import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, recoverAfterWake, startConnectionHealthCheck, startSleepDetector, stopConnectionHealthCheck } from './libp2p/reconnection';
+import { KeepAwake } from './utils/keepAwake';
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
 import algorand from "./utils/algorand";
@@ -37,6 +38,11 @@ class Application extends EventEmitter {
 
   private apiServer: Server | null = null;
   private isShuttingDown = false;
+
+  // Holds the machine awake while serving, and notices when it slept anyway.
+  private keepAwake = new KeepAwake();
+  private stopSleepDetector: (() => void) | null = null;
+  private recoveringFromSleep = false;
   
   // Track peers for reconnection
   private knownPeers: Map<string, { lastSeen: number; multiaddrs: string[] }> = new Map();
@@ -245,6 +251,11 @@ class Application extends EventEmitter {
     // Start periodic connection health check
     startConnectionHealthCheck(this.createReconnectionDependencies());
 
+    // A node that serves has to stay reachable, and a machine that idles into
+    // sleep drops off the network. On by default; `power.preventSleep: false`
+    // opts out.
+    if (this.env.power?.preventSleep !== false) this.keepAwake.start();
+
     // Start sleep detection via wall-clock polling
     this.startSleepDetection();
 
@@ -274,37 +285,64 @@ class Application extends EventEmitter {
   /**
    * Poll wall-clock time to detect host machine waking from sleep.
    * A gap larger than the poll interval indicates the process was suspended.
+   * That still happens with `power.preventSleep` on — lid close and an explicit
+   * Sleep are not overridden — so the recovery below is not redundant.
    */
   private startSleepDetection() {
-    const POLL_INTERVAL = 2000;    // Poll every 2s
-    const SLEEP_THRESHOLD = 10000; // Gap > 10s means the machine was asleep
-    let lastCheck = Date.now();
-
-    setInterval(() => {
-      const now = Date.now();
-      const gap = now - lastCheck;
-      if (gap > SLEEP_THRESHOLD) {
-        logger.info(`💤 Wake from sleep detected (gap: ${Math.round(gap / 1000)}s) — forcing reconnection`);
-        this.handleWakeFromSleep();
-      }
-      lastCheck = now;
-    }, POLL_INTERVAL);
+    this.stopSleepDetector?.();
+    this.stopSleepDetector = startSleepDetector((gap) => {
+      logger.info(`💤 Wake from sleep detected (gap: ${Math.round(gap / 1000)}s) — forcing reconnection`);
+      void this.handleWakeFromSleep();
+    });
   }
 
   /**
-   * Close stale connections and force an immediate bootstrap reconnect after wake.
+   * Close stale connections and get back on the network after a wake, retrying
+   * until a connection exists: the network is often not up yet when the clock
+   * jumps, so a single bootstrap dial used to fail and leave the node offline
+   * until the next health check.
    */
   private async handleWakeFromSleep() {
-    const connections = this.node.getConnections();
-    logger.info(`🔌 Closing ${connections.length} potentially stale connection(s)...`);
-    for (const conn of connections) {
-      try { await conn.close(); } catch {}
+    // A second wake while recovering would only start a rival recovery.
+    if (this.recoveringFromSleep || this.isShuttingDown) return;
+    this.recoveringFromSleep = true;
+
+    try {
+      const connections = this.node.getConnections();
+      logger.info(`🔌 Closing ${connections.length} potentially stale connection(s)...`);
+      // A dead socket can hang `close()`, and the recovery waits behind it, so
+      // each close gets a short deadline and is then aborted outright.
+      await Promise.all(connections.map(async (conn: any) => {
+        try {
+          await Promise.race([
+            conn.close(),
+            new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+          ]);
+        } catch {}
+        try { conn.abort?.(new Error('stale connection after wake')); } catch {}
+      }));
+
+      // Reset exhausted reconnect attempt counters so cooldowns don't block recovery
+      this.reconnectAttempts.clear();
+
+      const result = await recoverAfterWake(this.createReconnectionDependencies(), {
+        isShuttingDown: () => this.isShuttingDown,
+        // Private networks have no relay to wait on; the mesh check is for the public one.
+        meshTopic: this.env.local?.enabled ? undefined : getMeshTopic(),
+      });
+
+      if (result.connected && result.meshReady) {
+        logger.info(`✅ Back on the network after waking (${result.attempts} attempt(s)).`);
+      } else if (result.connected) {
+        logger.warn('⚠️ Reconnected after waking, but the mesh has no subscribers yet; the health check will keep trying.');
+      } else if (!this.isShuttingDown) {
+        logger.warn('⚠️ Could not reconnect after waking; the connection health check will keep trying.');
+      }
+    } catch (err: any) {
+      logger.error(`❌ Recovery after waking failed: ${err.message}`);
+    } finally {
+      this.recoveringFromSleep = false;
     }
-
-    // Reset exhausted reconnect attempt counters so cooldowns don't block recovery
-    this.reconnectAttempts.clear();
-
-    await reconnectToBootstrap(this.createReconnectionDependencies());
   }
 
   /**
@@ -337,6 +375,8 @@ class Application extends EventEmitter {
 
       // 2. Stop background services (health checks, backend availability poll)
       stopConnectionHealthCheck();
+      this.stopSleepDetector?.();
+      this.keepAwake.stop();
       this.models.stop();
 
       // 3. Unsubscribe from pubsub topics

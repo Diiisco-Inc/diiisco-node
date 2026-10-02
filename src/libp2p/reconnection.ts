@@ -108,7 +108,7 @@ export async function attemptReconnect(peerId: string, deps: ReconnectionDepende
 /**
  * Attempt to reconnect to bootstrap servers
  */
-export async function reconnectToBootstrap(deps: ReconnectionDependencies): Promise<number> {
+export async function reconnectToBootstrap(deps: ReconnectionDependencies, settleMs = 5000): Promise<number> {
   if (deps.bootstrapAddresses.length === 0) {
     return 0;
   }
@@ -133,7 +133,7 @@ export async function reconnectToBootstrap(deps: ReconnectionDependencies): Prom
     logger.warn(`⚠️ Failed to connect to any bootstrap servers`);
   } else {
     // Wait a moment for connections to stabilize
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, settleMs));
     
     const connections = deps.node.getConnections();
     const uniquePeers = new Set(connections.map((c: any) => c.remotePeer.toString()));
@@ -246,4 +246,131 @@ export function startConnectionHealthCheck(deps: ReconnectionDependencies) {
   }, CHECK_INTERVAL);
 
   logger.info('📊 Connection health monitor started (interval: 60s)');
+}
+
+// ---------------------------------------------------------------------------
+// Sleep / wake
+// ---------------------------------------------------------------------------
+
+/** How often the wall clock is sampled, and the jump that means the machine was asleep. */
+export const SLEEP_POLL_INTERVAL_MS = 2000;
+export const SLEEP_GAP_THRESHOLD_MS = 10000;
+
+export interface SleepDetectorOptions {
+  pollMs?: number;
+  /** A gap between samples longer than this means the process was suspended. */
+  thresholdMs?: number;
+  now?: () => number;
+}
+
+/**
+ * Detect the host waking from sleep by watching the wall clock: a timer that
+ * should fire every `pollMs` and instead fires after minutes was suspended in
+ * between. Returns a function that stops the detector.
+ *
+ * The timer is unref'd and clearable. It used to be neither, so it outlived a
+ * shutdown.
+ */
+export function startSleepDetector(onWake: (gapMs: number) => void, options: SleepDetectorOptions = {}): () => void {
+  const pollMs = options.pollMs ?? SLEEP_POLL_INTERVAL_MS;
+  const thresholdMs = options.thresholdMs ?? SLEEP_GAP_THRESHOLD_MS;
+  const now = options.now ?? Date.now;
+  let lastCheck = now();
+
+  const timer = setInterval(() => {
+    const current = now();
+    const gap = current - lastCheck;
+    lastCheck = current;
+    if (gap > thresholdMs) onWake(gap);
+  }, pollMs);
+  timer.unref?.();
+
+  return () => clearInterval(timer);
+}
+
+/** Backoff between recovery attempts after a wake: the network is often not up for the first few seconds. */
+export const WAKE_RECOVERY_DELAYS_MS = [0, 2000, 5000, 10000, 30000, 60000];
+
+export interface WakeRecoveryOptions {
+  delaysMs?: number[];
+  /** Wait for the connections to settle after a successful bootstrap dial. */
+  settleMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  isShuttingDown?: () => boolean;
+  /** When set, also wait for the node to see subscribers on this GossipSub topic. */
+  meshTopic?: string;
+  meshWaitMs?: number;
+}
+
+export interface WakeRecoveryResult {
+  /** Connected to at least one peer (or there was nothing to connect to). */
+  connected: boolean;
+  /** `true` when no mesh topic was asked about. */
+  meshReady: boolean;
+  attempts: number;
+}
+
+/**
+ * Get back on the network after a wake.
+ *
+ * One bootstrap dial is not enough: the radio is routinely still coming up when
+ * the clock jumps, so the first attempt fails and the node used to sit idle
+ * until the next 60s health check. This retries on a backoff until a connection
+ * exists, then makes sure the mesh topic has subscribers again, re-announcing
+ * the subscription once if it does not.
+ */
+export async function recoverAfterWake(deps: ReconnectionDependencies, options: WakeRecoveryOptions = {}): Promise<WakeRecoveryResult> {
+  const delays = options.delaysMs ?? WAKE_RECOVERY_DELAYS_MS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const isShuttingDown = options.isShuttingDown ?? (() => false);
+  const connectionCount = () => new Set<string>(deps.node.getConnections().map((c: any) => c.remotePeer.toString())).size;
+
+  // A private network has no bootstrap servers; peers there are found by mDNS,
+  // and there is nothing to dial.
+  if (deps.bootstrapAddresses.length === 0) return { connected: true, meshReady: true, attempts: 0 };
+
+  let attempts = 0;
+  for (const delay of delays) {
+    if (delay > 0) await sleep(delay);
+    if (isShuttingDown()) return { connected: false, meshReady: false, attempts };
+    attempts += 1;
+
+    await reconnectToBootstrap(deps, options.settleMs);
+    if (connectionCount() > 0) break;
+    logger.warn(`⚠️ Still offline after waking (attempt ${attempts}) — the network may not be up yet.`);
+  }
+
+  if (connectionCount() === 0) return { connected: false, meshReady: false, attempts };
+  if (!options.meshTopic) return { connected: true, meshReady: true, attempts };
+
+  const meshReady = await waitForMesh(deps, options.meshTopic, options.meshWaitMs ?? 15000, sleep);
+  return { connected: true, meshReady, attempts };
+}
+
+/** Wait for subscribers on `topic`; if none appear, announce our subscription again and wait once more. */
+async function waitForMesh(deps: ReconnectionDependencies, topic: string, waitMs: number, sleep: (ms: number) => Promise<void>): Promise<boolean> {
+  const pubsub = deps.node.services?.pubsub;
+  if (!pubsub) return true;
+  const subscribers = () => pubsub.getSubscribers(topic).length;
+  const pollMs = 1000;
+
+  const waitOnce = async (): Promise<boolean> => {
+    for (let waited = 0; waited < waitMs; waited += pollMs) {
+      if (subscribers() > 0) return true;
+      await sleep(pollMs);
+    }
+    return subscribers() > 0;
+  };
+
+  if (await waitOnce()) return true;
+
+  logger.warn('⚠️ No mesh subscribers after waking — re-announcing our subscription.');
+  try {
+    pubsub.unsubscribe(topic);
+    pubsub.subscribe(topic);
+  } catch (err: any) {
+    logger.warn(`⚠️ Could not re-subscribe to the mesh topic: ${err.message}`);
+    return false;
+  }
+  return waitOnce();
 }
