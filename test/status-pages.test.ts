@@ -130,6 +130,13 @@ suite('compiled binary — embedded status pages', () => {
     }
   }, 30_000);
 
+  test('the published profile reports the version baked into the binary', async () => {
+    // A compiled binary has no package.json to read, so the profile used to
+    // omit `version` and the status page showed nothing for it.
+    const profile = await (await fetch(`${base}/node.json`)).json();
+    expect(profile.version).toMatch(/^\d+\.\d+\.\d+/);
+  }, 30_000);
+
   test('the JSON routes are unchanged by the asset layer', async () => {
     for (const path of ['/node.json', '/nodes.json', '/models.json']) {
       const response = await fetch(`${base}${path}`);
