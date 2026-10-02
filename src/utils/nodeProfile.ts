@@ -1,4 +1,3 @@
-import { readFileSync } from 'fs';
 import { NodeProfile } from '../types/profile';
 import { nodeStats } from './nodeStats';
 import { isPublicNode } from '../libp2p/node';
@@ -6,24 +5,7 @@ import { getMeshTopic } from './topic';
 import environment from '../environment/runtime';
 import algorand from './algorand';
 import { getRatesPer1M } from './quoteCreationMethods';
-
-let cachedVersion: string | undefined;
-
-/** Package version, resolved relative to the bundled module (dist/index.js). */
-const getVersion = (): string | undefined => {
-  if (cachedVersion !== undefined) return cachedVersion;
-  for (const candidate of ['../package.json', '../../package.json']) {
-    try {
-      const pkg = JSON.parse(readFileSync(new URL(candidate, import.meta.url), 'utf-8'));
-      if (pkg.name === 'diiisco-node' && typeof pkg.version === 'string') {
-        cachedVersion = pkg.version;
-        return cachedVersion;
-      }
-    } catch {}
-  }
-  cachedVersion = undefined;
-  return undefined;
-};
+import { version } from './version';
 
 /**
  * Build this node's own public profile. Identity fields are always included;
@@ -52,7 +34,7 @@ export const buildOwnProfile = (node: any, algo: algorand, availableModels: stri
     online: true,
     network: localMode ? 'local' : 'public',
     observedAt: new Date().toISOString(),
-    version: getVersion(),
+    version: version(),
   };
 
   if (environment.node?.publicStats !== false) {
