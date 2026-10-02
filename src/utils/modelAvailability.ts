@@ -2,6 +2,8 @@ import type { Model } from "openai/resources/index";
 import environment from "../environment/runtime";
 import { OpenAIInferenceModel } from "./models";
 import { logger } from "./logger";
+import type { ModelInfo, ModelKind } from "../types/models";
+import { ModelKindDetector } from "./modelCapabilities";
 
 const DEFAULT_CHECK_INTERVAL_MS = 30_000;
 const DEFAULT_FRESH_FOR_MS = 10_000;
@@ -19,8 +21,12 @@ const DEFAULT_TIMEOUT_MS = 2_000;
 export interface ModelAvailability {
   /** Live model ids. Empty while the backend is unreachable or models are disabled. */
   list(): string[];
-  /** Live model objects, for the `list-models` reply. */
-  models(): Model[];
+  /** Live model objects, for the `list-models` reply. Each carries its `kind`. */
+  models(): ModelInfo[];
+  /** What kind of model `id` is. `chat` for anything unknown: detection fails open. */
+  kindOf(id: string): ModelKind;
+  /** Whether `id` can hold a conversation — the only kind chat requests may use. */
+  isChat(id: string): boolean;
   /** Cached, synchronous. Never touches the backend. */
   isAvailable(id: string): boolean;
   /** Re-probe first if the snapshot is stale, then answer. Used on the quote path. */
@@ -40,6 +46,8 @@ export interface ModelAvailabilityOptions {
   checkIntervalMs?: number;
   freshForMs?: number;
   timeoutMs?: number;
+  /** Replace how model kinds are worked out. Tests; the default reads `models.kinds`. */
+  kindDetector?: Pick<ModelKindDetector, 'classify'>;
 }
 
 /**
@@ -65,8 +73,12 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
   private readonly freshForMs: number;
   private readonly timeoutMs: number;
 
-  private current: Model[] = [];
+  private readonly kindDetector: Pick<ModelKindDetector, 'classify'>;
+
+  private current: ModelInfo[] = [];
   private ids: Set<string> = new Set();
+  private kinds: Map<string, ModelKind> = new Map();
+  private nonChatSummary = '';
   private healthy = false;
   private checkedAt = 0;
   private inFlight: Promise<string[]> | null = null;
@@ -79,14 +91,27 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     this.checkIntervalMs = options.checkIntervalMs ?? configured.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS;
     this.freshForMs = options.freshForMs ?? configured.freshForMs ?? DEFAULT_FRESH_FOR_MS;
     this.timeoutMs = options.timeoutMs ?? configured.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.kindDetector = options.kindDetector ?? new ModelKindDetector({
+      baseURL: environment.models?.baseURL ?? 'http://localhost',
+      port: environment.models?.port ?? 11434,
+      overrides: environment.models?.kinds,
+    });
   }
 
   list(): string[] {
     return [...this.ids];
   }
 
-  models(): Model[] {
+  models(): ModelInfo[] {
     return this.current;
+  }
+
+  kindOf(id: string): ModelKind {
+    return this.kinds.get(id) ?? 'chat';
+  }
+
+  isChat(id: string): boolean {
+    return this.kindOf(id) === 'chat';
   }
 
   isAvailable(id: string): boolean {
@@ -134,7 +159,7 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const models = await this.backend.getModels(controller.signal);
-      this.applySuccess(models.filter((m) => m.object === 'model'));
+      this.applySuccess(await this.withKinds(models.filter((m) => m.object === 'model')));
       return [...this.ids];
     } catch (err) {
       this.applyFailure(err as Error);
@@ -144,15 +169,37 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     }
   }
 
-  private applySuccess(models: Model[]): void {
+  /**
+   * Tag each model with its kind. Detection has its own budget and can never
+   * fail the probe: whatever goes wrong, the models are still served, as chat.
+   */
+  private async withKinds(models: Model[]): Promise<ModelInfo[]> {
+    try {
+      return await this.kindDetector.classify(models, this.timeoutMs);
+    } catch (err) {
+      logger.debug(`Model kind detection failed, treating every model as chat: ${(err as Error).message}`);
+      return models;
+    }
+  }
+
+  private applySuccess(models: ModelInfo[]): void {
     const next = new Set(models.map((m) => m.id));
     const wasHealthy = this.healthy;
     const previous = this.ids;
 
     this.current = models;
     this.ids = next;
+    this.kinds = new Map(models.map((m) => [m.id, m.kind ?? 'chat']));
     this.healthy = true;
     this.checkedAt = Date.now();
+
+    // Say what is *not* a chat model, once per change — it explains why a model
+    // does not appear in a tool's picker.
+    const nonChat = models.filter((m) => (m.kind ?? 'chat') !== 'chat').map((m) => `${m.id}=${m.kind}`).sort().join(', ');
+    if (nonChat !== this.nonChatSummary) {
+      this.nonChatSummary = nonChat;
+      if (nonChat) logger.info(`🏷️ Non-chat models: ${nonChat}`);
+    }
 
     // Log transitions only — a healthy poll every 30s must not fill the log.
     if (!wasHealthy) {
@@ -175,6 +222,7 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     const wasHealthy = this.healthy;
     this.current = [];
     this.ids = new Set();
+    this.kinds = new Map();
     this.healthy = false;
     this.checkedAt = Date.now();
 

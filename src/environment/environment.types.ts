@@ -1,5 +1,6 @@
 import PeerId from 'peer-id';
 import { QuoteCreationFunction, QuoteSelectionFunction } from '../types/quotes';
+import type { ModelKind } from '../types/models';
 
 export interface AlgorandClientConfig {
   address: string;
@@ -45,6 +46,13 @@ export interface ModelsConfig {
     [key: string]: number;
   };
   availability?: ModelAvailabilityConfig;
+  /**
+   * Tell the node what kind of model something is, for runtimes that do not say.
+   * Keys are model ids or `*` globs (`"*embed*"`), values `chat | embedding |
+   * decision`. Always wins over anything the node detects. Models that are not
+   * `chat` are kept out of chat tools' model lists.
+   */
+  kinds?: Record<string, ModelKind>;
 }
 
 /**

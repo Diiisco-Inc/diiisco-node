@@ -19,12 +19,14 @@ beforeAll(() => {
 });
 
 /** Availability stub: reports exactly the ids it is given, and counts checks. */
-function availability(served: string[]): ModelAvailability & { checks: string[] } {
+function availability(served: string[], kinds: Record<string, string> = {}): ModelAvailability & { checks: string[] } {
   const checks: string[] = [];
   return {
     checks,
     list: () => [...served],
     models: () => served.map((id) => ({ id, object: 'model', created: 0, owned_by: 'test' })) as any,
+    kindOf: (id: string) => (kinds[id] ?? 'chat') as any,
+    isChat: (id: string) => (kinds[id] ?? 'chat') === 'chat',
     isAvailable: (id: string) => served.includes(id),
     ensureAvailable: async (id: string) => { checks.push(id); return served.includes(id); },
     refresh: async () => [...served],
@@ -112,6 +114,24 @@ describe('quote filtering by live model availability', () => {
     const { processor, sent } = processorWith(models);
 
     await processor.process(quoteRequest('llama3'), 'peer-requester');
+
+    expect(sent).toEqual([]);
+  });
+
+  test('an embedding model is not quoted for a chat request', async () => {
+    const models = availability(['embeddinggemma'], { embeddinggemma: 'embedding' });
+    const { processor, sent } = processorWith(models);
+
+    await processor.process(quoteRequest('embeddinggemma'), 'peer-requester');
+
+    expect(sent).toEqual([]);
+  });
+
+  test('a decision model is not quoted for a chat request', async () => {
+    const models = availability(['tev1:0.8b'], { 'tev1:0.8b': 'decision' });
+    const { processor, sent } = processorWith(models);
+
+    await processor.process(quoteRequest('tev1:0.8b'), 'peer-requester');
 
     expect(sent).toEqual([]);
   });

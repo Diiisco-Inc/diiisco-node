@@ -1,4 +1,5 @@
 import { Environment } from './environment.types';
+import { MODEL_KINDS, type ModelKind } from '../types/models';
 
 /**
  * Validate a fully-merged environment and return human-actionable problems.
@@ -67,6 +68,19 @@ export function validateEnvironment(env: Environment): string[] {
     }
     if (!Number.isInteger(env.models.port) || env.models.port <= 0 || env.models.port > 65535) {
       errors.push(`\`models.port\` must be a port number between 1 and 65535 (got ${env.models.port}).`);
+    }
+
+    const kinds = env.models.kinds;
+    if (kinds !== undefined) {
+      if (typeof kinds !== 'object' || kinds === null || Array.isArray(kinds)) {
+        errors.push('`models.kinds` must be an object mapping a model id (or a `*` glob) to "chat", "embedding" or "decision".');
+      } else {
+        for (const [pattern, kind] of Object.entries(kinds)) {
+          if (!MODEL_KINDS.includes(kind as ModelKind)) {
+            errors.push(`\`models.kinds["${pattern}"]\` must be one of ${MODEL_KINDS.map((k) => `"${k}"`).join(', ')} (got ${JSON.stringify(kind)}).`);
+          }
+        }
+      }
     }
 
     const availability = env.models.availability;
