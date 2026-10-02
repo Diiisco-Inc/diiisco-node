@@ -8,7 +8,7 @@ const REMOTE_TIMEOUT_MS = 8_000;
 
 interface ModelListResponse {
   object?: string;
-  data?: Array<{ id?: string }>;
+  data?: Array<{ id?: string; kind?: string }>;
 }
 
 /**
@@ -72,13 +72,19 @@ async function fetchModelIds(endpoint: string, key: string, waitHintMs: number):
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${endpoint.replace(/\/$/, '')}/v1/models`, {
+    // `?type=chat` is what a node serves by default; asking explicitly also
+    // makes the intent clear to one that predates the parameter, whose entries
+    // carry no `kind` and are filtered below if they do.
+    const response = await fetch(`${endpoint.replace(/\/$/, '')}/v1/models?type=chat`, {
       signal: controller.signal,
       headers: { authorization: `Bearer ${key}`, accept: 'application/json' },
     });
     if (!response.ok) return [];
     const body = (await response.json()) as ModelListResponse;
-    return (body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === 'string' && id !== '');
+    return (body.data ?? [])
+      .filter((m) => m.kind === undefined || m.kind === 'chat')
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === 'string' && id !== '');
   } catch {
     return [];
   } finally {

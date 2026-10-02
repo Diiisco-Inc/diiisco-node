@@ -270,6 +270,7 @@ absolute path is unambiguous.
 | `availability.checkIntervalMs` | `30000` | How often (ms) to re-check which models the backend is actually serving. `0` disables the background poll. |
 | `availability.freshForMs` | `10000` | Maximum age (ms) of that check when answering a quote request. Older than this and the node re-probes before quoting. |
 | `availability.timeoutMs` | `2000` | How long (ms) to wait for the backend to answer a check before treating it as down. |
+| `kinds` | _none_ | Tell the node what a model is when your runtime doesn't say: an object of model id (or `*` glob) to `chat`, `embedding` or `decision`, e.g. `{ "tev1:*": "decision", "*embed*": "embedding" }`. Ollama and LM Studio are detected automatically. Models that aren't `chat` are left out of `GET /v1/models` by default (`?type=all` returns everything). |
 
 Your node re-checks its backend rather than trusting the list it built at startup. Stop Ollama and the node stops quoting within `checkIntervalMs` — it will not win auctions it can't honour — and starts again on its own when the backend comes back. No restart, and no need to start the backend before the node.
 
@@ -412,11 +413,15 @@ Returns `{ "input_tokens": N }` for a request body in the same shape as `/v1/mes
 
 #### `GET /v1/models`
 
-Returns a list of models available across the network.
+Returns a list of models available across the network. By default only **chat** models are listed, which keeps embedding and decision models out of the model pickers in tools like Claude Code. Pass `type` to ask for another kind: `chat`, `embedding`, `decision` or `all`. Every entry carries a `kind`.
 
 ```bash
 curl http://localhost:8080/v1/models \
   -H "Authorization: Bearer sk-your-key"
+
+# decision models, or everything
+curl "http://localhost:8080/v1/models?type=decision" -H "Authorization: Bearer sk-your-key"
+curl "http://localhost:8080/v1/models?type=all" -H "Authorization: Bearer sk-your-key"
 ```
 
 ### 🌍 Network

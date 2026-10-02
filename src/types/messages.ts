@@ -1,4 +1,4 @@
-import { Model } from "openai/resources/models";
+import { ModelInfo } from "./models";
 import { NodeProfile } from "./profile";
 
 export interface QuoteRequestPayload {
@@ -139,7 +139,7 @@ export interface ListModelsResponse {
   to: string;
   fromWalletAddr: string;
   payload: {
-    models: Model[];
+    models: ModelInfo[];
   };
   signature?: string;
 }

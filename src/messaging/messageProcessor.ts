@@ -361,6 +361,14 @@ export class MessageProcessor {
       return;
     }
 
+    // Every request the network sends today is a chat request. An embedding
+    // model cannot answer one, and a decision model "answers" with an empty
+    // message, so quoting for either would win the auction and then fail it.
+    if (!this.models.isChat(msg.payload.model)) {
+      logger.debug(`🚫 Not quoting ${msg.payload.model} — it is a ${this.models.kindOf(msg.payload.model)} model, not a chat model.`);
+      return;
+    }
+
     // On the public network a node must have a settlement method to sell.
     // (Local mode bypasses settlement entirely.)
     if (!this.env.local?.enabled) {

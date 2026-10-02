@@ -14,6 +14,7 @@ import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
 import { ModelAvailability } from '../utils/modelAvailability';
+import { filterModelsByKind, parseKindFilter } from '../utils/modelCapabilities';
 import OpenAI from 'openai';
 import {
   validateMessagesRequest,
@@ -130,6 +131,14 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   });
 
   app.get('/v1/models', async (req, res) => {
+    // Tools build their model pickers from this list, so by default it holds
+    // only models that can chat; `?type=` asks for another kind, or `all`.
+    // Entries still carry their `kind`, so a client can do its own filtering.
+    const kindFilter = parseKindFilter(req.query.type);
+    if (kindFilter === null) {
+      return res.status(400).send({ error: "Invalid `type`. Use one of: chat, embedding, decision, all." });
+    }
+
     try {
       // `model-list-compiled` only ever fires once some peer replies, so an
       // unanswered broadcast used to hang this route too. Fall back to what
@@ -144,7 +153,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         clearTimeout(fallbackTimer);
         res.status(200).send({
             "object": "list",
-            "data": response,
+            "data": filterModelsByKind(response as unknown as any[], kindFilter),
         });
       };
       nodeEvents.once('model-list-compiled', onCompiled);
@@ -155,7 +164,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         nodeEvents.off('model-list-compiled', onCompiled);
         res.status(200).send({
           "object": "list",
-          "data": models?.models() ?? [],
+          "data": filterModelsByKind(models?.models() ?? [], kindFilter),
         });
       }, listWaitTime);
 
@@ -371,7 +380,8 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     const preferSelf = environment.quoteEngine.preferSelf !== false;
     // Verified live: a node whose backend has stopped used to short-circuit to
     // itself and 500, rather than letting a peer that can serve the model win.
-    if (preferSelf && model && models && await models.ensureAvailable(body.model)) {
+    // `isChat` is read after `ensureAvailable`, which has just refreshed the kinds.
+    if (preferSelf && model && models && await models.ensureAvailable(body.model) && models.isChat(body.model)) {
       logger.info(`⚡ Serving request locally (preferSelf). Model: ${body.model}`);
       return model.getResponse(body.model, body.inputs, params);
     }
