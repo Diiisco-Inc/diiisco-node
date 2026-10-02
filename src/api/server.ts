@@ -15,6 +15,7 @@ import { MessageRouter } from '../messaging/messageRouter';
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
 import { ModelAvailability } from '../utils/modelAvailability';
 import { filterModelsByKind, parseKindFilter } from '../utils/modelCapabilities';
+import { countSystemOneInputTokens, validateSystemOneRequest } from '../utils/systemOne';
 import OpenAI from 'openai';
 import {
   validateMessagesRequest,
@@ -220,7 +221,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     body: any,
     attempt: number,
     excluded: Set<string>
-  ): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
+  ): Promise<any> => {
+    // A System One request is auctioned like a chat one, but only decision
+    // models may quote for it, and what it costs is the state + the questions.
+    const isSystemOne = body.kind === 'systemone';
     const quoteMessage: QuoteRequest = {
       role: "quote-request",
       from: node.peerId.toString(),
@@ -236,7 +240,10 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       // tool's schemas are thousands of tokens the provider must be paid for.
       payload: {
         model: body.model,
-        inputTokenCount: countInputTokens(body.inputs, body.tools),
+        ...(isSystemOne ? { kind: 'systemone' as const } : {}),
+        inputTokenCount: isSystemOne
+          ? countSystemOneInputTokens(body.state, body.questions)
+          : countInputTokens(body.inputs, body.tools),
         max_tokens: body.max_tokens,
         maxSpend: environment.algorand?.settlement?.maxSpend,
       }
@@ -245,7 +252,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     quoteMessage.signature = await algo.signObject(quoteMessage);
     const id = quoteMessage.id;
 
-    return await new Promise<OpenAI.Chat.Completions.ChatCompletion>((resolve, reject) => {
+    return await new Promise<any>((resolve, reject) => {
       let settled = false;
       let quoteSelected = false;
       let auctionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -364,26 +371,25 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
   };
 
   /**
-   * Run an inference request expressed in the internal OpenAI shape
-   * (`{ model, inputs, ...generationParams }`) and resolve to a raw OpenAI
-   * ChatCompletion. Shared by the OpenAI (`/v1/chat/completions`) and
-   * Anthropic (`/v1/messages`) API layers so dispatch stays identical.
+   * Run a request locally if this node can serve it (`preferSelf`), otherwise
+   * through the mesh quote auction, retrying with a fresh auction if the
+   * selected provider reports it cannot serve after all. Shared by chat and
+   * System One: `runLocally` is the only part that differs.
    *
-   * If `preferSelf` and the model is available locally, inference runs
-   * directly; otherwise it goes through the mesh quote auction, retrying with
-   * a fresh auction if the selected provider reports it cannot serve after all.
+   * "Can serve" means the backend lists the model *and* the model is the right
+   * kind for the request. `ensureAvailable` goes first because it refreshes the
+   * kinds the second check reads.
    */
-  const runInference = async (body: any): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
-    const params = pickGenerationParams(body);
+  const dispatch = async (body: any, runLocally: (backend: OpenAIInferenceModel) => Promise<any>): Promise<any> => {
     nodeStats.inferencesRequested++;
 
     const preferSelf = environment.quoteEngine.preferSelf !== false;
+    const wantedKind = body.kind === 'systemone' ? 'decision' : 'chat';
     // Verified live: a node whose backend has stopped used to short-circuit to
     // itself and 500, rather than letting a peer that can serve the model win.
-    // `isChat` is read after `ensureAvailable`, which has just refreshed the kinds.
-    if (preferSelf && model && models && await models.ensureAvailable(body.model) && models.isChat(body.model)) {
+    if (preferSelf && model && models && await models.ensureAvailable(body.model) && models.kindOf(body.model) === wantedKind) {
       logger.info(`⚡ Serving request locally (preferSelf). Model: ${body.model}`);
-      return model.getResponse(body.model, body.inputs, params);
+      return runLocally(model);
     }
 
     // A provider that reports `inference-failed` is excluded and the request is
@@ -402,6 +408,21 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       }
     }
   };
+
+  /**
+   * Run an inference request expressed in the internal OpenAI shape
+   * (`{ model, inputs, ...generationParams }`) and resolve to a raw OpenAI
+   * ChatCompletion. Shared by the OpenAI (`/v1/chat/completions`) and
+   * Anthropic (`/v1/messages`) API layers so dispatch stays identical.
+   */
+  const runInference = async (body: any): Promise<OpenAI.Chat.Completions.ChatCompletion> => {
+    const params = pickGenerationParams(body);
+    return dispatch(body, (backend) => backend.getResponse(body.model, body.inputs, params));
+  };
+
+  /** Ask a decision model typed questions; resolves to the backend's System One JSON, unchanged. */
+  const runSystemOne = async (body: { model: string; state: unknown; questions: Record<string, any> }): Promise<any> =>
+    dispatch({ ...body, kind: 'systemone' }, (backend) => backend.systemOne({ model: body.model, state: body.state, questions: body.questions }));
 
   app.post(`/v1/chat/completions`, async (req, res) => {
     const requestStartedAt = Date.now();
@@ -428,6 +449,39 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       const status = statusForInferenceError(err);
       const message = messageForInferenceError(err);
       logger.warn(`❌ /v1/chat/completions failed (${status}): ${message}`);
+      return res.status(status).send({ error: message });
+    }
+  });
+
+  app.post(`/v1/systemone`, async (req, res) => {
+    const requestStartedAt = Date.now();
+    logger.info("🚀 Received /v1/systemone request.");
+
+    const problem = validateSystemOneRequest(req.body);
+    if (problem) {
+      logger.warn(`Invalid /v1/systemone request: ${problem}`);
+      return res.status(400).send({ error: problem });
+    }
+
+    // If this node itself serves the model and it is not a decision model, say
+    // so now rather than starting an auction nobody can win. A model this node
+    // does not serve is left to the network, whose providers check for themselves.
+    const { model: modelId, state, questions } = req.body;
+    if (models?.isAvailable(modelId) && models.kindOf(modelId) !== 'decision') {
+      return res.status(400).send({
+        error: `"${modelId}" is not a decision model. List them with GET /v1/models?type=decision.`,
+      });
+    }
+
+    try {
+      const result = await runSystemOne({ model: modelId, state, questions });
+      const elapsed = ((Date.now() - requestStartedAt) / 1000).toFixed(2);
+      logger.info(`🚀 Sending System One response in ${elapsed}s`);
+      return res.status(200).send(result);
+    } catch (err) {
+      const status = statusForInferenceError(err);
+      const message = messageForInferenceError(err);
+      logger.warn(`❌ /v1/systemone failed (${status}): ${message}`);
       return res.status(status).send({ error: message });
     }
   });
