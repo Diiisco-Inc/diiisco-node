@@ -12,7 +12,7 @@ import {
   truncateSync,
 } from 'node:fs';
 import { daemonStatePath, ensureHome, logFile, rotatedLogFile } from './paths';
-import { requestShutdown } from './control';
+import { requestShutdown, requestStatus } from './control';
 import { isCompiled, version } from './version';
 
 /** The internal argument the CLI passes to itself when self-daemonizing. */
@@ -221,6 +221,54 @@ export async function waitForHealth(endpoint: string, timeoutMs: number, interva
     const result = await probe(endpoint, '/health', Math.min(2000, timeoutMs));
     if (result.ok) return true;
     if (Date.now() >= deadline) return false;
+    await sleep(intervalMs);
+  }
+}
+
+export interface ReadyOptions {
+  /** Where `/health` would answer, when the node serves an API. */
+  endpoint: string;
+  /** `api.enabled` from the config. A node without an API has no `/health`. */
+  apiEnabled: boolean;
+  /** The daemon's pid, so a daemon that died is reported at once rather than at the deadline. */
+  pid: number;
+  timeoutMs: number;
+  intervalMs?: number;
+}
+
+export type ReadyResult =
+  | { ready: true }
+  | { ready: false; reason: 'timeout' | 'exited' };
+
+/**
+ * Wait for a freshly spawned daemon to finish starting.
+ *
+ * Prefers the control channel, which every daemon opens whether or not it
+ * serves an HTTP API: `ready` there means `Application.start()` completed. A
+ * node with `api.enabled: false` has no `/health` to poll, which is why `start`
+ * used to report failure for a node that was running fine. `/health` remains
+ * the check for a daemon that has not (yet) recorded a control channel and does
+ * serve an API.
+ *
+ * `daemon.json` is re-read on every poll: the daemon writes its control port
+ * into it after it is already running, so it is usually absent at first.
+ */
+export async function waitForReady(options: ReadyOptions): Promise<ReadyResult> {
+  const { endpoint, apiEnabled, pid, timeoutMs, intervalMs = 500 } = options;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!isAlive(pid)) return { ready: false, reason: 'exited' };
+
+    const control = readDaemonState()?.control;
+    if (control) {
+      const answer = await requestStatus(control.port, control.token, Math.min(2000, timeoutMs));
+      if (answer.ok && answer.status?.ready) return { ready: true };
+    } else if (apiEnabled) {
+      const health = await probe(endpoint, '/health', Math.min(2000, timeoutMs));
+      if (health.ok) return { ready: true };
+    }
+
+    if (Date.now() >= deadline) return { ready: false, reason: 'timeout' };
     await sleep(intervalMs);
   }
 }

@@ -5,7 +5,7 @@ import { assertValid, loadConfig, requireConfig } from '../config';
 import { migrateWalletKey } from '../keyMigration';
 import { ensureHome, logFile, resolvePath, userHome } from '../paths';
 import { recordControlChannel, startLogRotationWatcher } from '../daemon';
-import { ControlServer, generateControlToken, startControlServer } from '../control';
+import { ControlServer, ControlState, generateControlToken, startControlServer } from '../control';
 import { colour, error, info, warn } from '../output';
 import { installProcessGuards } from '../../utils/processGuards';
 import { logger } from '../../utils/logger';
@@ -105,6 +105,10 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
 
   const app = new Application();
   let control: ControlServer | null = null;
+  // What `diiisco start`/`status` read over the control channel. `ready` flips
+  // only once `app.start()` has finished, so it means "fully up" even when the
+  // node serves no HTTP API for `/health` to answer on.
+  const controlState: ControlState = { ready: false, apiEnabled: env.api.enabled !== false };
   let shuttingDown = false;
 
   const shutdown = (reason: string) => {
@@ -136,7 +140,7 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
   // Ctrl-C and which has no `daemon.json` to publish a token in.
   if (options.daemon) {
     try {
-      control = await startControlServer({ token: generateControlToken(), onShutdown: shutdown });
+      control = await startControlServer({ token: generateControlToken(), onShutdown: shutdown, state: controlState });
       const recorded = await recordControlChannel({ port: control.port, token: control.token });
       if (!recorded) {
         warn('Could not record the control channel in daemon.json — `diiisco stop` will fall back to signals.');
@@ -148,9 +152,11 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
     }
   }
 
-  info(`${colour.cyan('▸')} DIIISCO node starting — API on http://localhost:${env.api.port}`);
+  if (controlState.apiEnabled) info(`${colour.cyan('▸')} DIIISCO node starting — API on http://localhost:${env.api.port}`);
+  else info(`${colour.cyan('▸')} DIIISCO node starting — API disabled (inference only)`);
   if (!options.daemon) info(colour.dim('  Press Ctrl-C to stop. Logs are printed below.'));
   else info(colour.dim(`  Logging to ${logFile()}`));
 
   await app.start();
+  controlState.ready = true;
 }
