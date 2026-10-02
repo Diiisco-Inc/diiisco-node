@@ -67,6 +67,18 @@ export interface ModelAvailabilityConfig {
   timeoutMs?: number;       // default 2000 — per-probe timeout on the backend
 }
 
+/**
+ * Power management. A node that serves a model has to stay reachable, and a
+ * machine that idles into sleep drops off the network.
+ */
+export interface PowerConfig {
+  /**
+   * Hold the machine awake (idle sleep only) for as long as the node runs.
+   * Default true. Lid-close and an explicit Sleep still sleep the machine.
+   */
+  preventSleep?: boolean;
+}
+
 export interface ApiConfig {
   enabled: boolean;
   bearerAuthentication: boolean;
@@ -166,6 +178,7 @@ export interface Environment {
     statusPages?: boolean;  // default true — set false to disable the public status page routes
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
+  power?: PowerConfig;                      // Optional: `preventSleep` defaults to true
   cli?: CliConfig;                          // Optional: DIIISCO CLI extensions (extra `launch` targets)
 }
 

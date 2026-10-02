@@ -340,6 +340,12 @@ On startup, the node automatically opts into the DSCO and USDC assets if not alr
 | `enabled` | `false` | Disables Algorand payments and isolates the network to `privateTopic` |
 | `privateTopic` | `diiisco/models/1.0.0` | GossipSub topic name. Must match across all nodes in the cluster. |
 
+### `power`
+
+| Field | Default | Description |
+|---|---|---|
+| `preventSleep` | `true` | While the node runs, hold the machine awake so it doesn't idle into sleep and drop off the network (`caffeinate -i` on macOS, `SetThreadExecutionState` on Windows, `systemd-inhibit` on Linux). It is released when the node stops. Closing a laptop lid or choosing Sleep still sleeps the machine, and the node reconnects when it wakes. Set `false` to opt out. |
+
 ### `libp2pBootstrapServers`
 
 A list of known peers used to join the network on startup. Accepts multiaddrs directly (`/ip4/.../tcp/.../p2p/...`) or `.diiisco.algo` NFD names that resolve to a multiaddr. Leave empty on a LAN to use mDNS auto-discovery instead.

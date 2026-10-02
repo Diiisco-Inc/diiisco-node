@@ -100,6 +100,8 @@ export async function runSetup(options: SetupOptions): Promise<void> {
     info(colour.bold('Summary'));
     print(JSON.stringify(redactConfig(config), null, 2));
     info('');
+    info(colour.dim('While it runs, the node keeps this machine from idle-sleeping so it stays on the network.'));
+    info(colour.dim('Turn that off with "power": { "preventSleep": false } in `diiisco config edit`.'));
     info(`Next: ${colour.cyan('diiisco start')}, then ${colour.cyan('diiisco launch claude')}.`);
   } finally {
     prompt.close();
