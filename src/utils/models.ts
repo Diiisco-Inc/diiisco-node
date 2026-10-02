@@ -10,6 +10,7 @@ import { logger } from './logger';
 import { Environment } from "../environment/environment.types";
 import { Model } from "openai/resources/index";
 import EventEmitter from "events";
+import { BackendRejectedError, type SystemOneRequest } from "./systemOne";
 
 /**
  * Optional generation params forwarded to the backend chat/completions call.
@@ -100,12 +101,14 @@ export function countInputTokens(inputs: any[], tools?: any[]): number {
 
 export class OpenAIInferenceModel {
   openai: OpenAI;
+  private baseURL: string;
   private env: Environment;
   nodeEventEmitter: EventEmitter;
   availableModels: Model[] = [];
 
   constructor(baseURL: string, nodeEvents: EventEmitter) {
     this.env = environment;
+    this.baseURL = baseURL.replace(/\/+$/, '');
     this.openai = new OpenAI({
       baseURL: baseURL,
       // Local backends (Ollama, LM Studio) don't require a key, but the OpenAI
@@ -127,6 +130,50 @@ export class OpenAIInferenceModel {
       logger.error("Error getting response from OpenAI model:", error);
       throw error;
     }
+  }
+
+  /**
+   * Ask a decision model a set of typed questions (`POST {baseURL}/systemone`).
+   *
+   * The OpenAI SDK has no such method, so this is a plain `fetch` to whatever
+   * runtime the node is configured with — nothing here is specific to Ollama.
+   * The backend's JSON comes back untouched. A non-2xx answer (a model that is
+   * not a decision model, a runtime without the endpoint) throws
+   * `BackendRejectedError` carrying the backend's status and message.
+   */
+  async systemOne(request: SystemOneRequest, signal?: AbortSignal): Promise<any> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseURL}/systemone`, {
+        method: 'POST',
+        signal,
+        headers: {
+          'content-type': 'application/json',
+          ...(this.env.models.apiKey ? { authorization: `Bearer ${this.env.models.apiKey}` } : {}),
+        },
+        body: JSON.stringify({ state: request.state, model: request.model, questions: request.questions }),
+      });
+    } catch (error) {
+      logger.error("Error getting System One response from the model backend:", error);
+      throw error;
+    }
+
+    const text = await response.text();
+    let body: any;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = undefined;
+    }
+
+    if (!response.ok) {
+      const detail = body?.error?.message ?? body?.error ?? (text.trim() || `HTTP ${response.status}`);
+      throw new BackendRejectedError(response.status, String(detail));
+    }
+    if (body === undefined) {
+      throw new BackendRejectedError(502, 'The model backend returned a System One response that was not JSON.');
+    }
+    return body;
   }
 
   /**

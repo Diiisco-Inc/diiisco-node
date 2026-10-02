@@ -411,6 +411,29 @@ Set `stream: true` and the response comes back as SSE. Note that the node does n
 
 Returns `{ "input_tokens": N }` for a request body in the same shape as `/v1/messages`, minus `max_tokens`. Counting happens against this node's local model backend, so a node with no backend configured returns `503`.
 
+#### `POST /v1/systemone`
+
+Asks a **decision model** (Tev, Nimble, Jev: models that return typed answers and probabilities rather than text) a set of typed questions. The request and response follow [TypeSafe's System One API](https://docs.typesafe.ai/api.md) and cross the network unchanged: the node auctions the request like a chat completion, pays the winning provider via x402, and hands back the backend's JSON verbatim.
+
+```bash
+curl http://localhost:8080/v1/systemone \
+  -H "Authorization: Bearer sk-your-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tev1:0.8b",
+    "state": "Help! My payouts have been failing for 3 days.",
+    "questions": {
+      "is_urgent": { "type": "noul", "instructions": "Does this convey urgency?" }
+    }
+  }'
+```
+
+```json
+{ "model": "tev1:0.8b", "answers": { "is_urgent": { "type": "noul", "noul": 0.88 } }, "usage": { "input_tokens": 119, "output_tokens": 1 } }
+```
+
+Question types are `noul` (yes/no probability), `choice` (one of up to 255 options) and `score` (2 to 10 ordered levels). Only decision models can answer: find them with `GET /v1/models?type=decision`. A model that is not a decision model is a `400`; a model nobody on the network serves is a `503`. The state and questions are revealed only to the winning provider, and you pay for the real input and output tokens, capped by your `maxSpend`. Providers need a runtime that serves `POST /v1/systemone` (Ollama does); other runtimes work as soon as they implement that endpoint.
+
 #### `GET /v1/models`
 
 Returns a list of models available across the network. By default only **chat** models are listed, which keeps embedding and decision models out of the model pickers in tools like Claude Code. Pass `type` to ask for another kind: `chat`, `embedding`, `decision` or `all`. Every entry carries a `kind`.

@@ -6,6 +6,12 @@ export interface QuoteRequestPayload {
   inputTokenCount: number; // requester counts its own input; the prompt content is NOT broadcast
   maxSpend?: number;       // requester's per-request budget in USDC (§4.2); providers budget against it
   max_tokens?: number;     // optional requester output cap, forwarded to the model runtime
+  /**
+   * What the request is for. Absent means a chat completion. `systemone` is a
+   * typed-question request to a decision model (`POST /v1/systemone`); only a
+   * decision model may quote for it, and only a chat model for the default.
+   */
+  kind?: 'systemone';
 }
 
 export interface QuoteRequest {

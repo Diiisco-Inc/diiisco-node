@@ -3,6 +3,8 @@ import algorand from "../utils/algorand";
 import environment from "../environment/runtime";
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
 import { ModelAvailability } from "../utils/modelAvailability";
+import type { ModelKind } from "../types/models";
+import { countSystemOneInputTokens, normalizeUsage, validateSystemOneRequest } from "../utils/systemOne";
 import quoteEngine from "../utils/quoteEngine";
 import {
   PubSubMessage,
@@ -361,11 +363,13 @@ export class MessageProcessor {
       return;
     }
 
-    // Every request the network sends today is a chat request. An embedding
-    // model cannot answer one, and a decision model "answers" with an empty
+    // The request's kind has to match the model's. An embedding model cannot
+    // answer a chat request, and a decision model "answers" one with an empty
     // message, so quoting for either would win the auction and then fail it.
-    if (!this.models.isChat(msg.payload.model)) {
-      logger.debug(`🚫 Not quoting ${msg.payload.model} — it is a ${this.models.kindOf(msg.payload.model)} model, not a chat model.`);
+    // The reverse holds for System One: only a decision model can answer it.
+    const wanted = this.requiredKind(msg.payload);
+    if (this.models.kindOf(msg.payload.model) !== wanted) {
+      logger.debug(`🚫 Not quoting ${msg.payload.model} — it is a ${this.models.kindOf(msg.payload.model)} model, and this request needs a ${wanted} model.`);
       return;
     }
 
@@ -451,7 +455,30 @@ export class MessageProcessor {
     }
   }
 
+  /** The kind of model a request can be served by. */
+  private requiredKind(payload: { kind?: string }): ModelKind {
+    return payload?.kind === 'systemone' ? 'decision' : 'chat';
+  }
+
+  /**
+   * Re-check, at accept time, what the quote stage already checked: the payload
+   * is the requester's word, and the prompt content only arrives now. A request
+   * for a kind this model is not never reaches the backend.
+   */
+  private assertServable(payload: any): void {
+    const wanted = this.requiredKind(payload);
+    if (this.models.kindOf(payload?.model) !== wanted) {
+      throw new Error(`"${payload?.model}" is not a ${wanted} model`);
+    }
+    if (payload?.kind === 'systemone') {
+      const problem = validateSystemOneRequest(payload);
+      if (problem) throw new Error(`invalid System One request: ${problem}`);
+    }
+  }
+
   private async serveAcceptedQuote(msg: QuoteAccepted, sourcePeerId: string) {
+    this.assertServable(msg.payload);
+
     // Local mode / self-served quotes settle nothing — answer immediately.
     if (this.env.local?.enabled || sourcePeerId === this.ownPeerId) {
       const completion = await this.runInference(msg);
@@ -470,9 +497,7 @@ export class MessageProcessor {
 
     // Optimistic inference: start as soon as the quote is accepted (budget-capped).
     if (this.env.quoteEngine?.optimisticInference !== false) {
-      this.speculativeCache.start(msg.id, () =>
-        this.model.getResponse(msg.payload.model, msg.payload.inputs, this.genParams(msg.payload, outputCap))
-      );
+      this.speculativeCache.start(msg.id, () => this.invoke(msg.payload, outputCap));
     }
 
     // Compute the answer, hold it, and bill the actual usage (clamped to maxSpend).
@@ -583,7 +608,7 @@ export class MessageProcessor {
     if (cached) return cached;
 
     try {
-      return await this.model.getResponse(msg.payload.model, msg.payload.inputs, this.genParams(msg.payload, outputCap));
+      return await this.invoke(msg.payload, outputCap);
     } catch (err) {
       // The backend just failed us mid-request. Re-probe before the next quote
       // rather than waiting out the poll interval, so this node stops quoting
@@ -591,6 +616,14 @@ export class MessageProcessor {
       this.models.invalidate();
       throw err;
     }
+  }
+
+  /** Run the request on the backend: a System One question set, or a chat completion. */
+  private invoke(payload: any, outputCap?: number): Promise<any> {
+    if (payload?.kind === 'systemone') {
+      return this.model.systemOne({ model: payload.model, state: payload.state, questions: payload.questions });
+    }
+    return this.model.getResponse(payload.model, payload.inputs, this.genParams(payload, outputCap));
   }
 
   /** Generation params for the runtime, with the budget-derived output cap applied. */
@@ -613,7 +646,9 @@ export class MessageProcessor {
     const rates = getRatesPer1M(msg.payload.model);
     // Counted the same way the requester counted it (tools included), or the
     // two sides disagree about what the budget affords.
-    const inputTokens = countInputTokens(msg.payload.inputs, msg.payload.tools);
+    const inputTokens = msg.payload.kind === 'systemone'
+      ? countSystemOneInputTokens(msg.payload.state, msg.payload.questions)
+      : countInputTokens(msg.payload.inputs, msg.payload.tools);
     const plan = planBudget(inputTokens, rates, msg.payload.maxSpend, msg.payload.max_tokens);
     return plan.canServe ? plan.outputCap : undefined;
   }
@@ -642,7 +677,7 @@ export class MessageProcessor {
       output: quote?.pricePerOutputToken1M ?? 0,
     };
     const maxSpend = payload?.maxSpend ?? 0;
-    return Math.max(priceFromUsage(completion?.usage, rates, maxSpend), MIN_CHARGE);
+    return Math.max(priceFromUsage(normalizeUsage(completion?.usage), rates, maxSpend), MIN_CHARGE);
   }
 
   private stashCompletion(id: string, completion: any): void {

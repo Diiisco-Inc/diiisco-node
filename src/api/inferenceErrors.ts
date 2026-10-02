@@ -7,6 +7,8 @@
  * client gave up. These give each failure a deadline and a status code.
  */
 
+import { BackendRejectedError } from '../utils/systemOne';
+
 /** Nobody quoted for the model within the auction window. */
 export class NoProviderError extends Error {
   readonly model: string;
@@ -47,6 +49,10 @@ export class ProviderFailedError extends Error {
 
 /** HTTP status for a failure from this module; 500 for anything else. */
 export function statusForInferenceError(err: unknown): number {
+  // The local backend refused the request (e.g. System One on a model that is
+  // not a decision model): its own 4xx is the honest answer. A 5xx from it is
+  // our upstream failing, which is a 502.
+  if (err instanceof BackendRejectedError) return err.status >= 400 && err.status < 500 ? err.status : 502;
   if (err instanceof NoProviderError) return 503;
   if (err instanceof ProviderFailedError) return 503;
   if (err instanceof InferenceTimeoutError) return 504;
@@ -55,7 +61,7 @@ export function statusForInferenceError(err: unknown): number {
 
 /** User-facing message for a failure from this module; a generic one otherwise. */
 export function messageForInferenceError(err: unknown): string {
-  if (err instanceof NoProviderError || err instanceof InferenceTimeoutError || err instanceof ProviderFailedError) {
+  if (err instanceof NoProviderError || err instanceof InferenceTimeoutError || err instanceof ProviderFailedError || err instanceof BackendRejectedError) {
     return err.message;
   }
   return 'No peers available to handle the request.';
