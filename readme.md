@@ -305,6 +305,9 @@ On startup, the node automatically opts into the DSCO and USDC assets if not alr
 | `bearerAuthentication` | `true` | Require `Authorization: Bearer <key>` on API requests |
 | `keys` | `[]` | Accepted bearer tokens |
 | `port` | `8080` | Port for the HTTP API |
+| `host` | `127.0.0.1` | Address the API binds. The default is reachable from this machine only, because every request to the API spends the node's wallet. Set `0.0.0.0` to serve other machines, and turn `bearerAuthentication` on when you do |
+| `corsOrigins` | `[]` | Browser origins allowed to call the API cross-origin. Only honoured with `bearerAuthentication`; without a key no origin is allowed |
+| `allowedHosts` | `[]` | Extra `Host` names accepted while the API is loopback-only and unauthenticated (for a reverse proxy in front of the node). `localhost`, `127.0.0.1`, `[::1]` and the host of `node.url` are always accepted |
 | `networkWaitTime` | `10000` | How long (ms) the `/network` endpoint waits for peer responses before returning |
 
 ### `quoteEngine`
