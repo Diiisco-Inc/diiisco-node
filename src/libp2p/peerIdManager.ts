@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'fs/promises'
+import { chmod, readFile, stat, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'node:path'
 import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@libp2p/crypto/keys'
@@ -8,6 +8,26 @@ import type { PeerId } from '@libp2p/interface'
 import environment from '../environment/runtime'
 import { resolvePath } from '../utils/paths'
 import { logger } from '../utils/logger'
+
+/** The peer identity is a private key: readable by its owner only. */
+const KEY_FILE_MODE = 0o600
+
+/**
+ * Tighten a key file written by an earlier version, which used the process
+ * umask (typically 0644, world-readable). POSIX only: Windows has no mode bits
+ * to set, and a failure here must never stop the node.
+ */
+async function restrictKeyFile(filePath: string): Promise<void> {
+  if (process.platform === 'win32') return
+  try {
+    const { mode } = await stat(filePath)
+    if ((mode & 0o077) === 0) return
+    await chmod(filePath, KEY_FILE_MODE)
+    logger.info(`🔒 Restricted ${filePath} to owner-only (it was readable by other users).`)
+  } catch (err: any) {
+    logger.warn(`⚠️  Could not restrict permissions on ${filePath}: ${err.message}`)
+  }
+}
 
 /**
  * Utility class for managing persistent libp2p peer IDs
@@ -54,15 +74,18 @@ export class PeerIdManager {
 
         logger.info(`📋 Loaded peer ID: ${peerId.toString()}`)
       } catch (err: any) {
-        logger.error('Error loading private key:', err)
-        logger.warn(`⚠️  Failed to load private key, creating new one: ${err.message}`)
-
-        // Fall back to creating a new key
-        privateKey = await generateKeyPair('Ed25519')
-        peerId = peerIdFromPrivateKey(privateKey)
-
-        logger.info(`🆕 Generated new peer ID: ${peerId.toString()}`)
+        // Never fall back to a new key here. This file is the node's long-term
+        // identity — NFD verification, relay reservations and every peer that
+        // knows it are bound to the id — and a read that fails (a truncated
+        // file, a transient permission error) is not a reason to replace it.
+        throw new Error(
+          `Could not read the peer identity at ${filePath}: ${err?.message ?? err}. ` +
+          `The file has been left untouched. Restore it from a backup, fix its permissions, ` +
+          `or delete it yourself if you really want a new identity (a new peer id loses any NFD bound to the old one).`
+        )
       }
+
+      await restrictKeyFile(filePath)
     } else {
       logger.info(`🆕 Creating new private key and saving to ${filePath}`)
 
@@ -71,15 +94,15 @@ export class PeerIdManager {
       peerId = peerIdFromPrivateKey(privateKey)
 
       logger.info(`🆕 Generated new peer ID: ${peerId.toString()}`)
-    }
 
-    try {
-      // Save the protobuf private key bytes to file
-      const keyBytes = privateKeyToProtobuf(privateKey)
-      await writeFile(filePath, keyBytes)
-      logger.info(`💾 Private key saved to ${filePath}`)
-    } catch (err: any) {
-      logger.warn(`⚠️  Failed to save private key: ${err.message}`)
+      // Written only when the identity is new — never re-written on a normal
+      // start — and owner-only: it is a private key.
+      try {
+        await writeFile(filePath, privateKeyToProtobuf(privateKey), { mode: KEY_FILE_MODE })
+        logger.info(`💾 Private key saved to ${filePath}`)
+      } catch (err: any) {
+        logger.warn(`⚠️  Failed to save private key: ${err.message}`)
+      }
     }
 
     return { peerId, privateKey }

@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { Environment, EnvironmentFile } from '../environment/environment.types';
 import { withDefaults } from '../environment/defaults';
 import { validateEnvironment } from '../environment/validate';
+import { isLoopbackHost, isWildcardHost } from '../utils/hosts';
 import { resolveStrategies, StrategyError, strategyName } from '../environment/strategies';
 import { diiiscoHome, ensureHome, expandTilde, resolvePath } from './paths';
 import { ConfigError } from './errors';
@@ -379,5 +380,9 @@ function jsonify(value: unknown): unknown {
 
 /** The endpoint clients should point at, derived from the effective config. */
 export function apiEndpoint(env: Environment): string {
-  return `http://localhost:${env.api.port ?? 8080}`;
+  // Every address the API can be bound to on this machine is reachable as
+  // `localhost` except a specific interface address, which only answers there.
+  const host = env.api.host?.trim();
+  const reach = host && !isLoopbackHost(host) && !isWildcardHost(host) ? (host.includes(':') && !host.startsWith('[') ? `[${host}]` : host) : 'localhost';
+  return `http://${reach}:${env.api.port ?? 8080}`;
 }

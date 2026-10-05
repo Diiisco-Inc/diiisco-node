@@ -1,5 +1,6 @@
 import { Environment } from './environment.types';
 import { MODEL_KINDS, type ModelKind } from '../types/models';
+import { isLoopbackHost } from '../utils/hosts';
 
 /**
  * Validate a fully-merged environment and return human-actionable problems.
@@ -127,6 +128,15 @@ export function validateEnvironment(env: Environment): string[] {
     if (env.api.bearerAuthentication && (!Array.isArray(env.api.keys) || env.api.keys.length === 0)) {
       errors.push('`api.bearerAuthentication` is on but `api.keys` is empty — no client could ever authenticate. Add a key or set `api.bearerAuthentication` to false.');
     }
+    if (env.api.host !== undefined && (typeof env.api.host !== 'string' || env.api.host.trim() === '')) {
+      errors.push(`\`api.host\` must be an address to bind, e.g. "127.0.0.1" (this machine only) or "0.0.0.0" (every interface) (got ${JSON.stringify(env.api.host)}).`);
+    }
+    for (const key of ['corsOrigins', 'allowedHosts'] as const) {
+      const list = env.api[key];
+      if (list !== undefined && (!Array.isArray(list) || list.some((v) => typeof v !== 'string'))) {
+        errors.push(`\`api.${key}\` must be a list of strings.`);
+      }
+    }
   }
 
   if (env.power?.preventSleep !== undefined && typeof env.power.preventSleep !== 'boolean') {
@@ -142,4 +152,26 @@ export function validateEnvironment(env: Environment): string[] {
   }
 
   return errors;
+}
+
+/**
+ * Things that are allowed but worth saying out loud. Unlike `validateEnvironment`
+ * these never stop a node starting; they are printed by `setup`, `config show`
+ * and `config edit`, and logged when the API comes up.
+ */
+export function environmentWarnings(env: Environment): string[] {
+  const warnings: string[] = [];
+  const isLocal = env.local?.enabled === true;
+
+  // Every request to the API runs an auction that the wallet pays for, so the
+  // API is the wallet's front door. Local mode has no wallet to protect.
+  if (env.api?.enabled && !isLocal && env.algorand && !env.api.bearerAuthentication) {
+    const host = env.api.host ?? '127.0.0.1';
+    warnings.push(
+      isLoopbackHost(host)
+        ? 'The API requires no key (`api.bearerAuthentication` is false). It only listens on this machine, but any program running here can spend the wallet\'s USDC, up to `maxSpend` per request. Turn on `api.bearerAuthentication` to require a key.'
+        : `The API listens on ${host} and requires no key (\`api.bearerAuthentication\` is false): anyone who can reach this machine can spend the wallet's USDC, up to \`maxSpend\` per request. Turn on \`api.bearerAuthentication\`, or set \`api.host\` to "127.0.0.1".`
+    );
+  }
+  return warnings;
 }

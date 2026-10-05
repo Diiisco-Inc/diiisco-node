@@ -29,6 +29,9 @@ import {
 import { getMeshTopic } from '../utils/topic';
 import { registerStatusPages } from './statusPages';
 import { nodeStats } from '../utils/nodeStats';
+import { RequestLedger } from '../messaging/requestLedger';
+import { isLoopbackHost, hostnameOfHostHeader, hostnameOfUrl } from '../utils/hosts';
+import { environmentWarnings } from '../environment/validate';
 import {
   NoProviderError,
   InferenceTimeoutError,
@@ -37,10 +40,39 @@ import {
   messageForInferenceError,
 } from './inferenceErrors';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger()) => {
   const app = express();
   const port = environment.api.port || 8080;
-  app.use(cors());
+  // Loopback unless the operator opts in: a request to this API spends the wallet.
+  const apiHost = environment.api.host?.trim() || '127.0.0.1';
+  const authRequired = !!environment.api.bearerAuthentication;
+
+  // Cross-origin browser access. Without an API key no origin is allowed — any
+  // web page the user visits could otherwise POST to localhost and run auctions
+  // on their wallet. With a key, only the origins the operator lists.
+  app.use(cors({ origin: authRequired ? (environment.api.corsOrigins ?? false) : false }));
+
+  // DNS-rebinding guard. A page on an attacker's domain can have that name
+  // re-resolved to 127.0.0.1 and then talk to a loopback-bound API "same-origin",
+  // CORS never coming into it. Such a request still carries the attacker's name
+  // in `Host`, so while the API is unauthenticated and loopback-only, refuse any
+  // `Host` that is not a loopback address, this node's own `node.url`, or one the
+  // operator listed. (A non-loopback bind is a deliberate opt-in and is exempt:
+  // its clients legitimately arrive under their own addresses.)
+  if (!authRequired && isLoopbackHost(apiHost)) {
+    const allowedHosts = new Set(
+      [hostnameOfUrl(environment.node?.url), ...(environment.api.allowedHosts ?? []).map((h) => hostnameOfUrl(h))]
+        .filter((h): h is string => !!h)
+    );
+    app.use((req, res, next) => {
+      const host = hostnameOfHostHeader(req.headers.host);
+      if (host && (isLoopbackHost(host) || allowedHosts.has(host))) return next();
+      logger.warn(`🚫 Refused a request with Host "${String(req.headers.host).slice(0, 80)}" — not this machine. Add it to api.allowedHosts if it is a proxy in front of this node.`);
+      res.status(403).json({
+        error: { message: 'Host not allowed.', type: 'invalid_request_error', param: null, code: null },
+      });
+    });
+  }
   // Express's json() defaults to a 100kb body limit — easily exceeded by a real
   // agent request (system prompt + full tool schemas + conversation history),
   // which throws PayloadTooLargeError before this app's own routes ever see the
@@ -252,20 +284,28 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     quoteMessage.signature = await algo.signObject(quoteMessage);
     const id = quoteMessage.id;
 
+    // Open before the request is published, so even a quote that comes straight
+    // back (our own node answers over emitSelf) finds its auction. Quotes for an
+    // id that is not open are dropped; `cleanup` closes it.
+    requests.open(id, inferenceTimeoutMs());
+
     return await new Promise<any>((resolve, reject) => {
       let settled = false;
       let quoteSelected = false;
       let auctionTimer: ReturnType<typeof setTimeout> | undefined;
       let overallTimer: ReturnType<typeof setTimeout> | undefined;
 
-      // The provider we accepted, so an `inference-failed` from anyone else can
-      // be ignored rather than cancelling this request.
-      let selectedProviders: Set<string> = new Set();
+      // The provider we accepted, by peer id — the transport-authenticated
+      // identity, not the wallet (nodes can share a wallet). Only it may answer
+      // this request or abandon it; the same fact is recorded in the ledger so
+      // the message processor can hold `contract-created` to it too.
+      let selectedPeerId: string | undefined;
 
       const cleanup = () => {
         nodeEvents.off(`inference-response-${id}`, onResponse);
         nodeEvents.off(`inference-failed-${id}`, onFailed);
         nodeEvents.off(`quote-selected-${id}`, onSelected);
+        requests.release(id);
         clearTimeout(auctionTimer);
         clearTimeout(overallTimer);
       };
@@ -278,13 +318,21 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         action();
       };
 
-      function onResponse(response: InferenceResponse) {
+      function onResponse(response: InferenceResponse & { from?: string }) {
+        // Request ids are visible on the broadcast quote-request, so anyone can
+        // address an answer to us. Only the provider we chose may supply one —
+        // otherwise a bystander could hand the caller a forged completion (with
+        // forged tool calls) and discard the one that was paid for.
+        if (!selectedPeerId || response.from !== selectedPeerId) {
+          logger.warn(`🚫 Ignoring inference-response for ${id} from ${response.from} — not the selected provider.`);
+          return;
+        }
         settle(() => resolve(response.payload.completion));
       }
 
       function onFailed(failure: { from: string; model: string; reason: string }) {
         // Only the provider whose quote we accepted may abandon this request.
-        if (!selectedProviders.has(failure.from)) {
+        if (!selectedPeerId || failure.from !== selectedPeerId) {
           logger.warn(`🚫 Ignoring inference-failed for ${id} from ${failure.from} — not the selected provider.`);
           return;
         }
@@ -296,15 +344,16 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         clearTimeout(auctionTimer);
         if (settled) return;
 
-        // A quote may arrive over a relay, so the peer id that answers can
-        // differ from the one the provider stamped on the quote. Accept a
-        // failure signed by either.
-        selectedProviders = new Set(
-          [quote.from?.toString(), quote.msg.payload?.quote?.providerPeerId].filter(Boolean) as string[]
-        );
+        // The peer that sent the quote is the one we send the prompt to, so it is
+        // the one whose messages we accept back. (The `providerPeerId` stamped
+        // inside the quote is the provider's own claim; nothing is trusted on it.)
+        selectedPeerId = quote.from?.toString();
+        if (!selectedPeerId) {
+          settle(() => reject(new NoProviderError(body.model)));
+          return;
+        }
 
-        const failedProvider = [...selectedProviders].find((peerId) => excluded.has(peerId));
-        if (failedProvider) {
+        if (excluded.has(selectedPeerId)) {
           // The auction handed us back a provider that already failed this
           // request. Don't send it the prompt again.
           settle(() => reject(new NoProviderError(body.model)));
@@ -312,6 +361,11 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         }
 
         logger.info(`✅ Quote selected for request ID ${id}. Served by ${quote.from.toString()}. Sending quote-accepted message.`);
+
+        // Record who we are about to hand the prompt to and who they will be
+        // paid as: the wallet that signed the quote. From here on, a payment
+        // request or an answer is only honoured from this peer.
+        requests.select(id, { peerId: selectedPeerId, payTo: quote.msg.fromWalletAddr }, inferenceTimeoutMs());
 
         // Negotiate settlement: pick our highest-preference method the provider
         // also offers. Escrow has been retired, so x402 is the only method.
@@ -343,7 +397,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
         }
       }
 
-      nodeEvents.once(`inference-response-${id}`, onResponse);
+      nodeEvents.on(`inference-response-${id}`, onResponse);
       nodeEvents.on(`inference-failed-${id}`, onFailed);
       nodeEvents.once(`quote-selected-${id}`, onSelected);
 
@@ -540,8 +594,9 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     return res.status(200).json({ input_tokens });
   });
 
-  const server = app.listen(port, '0.0.0.0', () => {
-    logger.info(`🚀 API server listening at ${environment.node?.url || `http://0.0.0.0:${port || 8080}`}`);
+  const server = app.listen(port, apiHost, () => {
+    logger.info(`🚀 API server listening on ${apiHost}:${port}${isLoopbackHost(apiHost) ? ' (this machine only)' : ''}`);
+    for (const warning of environmentWarnings(environment)) logger.warn(`⚠️ ${warning}`);
   });
 
   return { app, server };

@@ -193,20 +193,33 @@ export class OpenAIInferenceModel {
   }
 
   async addModel(models: Model[]) {
+    // A peer's `list-models-response`: untrusted. Keep only entries that look
+    // like models, so the compile step below cannot be made to throw (it runs
+    // in a timer, where a throw would be an unhandled rejection and exit the node).
+    const valid = Array.isArray(models)
+      ? models.filter((m) => typeof m === 'object' && m !== null && typeof (m as Model).id === 'string')
+      : [];
+    if (!Array.isArray(models)) {
+      logger.warn('❌ Dropped a list-models-response whose models were not a list.');
+    }
 
     if (this.availableModels.length === 0) {
-      this.availableModels = models;
+      this.availableModels = valid;
       setTimeout(() => {
-        const uniqueModels = this.availableModels.filter((model, index, self) => 
-          index === self.findIndex((m) => m.id === model.id)
-        );
-        this.nodeEventEmitter.emit(`model-list-compiled`, uniqueModels);
-        logger.info(`✅ Model list compiled and event emitted: ${JSON.stringify(uniqueModels)}`);
-        this.availableModels = [];
+        try {
+          const uniqueModels = this.availableModels.filter((model, index, self) =>
+            index === self.findIndex((m) => m.id === model.id)
+          );
+          this.nodeEventEmitter.emit(`model-list-compiled`, uniqueModels);
+          logger.info(`✅ Model list compiled and event emitted: ${JSON.stringify(uniqueModels)}`);
+        } catch (err) {
+          logger.error(`❌ Could not compile the network model list: ${(err as Error).message}`);
+        } finally {
+          this.availableModels = [];
+        }
       }, environment.quoteEngine.waitTime || 5000);
     } else {
-      this.availableModels = [...this.availableModels, ...models];
+      this.availableModels = [...this.availableModels, ...valid];
     }
-    
   }
 }
