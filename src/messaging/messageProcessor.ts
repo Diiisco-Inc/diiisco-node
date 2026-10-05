@@ -39,6 +39,7 @@ import { X402Settlement } from '../settlement/x402Settlement';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import { ExpiringMap } from '../utils/expiringMap';
+import { RequestLedger } from './requestLedger';
 
 const QUOTE_TTL_MS = 120_000;      // validity window advertised on quotes (x402 requires one)
 const COMPLETION_TTL_MS = 120_000; // how long a withheld completion is held awaiting payment
@@ -91,6 +92,8 @@ export class MessageProcessor {
   // Challenges issued on quote-accepted, each holding the completion withheld
   // until the requester's x402 payment verifies (see `IssuedContract`).
   private contracts = new ExpiringMap<string, IssuedContract>();
+  // Requester side: who each of our requests was handed to (see `RequestLedger`).
+  private requests: RequestLedger;
 
   constructor(
     algo: algorand,
@@ -100,7 +103,8 @@ export class MessageProcessor {
     nodeEvents: EventEmitter,
     messageRouter: MessageRouter,
     ownPeerId: string,
-    node: any
+    node: any,
+    requests: RequestLedger = new RequestLedger()
   ) {
     this.algo = algo;
     this.model = model;
@@ -111,6 +115,7 @@ export class MessageProcessor {
     this.env = environment;
     this.ownPeerId = ownPeerId;
     this.node = node;
+    this.requests = requests;
     this.speculativeCache = new SpeculativeInferenceCache(
       this.env.quoteEngine?.maxSpeculativeJobs ?? 2
     );
@@ -585,10 +590,12 @@ export class MessageProcessor {
 
   /**
    * Requester side. The answer is ready; pay to unlock it. The spending gate
-   * here is the security anchor (§4.2 E): the requester refuses to sign any
-   * payment exceeding its **local** `maxSpend`, and refuses outright if no
-   * `maxSpend` is configured — so it can never sign an unbounded cheque, no
-   * matter what a modified provider requests.
+   * here is the security anchor (§4.2 E): this node signs a payment only for a
+   * request it made, only when asked by the peer it handed that request to, only
+   * once, only to that provider's wallet, only in USDC on its own network, and
+   * never above its **local** `maxSpend` (refusing outright if none is set) —
+   * so it can never sign an unbounded cheque, or any cheque at all for a
+   * stranger, no matter what a modified provider or bystander requests.
    */
   private async handleContractCreated(msg: ContractCreated, sourcePeerId: string) {
     const request = msg.payload?.paymentRequirements;
@@ -597,9 +604,30 @@ export class MessageProcessor {
       return;
     }
 
+    // Is this a request we made, and is the sender who we sent it to? The peer
+    // id is the identity: the transport authenticates it, and — unlike a wallet
+    // address — it is not shared between nodes.
+    const provider = this.requests.providerFor(msg.id);
+    if (!provider) {
+      logger.warn(`❌ Refusing to pay ${msg.id}: it is not an outstanding request of this node.`);
+      return;
+    }
+    if (sourcePeerId !== provider.peerId) {
+      logger.warn(`❌ Refusing to pay ${msg.id}: the request came from ${sourcePeerId.slice(0, 16)}..., not the selected provider.`);
+      return;
+    }
+
     const localMaxSpend = this.env.algorand?.settlement?.maxSpend;
     if (localMaxSpend === undefined || localMaxSpend <= 0) {
       logger.warn(`❌ Refusing to pay ${msg.id}: no local maxSpend configured (never sign an unbounded cheque).`);
+      return;
+    }
+
+    // The right asset, on the right network, to the provider that quoted.
+    const settlement = this.settlementFor(msg);
+    const problem = settlement.checkRequest(request, provider.payTo);
+    if (problem) {
+      logger.warn(`❌ Refusing to pay ${msg.id}: ${problem}.`);
       return;
     }
     const requestedAmount = BigInt(request.amount);
@@ -608,7 +636,20 @@ export class MessageProcessor {
       return;
     }
 
-    const paymentPayload = await this.settlementFor(msg).pay({ quoteId: msg.id, amount: requestedAmount, request });
+    // One payment per request. Claimed before the (async) signing, so a repeated
+    // contract-created cannot sign twice.
+    if (!this.requests.claimPayment(msg.id)) {
+      logger.warn(`❌ Refusing to pay ${msg.id} again: it has already been paid.`);
+      return;
+    }
+
+    let paymentPayload;
+    try {
+      paymentPayload = await settlement.pay({ quoteId: msg.id, amount: requestedAmount, request });
+    } catch (err) {
+      this.requests.unclaimPayment(msg.id);
+      throw err;
+    }
 
     let response: ContractSigned = {
       ...msg,
@@ -802,6 +843,9 @@ export class MessageProcessor {
     logger.info(`📥 Received inference-response from ${sourcePeerId}`);
     this.nodeEvents.emit(`inference-response-${msg.id}`, {
       ...msg,
+      // The transport-authenticated sender, for the requester to check against
+      // the provider it chose (the message body is the sender's own claim).
+      from: sourcePeerId,
       payment: null,
       quote: msg.payload.quote,
     });

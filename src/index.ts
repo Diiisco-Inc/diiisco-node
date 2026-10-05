@@ -14,6 +14,7 @@ import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
 import { MessageRouter } from './messaging/messageRouter';
 import { MessageProcessor } from './messaging/messageProcessor';
+import { RequestLedger } from './messaging/requestLedger';
 import { MeshReadinessMonitor } from './libp2p/meshReadinessMonitor';
 import { MeshMessageQueue } from './messaging/meshMessageQueue';
 import { decode } from 'msgpackr';
@@ -35,6 +36,9 @@ class Application extends EventEmitter {
   private directHandler: DirectMessagingHandler | null = null;
   private messageRouter: MessageRouter | null = null;
   private messageProcessor: MessageProcessor | null = null;
+  // Which provider each of this node's requests went to; shared by the API
+  // (which chooses) and the message processor (which must hold replies to it).
+  private requests = new RequestLedger();
 
   private apiServer: Server | null = null;
   private isShuttingDown = false;
@@ -155,7 +159,8 @@ class Application extends EventEmitter {
       this,
       this.messageRouter,
       this.node.peerId.toString(),
-      this.node
+      this.node,
+      this.requests
     );
 
     // Create a Relay PubSub Topic
@@ -170,7 +175,7 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests);
       this.apiServer = server;
     }
 
