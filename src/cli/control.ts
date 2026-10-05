@@ -17,9 +17,9 @@
  * The obvious alternative — `POST /internal/shutdown` on the existing Express
  * server — was rejected:
  *
- *  - That server binds `0.0.0.0` (see `src/api/server.ts`), so the route would
- *    be reachable from every interface and its loopback-only property would
- *    depend on a middleware check being correct forever. This server binds
+ *  - That server's bind address is operator-configurable (`api.host`, and
+ *    `0.0.0.0` serves every interface), so the route's loopback-only property
+ *    would depend on a middleware check being correct forever. This server binds
  *    `127.0.0.1`, so "not remotely reachable" is enforced by the kernel, not by
  *    our code.
  *  - The API's bearer key is shared with agent tools (`diiisco launch` hands it

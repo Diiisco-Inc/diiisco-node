@@ -417,7 +417,7 @@ class Application extends EventEmitter {
 export { Application };
 export { configureEnvironment } from './environment/runtime';
 export { DEFAULT_ENVIRONMENT, withDefaults } from './environment/defaults';
-export { validateEnvironment } from './environment/validate';
+export { validateEnvironment, environmentWarnings } from './environment/validate';
 export { installProcessGuards } from './utils/processGuards';
 export type { Environment } from './environment/environment.types';
 

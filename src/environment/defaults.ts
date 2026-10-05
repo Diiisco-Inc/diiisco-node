@@ -52,6 +52,7 @@ export function createDefaultEnvironment(): Environment {
       bearerAuthentication: false,
       keys: ['diiisco'],
       port: 8080,
+      host: '127.0.0.1', // loopback only: a request to the API spends the wallet
       networkWaitTime: 10000,
     },
     quoteEngine: {

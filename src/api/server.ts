@@ -30,6 +30,8 @@ import { getMeshTopic } from '../utils/topic';
 import { registerStatusPages } from './statusPages';
 import { nodeStats } from '../utils/nodeStats';
 import { RequestLedger } from '../messaging/requestLedger';
+import { isLoopbackHost, hostnameOfHostHeader, hostnameOfUrl } from '../utils/hosts';
+import { environmentWarnings } from '../environment/validate';
 import {
   NoProviderError,
   InferenceTimeoutError,
@@ -41,7 +43,36 @@ import {
 export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger()) => {
   const app = express();
   const port = environment.api.port || 8080;
-  app.use(cors());
+  // Loopback unless the operator opts in: a request to this API spends the wallet.
+  const apiHost = environment.api.host?.trim() || '127.0.0.1';
+  const authRequired = !!environment.api.bearerAuthentication;
+
+  // Cross-origin browser access. Without an API key no origin is allowed — any
+  // web page the user visits could otherwise POST to localhost and run auctions
+  // on their wallet. With a key, only the origins the operator lists.
+  app.use(cors({ origin: authRequired ? (environment.api.corsOrigins ?? false) : false }));
+
+  // DNS-rebinding guard. A page on an attacker's domain can have that name
+  // re-resolved to 127.0.0.1 and then talk to a loopback-bound API "same-origin",
+  // CORS never coming into it. Such a request still carries the attacker's name
+  // in `Host`, so while the API is unauthenticated and loopback-only, refuse any
+  // `Host` that is not a loopback address, this node's own `node.url`, or one the
+  // operator listed. (A non-loopback bind is a deliberate opt-in and is exempt:
+  // its clients legitimately arrive under their own addresses.)
+  if (!authRequired && isLoopbackHost(apiHost)) {
+    const allowedHosts = new Set(
+      [hostnameOfUrl(environment.node?.url), ...(environment.api.allowedHosts ?? []).map((h) => hostnameOfUrl(h))]
+        .filter((h): h is string => !!h)
+    );
+    app.use((req, res, next) => {
+      const host = hostnameOfHostHeader(req.headers.host);
+      if (host && (isLoopbackHost(host) || allowedHosts.has(host))) return next();
+      logger.warn(`🚫 Refused a request with Host "${String(req.headers.host).slice(0, 80)}" — not this machine. Add it to api.allowedHosts if it is a proxy in front of this node.`);
+      res.status(403).json({
+        error: { message: 'Host not allowed.', type: 'invalid_request_error', param: null, code: null },
+      });
+    });
+  }
   // Express's json() defaults to a 100kb body limit — easily exceeded by a real
   // agent request (system prompt + full tool schemas + conversation history),
   // which throws PayloadTooLargeError before this app's own routes ever see the
@@ -558,8 +589,9 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     return res.status(200).json({ input_tokens });
   });
 
-  const server = app.listen(port, '0.0.0.0', () => {
-    logger.info(`🚀 API server listening at ${environment.node?.url || `http://0.0.0.0:${port || 8080}`}`);
+  const server = app.listen(port, apiHost, () => {
+    logger.info(`🚀 API server listening on ${apiHost}:${port}${isLoopbackHost(apiHost) ? ' (this machine only)' : ''}`);
+    for (const warning of environmentWarnings(environment)) logger.warn(`⚠️ ${warning}`);
   });
 
   return { app, server };
