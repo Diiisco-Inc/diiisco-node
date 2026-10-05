@@ -27,22 +27,24 @@ export default class quoteEngine {
   }
 
   async addQuote(quoteEvent: { msg: QuoteResponse; from: string }) {
+    // A quote is a stranger's message and its timer fires later, with nobody to
+    // catch what it throws: a malformed one must be refused here, not found by
+    // `buildCandidates` a second on, where it would take the process down.
+    if (!isValidQuoteResponse(quoteEvent.msg) || typeof quoteEvent.from !== 'string') {
+      logger.warn(`❌ Dropped a malformed quote-response from ${String(quoteEvent.from).slice(0, 16)}...`);
+      return;
+    }
+
     const event: QuoteEvent = { ...quoteEvent, receivedAt: Date.now() };
     const id = event.msg.id;
 
     if (!Object.keys(this.quoteQueue).includes(id)) {
       this.quoteQueue[id] = {
         quotes: [event],
-        timeout: setTimeout(async () => {
-          // Enrich once (skips on-chain calls in local mode), then let the
-          // configured strategy pick.
-          const candidates = await this.buildCandidates(this.quoteQueue[id].quotes);
-          const selected = await this.selectQuote(candidates);
-
-          this.nodeEventEmitter.emit(`quote-selected-${id}`, { msg: selected.msg, from: selected.from });
-
-          // Clean up
-          delete this.quoteQueue[id];
+        timeout: setTimeout(() => {
+          this.closeAuction(id).catch((err) => {
+            logger.error(`❌ Could not select a quote for ${id}: ${(err as Error).message}`);
+          });
         }, this.waitTime)
       };
     } else {
@@ -50,10 +52,27 @@ export default class quoteEngine {
     }
   }
 
+  // Close the auction for `id`: enrich the quotes (skips on-chain calls in local
+  // mode), let the configured strategy pick, and announce the winner. The queue
+  // entry is always removed. If nothing can be selected, nothing is emitted and
+  // the requester's auction deadline reports that no provider could serve it.
+  private async closeAuction(id: string): Promise<void> {
+    const quotes = this.quoteQueue[id]?.quotes ?? [];
+    delete this.quoteQueue[id];
+
+    const candidates = await this.buildCandidates(quotes);
+    if (candidates.length === 0) return;
+
+    const selected = await this.selectQuote(candidates);
+    if (!selected) return;
+
+    this.nodeEventEmitter.emit(`quote-selected-${id}`, { msg: selected.msg, from: selected.from });
+  }
+
   // Run the configured selection strategy. Accepts a single function or a list
   // tried in order (the first that returns a candidate wins), defaulting to —
   // and ultimately falling back to — highest staked DSCO.
-  private async selectQuote(candidates: QuoteCandidate[]): Promise<QuoteCandidate> {
+  private async selectQuote(candidates: QuoteCandidate[]): Promise<QuoteCandidate | undefined> {
     const configured = environment.quoteEngine.quoteSelectionFunction ?? selectHighestStakeQuote;
     const selectors = Array.isArray(configured) ? configured : [configured];
     for (const selector of selectors) {
@@ -70,28 +89,35 @@ export default class quoteEngine {
   // Attach DSCO balance, NFD status, and response latency to each quote so the
   // selection strategy can stay a pure function of the candidate data.
   private async buildCandidates(events: QuoteEvent[]): Promise<QuoteCandidate[]> {
-    return Promise.all(events.map(async (e): Promise<QuoteCandidate> => {
-      const quote = e.msg.payload.quote;
-      const requestTimestamp = quote.requestTimestamp ?? e.msg.timestamp;
-      const responseLatencyMs = Math.max(0, e.receivedAt - requestTimestamp);
+    const built = await Promise.all(events.map(async (e): Promise<QuoteCandidate | null> => {
+      try {
+        const quote = e.msg.payload.quote;
+        const requestTimestamp = quote.requestTimestamp ?? e.msg.timestamp;
+        const responseLatencyMs = Math.max(0, e.receivedAt - requestTimestamp);
 
-      // Prefer the provider's stamped peer id; GossipSub `from` may be a relay.
-      const providerPeerId = quote.providerPeerId ?? e.from;
-      const [dscoBalance, nfdAuthenticated] = await Promise.all([
-        this.providerDsco(e.msg.fromWalletAddr),
-        this.providerNfdAuthenticated(providerPeerId, e.msg.fromWalletAddr, quote.nfd),
-      ]);
+        // Prefer the provider's stamped peer id; GossipSub `from` may be a relay.
+        const providerPeerId = quote.providerPeerId ?? e.from;
+        const [dscoBalance, nfdAuthenticated] = await Promise.all([
+          this.providerDsco(e.msg.fromWalletAddr),
+          this.providerNfdAuthenticated(providerPeerId, e.msg.fromWalletAddr, quote.nfd),
+        ]);
 
-      return {
-        quote,
-        from: e.from,
-        fromWalletAddr: e.msg.fromWalletAddr,
-        dscoBalance,
-        nfdAuthenticated,
-        responseLatencyMs,
-        msg: e.msg,
-      };
+        return {
+          quote,
+          from: e.from,
+          fromWalletAddr: e.msg.fromWalletAddr,
+          dscoBalance,
+          nfdAuthenticated,
+          responseLatencyMs,
+          msg: e.msg,
+        };
+      } catch (err) {
+        // One quote that cannot be enriched must not sink the rest of the auction.
+        logger.warn(`⚠️ Skipping a quote that could not be evaluated: ${(err as Error).message}`);
+        return null;
+      }
     }));
+    return built.filter((c): c is QuoteCandidate => c !== null);
   }
 
   // DSCO held by the provider wallet, read on-chain (0 in local mode / on error).
@@ -131,4 +157,32 @@ export default class quoteEngine {
     const createFn = environment.quoteEngine.quoteCreationFunction ?? createStandardQuote;
     return createFn(quoteRequestMsg, model);
   }
+}
+
+const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+const isOptional = (v: unknown, check: (x: unknown) => boolean) => v === undefined || check(v);
+
+/**
+ * Whether a `quote-response` has the shape the rest of the engine reads. Every
+ * field `buildCandidates` and the selection strategies touch is checked, so a
+ * quote that passes cannot make them throw.
+ */
+export function isValidQuoteResponse(msg: unknown): msg is QuoteResponse {
+  const m = msg as any;
+  if (typeof m !== 'object' || m === null) return false;
+  // The id keys a plain object: refuse anything that is not an ordinary key.
+  if (typeof m.id !== 'string' || m.id.length === 0 || m.id.length > 128 || m.id === '__proto__') return false;
+  if (typeof m.fromWalletAddr !== 'string' || !isFiniteNumber(m.timestamp)) return false;
+  const q = m.payload?.quote;
+  if (typeof q !== 'object' || q === null) return false;
+  return (
+    typeof q.model === 'string' &&
+    typeof q.addr === 'string' &&
+    isFiniteNumber(q.pricePerInputToken1M) && q.pricePerInputToken1M >= 0 &&
+    isFiniteNumber(q.pricePerOutputToken1M) && q.pricePerOutputToken1M >= 0 &&
+    isOptional(q.requestTimestamp, isFiniteNumber) &&
+    isOptional(q.settlementMethods, Array.isArray) &&
+    isOptional(q.providerPeerId, (v) => typeof v === 'string') &&
+    isOptional(q.nfd, (v) => typeof v === 'string')
+  );
 }

@@ -17,7 +17,7 @@ import { MessageProcessor } from './messaging/messageProcessor';
 import { RequestLedger } from './messaging/requestLedger';
 import { MeshReadinessMonitor } from './libp2p/meshReadinessMonitor';
 import { MeshMessageQueue } from './messaging/meshMessageQueue';
-import { decode } from 'msgpackr';
+import { parseWireMessage, addressedTo } from './messaging/wire';
 import { PubSubMessage } from './types/messages';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
 import { getMeshTopic } from './utils/topic';
@@ -132,11 +132,9 @@ class Application extends EventEmitter {
         this.node,
         async (msg, peerId) => {
           if (this.messageProcessor) {
-            // Check if message is addressed to us
-            if ('to' in msg && msg.to === this.node.peerId.toString()) {
-              await this.messageProcessor.process(msg, peerId);
-            } else if (!('to' in msg)) {
-              // Messages without 'to' field (like list-models)
+            // Check if message is addressed to us. Messages without a `to`
+            // (like list-models) are broadcasts.
+            if (addressedTo(msg) === undefined || addressedTo(msg) === this.node.peerId.toString()) {
               await this.messageProcessor.process(msg, peerId);
             }
           }
@@ -181,17 +179,24 @@ class Application extends EventEmitter {
 
     // Listen for PubSub Messages
     this.node.services.pubsub.addEventListener('message', async (evt: { detail: { topic: string; data: Uint8Array; from: any; }; }) => {
-      if (this.topics.includes(evt.detail.topic) && this.messageProcessor) {
-        const msg: PubSubMessage = decode(evt.detail.data);
-        const sourcePeerId = evt.detail.from.toString();
+      // Nothing a peer publishes may throw out of here: an unhandled rejection
+      // takes the whole node down (see `installProcessGuards`).
+      try {
+        if (this.topics.includes(evt.detail.topic) && this.messageProcessor) {
+          const msg = parseWireMessage(evt.detail.data);
+          if (!msg) {
+            logger.debug('Dropped a malformed pubsub message.');
+            return;
+          }
+          const sourcePeerId = evt.detail.from.toString();
 
-        // Check if message is addressed to us (or is a broadcast message)
-        if ('to' in msg && msg.to === this.node.peerId.toString()) {
-          await this.messageProcessor.process(msg, sourcePeerId);
-        } else if (!('to' in msg)) {
-          // Messages without 'to' field (like quote-request, list-models)
-          await this.messageProcessor.process(msg, sourcePeerId);
+          // Check if message is addressed to us (or is a broadcast message)
+          if (addressedTo(msg) === undefined || addressedTo(msg) === this.node.peerId.toString()) {
+            await this.messageProcessor.process(msg, sourcePeerId);
+          }
         }
+      } catch (err: any) {
+        logger.warn(`⚠️ Dropped a pubsub message that could not be handled: ${err?.message ?? err}`);
       }
     });
 

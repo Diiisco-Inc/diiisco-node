@@ -182,23 +182,32 @@ export class MessageProcessor {
    * @returns true if message was processed successfully
    */
   async process(msg: PubSubMessage, sourcePeerId: string): Promise<boolean> {
-    // Verify the Algorand Address from the Sender
-    if (!msg.fromWalletAddr || !this.algo.isValidAddress(msg.fromWalletAddr)) {
-      logger.warn("❌ Message rejected due to invalid Algorand address.");
-      return false;
-    }
+    // Verify the sender's address and signature. The message is a stranger's
+    // bytes: a malformed address or signature makes these throw, and a throw
+    // here would be an unhandled rejection, which exits the process. Treat
+    // anything that cannot be verified as unverified.
+    try {
+      // Verify the Algorand Address from the Sender
+      if (!msg.fromWalletAddr || !this.algo.isValidAddress(msg.fromWalletAddr)) {
+        logger.warn("❌ Message rejected due to invalid Algorand address.");
+        return false;
+      }
 
-    // Verify the Signature exists on the Message
-    if (!msg.signature) {
-      logger.warn("❌ Message rejected due to missing signature.");
-      return false;
-    }
+      // Verify the Signature exists on the Message
+      if (!msg.signature) {
+        logger.warn("❌ Message rejected due to missing signature.");
+        return false;
+      }
 
-    // Verify the Signature is Correct
-    const verifiedMessage: boolean = await this.algo.verifySignature(msg);
-    if (!verifiedMessage) {
-      logger.warn("❌ Message rejected due to invalid signature.");
-      logger.debug("Rejected Message:", msg.role);
+      // Verify the Signature is Correct
+      const verifiedMessage: boolean = await this.algo.verifySignature(msg);
+      if (!verifiedMessage) {
+        logger.warn("❌ Message rejected due to invalid signature.");
+        logger.debug("Rejected Message:", msg.role);
+        return false;
+      }
+    } catch (err: any) {
+      logger.warn(`❌ Message (${String((msg as any)?.role).slice(0, 32)}) rejected: could not be verified (${err?.message ?? err}).`);
       return false;
     }
     logger.info("🔐 Signature of incoming message has been successfully verified.");
