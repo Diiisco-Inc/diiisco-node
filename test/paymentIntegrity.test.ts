@@ -94,7 +94,7 @@ function harness(ledger = new RequestLedger()) {
     { peerStore: { merge: async () => {} } }, ledger
   );
   const roles = () => sent.map((m) => m.role);
-  return { processor, sent, roles, events, ledger };
+  return { processor, sent, roles, events, ledger, quoteMgr };
 }
 
 const message = (role: string, id: string, extra: Record<string, unknown> = {}): any => ({
@@ -336,7 +336,57 @@ describe('requester: inference-response', () => {
   });
 });
 
+describe('requester: quote-response', () => {
+  const quoteResponse = (id = 'req-1') => message('quote-response', id, {
+    to: 'peer-self',
+    payload: { model: 'gemma3', quote: { model: 'gemma3', addr: WALLET, pricePerInputToken1M: 1, pricePerOutputToken1M: 1 } },
+  });
+
+  /** A processor whose quote engine records what it is given instead of starting an auction timer. */
+  function collecting() {
+    const h = harness();
+    const added: any[] = [];
+    h.quoteMgr.addQuote = async (q: any) => { added.push(q); };
+    return { ...h, added };
+  }
+
+  test('is queued while its auction is collecting quotes', async () => {
+    const h = collecting();
+    h.ledger.open('req-1', 60_000);
+    await h.processor.process(quoteResponse(), PROVIDER);
+    expect(h.added.length).toBe(1);
+    expect(h.added[0].from).toBe(PROVIDER);
+  });
+
+  test('is dropped for a request this node never put out', async () => {
+    const h = collecting();
+    await h.processor.process(quoteResponse(), STRANGER);
+    expect(h.added).toEqual([]);
+  });
+
+  test('is dropped once a provider has been chosen, so a late quote starts nothing', async () => {
+    const h = collecting();
+    h.ledger.open('req-1', 60_000);
+    h.ledger.select('req-1', { peerId: PROVIDER, payTo: WALLET }, 60_000);
+    await h.processor.process(quoteResponse(), STRANGER);
+    expect(h.added).toEqual([]);
+  });
+});
+
 describe('RequestLedger', () => {
+  test('an auction collects quotes until a provider is selected, and not after it is released', () => {
+    const ledger = new RequestLedger();
+    expect(ledger.isCollectingQuotes('a')).toBe(false);
+    ledger.open('a', 60_000);
+    expect(ledger.isCollectingQuotes('a')).toBe(true);
+    expect(ledger.providerFor('a')).toBeUndefined();
+    expect(ledger.claimPayment('a')).toBe(false); // nobody to pay yet
+    ledger.select('a', { peerId: PROVIDER, payTo: WALLET }, 60_000);
+    expect(ledger.isCollectingQuotes('a')).toBe(false);
+    ledger.release('a');
+    expect(ledger.isCollectingQuotes('a')).toBe(false);
+  });
+
   test('knows only the provider it was told, by peer id', () => {
     const ledger = new RequestLedger();
     ledger.select('a', { peerId: PROVIDER, payTo: WALLET }, 60_000);

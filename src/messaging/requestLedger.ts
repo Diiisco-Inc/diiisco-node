@@ -14,7 +14,9 @@ export interface SelectedProvider {
   payTo: string;
 }
 
-interface Entry extends SelectedProvider {
+interface Entry {
+  /** Absent while quotes are still being collected; set once a provider is chosen. */
+  provider?: SelectedProvider;
   signed: boolean;
 }
 
@@ -26,25 +28,38 @@ interface Entry extends SelectedProvider {
  * request. The ledger is what turns "a message about request X" into "a message
  * from the provider we chose for request X": `contract-created`,
  * `inference-response` and `inference-failed` are honoured only when the
- * transport-authenticated sender is the recorded provider.
+ * transport-authenticated sender is the recorded provider. Before that, the
+ * ledger also knows which auctions are still collecting quotes, so a
+ * `quote-response` for a request that is not (or is no longer) open is dropped.
  */
 export class RequestLedger {
   private entries = new ExpiringMap<string, Entry>();
 
-  /** Record the provider chosen for `id`. Kept until `release`d or `ttlMs` passes. */
+  /** Record that this node has put request `id` out for quotes. Kept until `release`d or `ttlMs` passes. */
+  open(id: string, ttlMs: number): void {
+    this.entries.set(id, { signed: false }, ttlMs);
+  }
+
+  /** True while `id` is an auction of ours that has not yet chosen a provider. */
+  isCollectingQuotes(id: string): boolean {
+    const entry = this.entries.get(id);
+    return entry !== undefined && entry.provider === undefined;
+  }
+
+  /** Record the provider chosen for `id`, which closes its auction. */
   select(id: string, provider: SelectedProvider, ttlMs: number): void {
-    this.entries.set(id, { ...provider, signed: false }, ttlMs);
+    this.entries.set(id, { provider: { ...provider }, signed: false }, ttlMs);
   }
 
   /** The provider chosen for `id`, or `undefined` if none (never ours, finished, or expired). */
   providerFor(id: string): SelectedProvider | undefined {
-    const entry = this.entries.get(id);
-    return entry ? { peerId: entry.peerId, payTo: entry.payTo } : undefined;
+    const provider = this.entries.get(id)?.provider;
+    return provider ? { ...provider } : undefined;
   }
 
   /** True only if `peerId` is the provider chosen for `id`. */
   isSelectedProvider(id: string, peerId: string): boolean {
-    return this.entries.get(id)?.peerId === peerId;
+    return this.entries.get(id)?.provider?.peerId === peerId;
   }
 
   /**
@@ -53,7 +68,7 @@ export class RequestLedger {
    */
   claimPayment(id: string): boolean {
     const entry = this.entries.get(id);
-    if (!entry || entry.signed) return false;
+    if (!entry?.provider || entry.signed) return false;
     entry.signed = true;
     return true;
   }

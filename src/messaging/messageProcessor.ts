@@ -487,6 +487,15 @@ export class MessageProcessor {
   }
 
   private async handleQuoteResponse(msg: QuoteResponse, sourcePeerId: string) {
+    // Request ids travel in the clear on the broadcast quote-request, so any
+    // peer can address a quote to us for any of them. Only an auction this node
+    // has open and is still collecting quotes for may receive one: it keeps a
+    // stranger's quote out of the running, and stops late quotes for a finished
+    // request from starting a selection nobody is waiting for.
+    if (!this.requests.isCollectingQuotes(msg.id)) {
+      logger.debug(`🚫 Dropped a quote-response for ${msg.id} from ${sourcePeerId.slice(0, 16)}... — no open auction.`);
+      return;
+    }
     logger.info(`📥 Received quote-response from ${sourcePeerId}`);
     this.quoteMgr.addQuote({ msg: msg, from: sourcePeerId });
   }

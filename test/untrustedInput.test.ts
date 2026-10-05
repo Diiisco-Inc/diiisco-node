@@ -72,6 +72,7 @@ describe('quote and model-list shapes', () => {
       quote('c', { pricePerInputToken1M: 'free' }),
       quote('d', { pricePerOutputToken1M: -1 }),
       quote('e', { addr: 5 }),
+      quote('f', { addr: 'SOMEONE-ELSES-WALLET-WITH-A-BIG-DSCO-STAKE' }), // borrowed stake
       quote('__proto__'),
       42,
       null,

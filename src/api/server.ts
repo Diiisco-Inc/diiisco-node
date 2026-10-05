@@ -284,6 +284,11 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     quoteMessage.signature = await algo.signObject(quoteMessage);
     const id = quoteMessage.id;
 
+    // Open before the request is published, so even a quote that comes straight
+    // back (our own node answers over emitSelf) finds its auction. Quotes for an
+    // id that is not open are dropped; `cleanup` closes it.
+    requests.open(id, inferenceTimeoutMs());
+
     return await new Promise<any>((resolve, reject) => {
       let settled = false;
       let quoteSelected = false;

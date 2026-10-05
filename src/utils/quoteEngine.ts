@@ -163,9 +163,9 @@ const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Num
 const isOptional = (v: unknown, check: (x: unknown) => boolean) => v === undefined || check(v);
 
 /**
- * Whether a `quote-response` has the shape the rest of the engine reads. Every
- * field `buildCandidates` and the selection strategies touch is checked, so a
- * quote that passes cannot make them throw.
+ * Whether a `quote-response` has the shape the rest of the engine reads, and
+ * claims no stake but its own. Every field `buildCandidates` and the selection
+ * strategies touch is checked, so a quote that passes cannot make them throw.
  */
 export function isValidQuoteResponse(msg: unknown): msg is QuoteResponse {
   const m = msg as any;
@@ -177,7 +177,10 @@ export function isValidQuoteResponse(msg: unknown): msg is QuoteResponse {
   if (typeof q !== 'object' || q === null) return false;
   return (
     typeof q.model === 'string' &&
-    typeof q.addr === 'string' &&
+    // The quote's `addr` is what the engine reads DSCO stake from, and it is
+    // self-declared: unless it is the wallet that signed the quote, a peer could
+    // borrow another wallet's stake to win the auction.
+    q.addr === m.fromWalletAddr &&
     isFiniteNumber(q.pricePerInputToken1M) && q.pricePerInputToken1M >= 0 &&
     isFiniteNumber(q.pricePerOutputToken1M) && q.pricePerOutputToken1M >= 0 &&
     isOptional(q.requestTimestamp, isFiniteNumber) &&
