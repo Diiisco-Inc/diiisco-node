@@ -397,7 +397,7 @@ function Invoke-DiiiscoInstall {
         if (-not $tag) {
             Stop-Install 'Could not work out the latest DIIISCO release.' @(
                 'Check your network, or pin a version:',
-                '  $env:DIIISCO_VERSION = "v1.0.8"; irm https://diiis.co/install.ps1 | iex',
+                '  $env:DIIISCO_VERSION = "v1.0.9"; irm https://diiis.co/install.ps1 | iex',
                 "Releases: $BaseUrl"
             )
         }

@@ -3,7 +3,7 @@
  *
  * A compiled single-file binary has no `package.json` to read at runtime, so
  * the values are baked in at build time. The build injects them with
- * `bun build --define process.env.DIIISCO_VERSION='"1.0.8"'` (and likewise
+ * `bun build --define process.env.DIIISCO_VERSION='"1.0.9"'` (and likewise
  * `DIIISCO_COMMIT` / `DIIISCO_INSTALL_SOURCE`); the fallbacks keep
  * `bun run src/cli.ts` working in a plain checkout.
  *
