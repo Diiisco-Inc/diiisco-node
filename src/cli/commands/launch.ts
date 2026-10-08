@@ -101,6 +101,15 @@ export async function runLaunch(options: LaunchOptions): Promise<void> {
     // never touches local config.
     requireConfig();
 
+    // The tool talks to the node over its HTTP API; a node without one would
+    // start fine and then be unreachable, so say so before spawning anything.
+    if (env.api.enabled === false) {
+      die(
+        'This node has `api.enabled` set to false, so there is no API for an agent tool to connect to.',
+        'Enable it with `diiisco config edit`, or point at another node with --endpoint.'
+      );
+    }
+
     info(`No node at ${endpoint} — starting one…`);
     await runStart({ timeoutMs: SPAWN_HEALTH_TIMEOUT_MS, silent: true });
 

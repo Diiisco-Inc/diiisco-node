@@ -1,4 +1,6 @@
-<img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/diiisco-wordmark-black.png?raw=true" width="480" />
+<p align="center">
+  <img src="https://github.com/Diiisco-Inc/diiisco-node/blob/main/assets/diiisco-wordmark-black.png?raw=true" width="1000" />
+</p>
 
 
 <p align="center">
@@ -268,6 +270,7 @@ absolute path is unambiguous.
 | `availability.checkIntervalMs` | `30000` | How often (ms) to re-check which models the backend is actually serving. `0` disables the background poll. |
 | `availability.freshForMs` | `10000` | Maximum age (ms) of that check when answering a quote request. Older than this and the node re-probes before quoting. |
 | `availability.timeoutMs` | `2000` | How long (ms) to wait for the backend to answer a check before treating it as down. |
+| `kinds` | _none_ | Tell the node what a model is when your runtime doesn't say: an object of model id (or `*` glob) to `chat`, `embedding` or `decision`, e.g. `{ "tev1:*": "decision", "*embed*": "embedding" }`. Ollama and LM Studio are detected automatically. Models that aren't `chat` are left out of `GET /v1/models` by default (`?type=all` returns everything). |
 
 Your node re-checks its backend rather than trusting the list it built at startup. Stop Ollama and the node stops quoting within `checkIntervalMs` — it will not win auctions it can't honour — and starts again on its own when the backend comes back. No restart, and no need to start the backend before the node.
 
@@ -302,6 +305,9 @@ On startup, the node automatically opts into the DSCO and USDC assets if not alr
 | `bearerAuthentication` | `true` | Require `Authorization: Bearer <key>` on API requests |
 | `keys` | `[]` | Accepted bearer tokens |
 | `port` | `8080` | Port for the HTTP API |
+| `host` | `127.0.0.1` | Address the API binds. The default is reachable from this machine only, because every request to the API spends the node's wallet. Set `0.0.0.0` to serve other machines, and turn `bearerAuthentication` on when you do |
+| `corsOrigins` | `[]` | Browser origins allowed to call the API cross-origin. Only honoured with `bearerAuthentication`; without a key no origin is allowed |
+| `allowedHosts` | `[]` | Extra `Host` names accepted while the API is loopback-only and unauthenticated (for a reverse proxy in front of the node). `localhost`, `127.0.0.1`, `[::1]` and the host of `node.url` are always accepted |
 | `networkWaitTime` | `10000` | How long (ms) the `/network` endpoint waits for peer responses before returning |
 
 ### `quoteEngine`
@@ -336,6 +342,12 @@ On startup, the node automatically opts into the DSCO and USDC assets if not alr
 |---|---|---|
 | `enabled` | `false` | Disables Algorand payments and isolates the network to `privateTopic` |
 | `privateTopic` | `diiisco/models/1.0.0` | GossipSub topic name. Must match across all nodes in the cluster. |
+
+### `power`
+
+| Field | Default | Description |
+|---|---|---|
+| `preventSleep` | `true` | While the node runs, hold the machine awake so it doesn't idle into sleep and drop off the network (`caffeinate -i` on macOS, `SetThreadExecutionState` on Windows, `systemd-inhibit` on Linux). It is released when the node stops. Closing a laptop lid or choosing Sleep still sleeps the machine, and the node reconnects when it wakes. Set `false` to opt out. |
 
 ### `libp2pBootstrapServers`
 
@@ -408,13 +420,40 @@ Set `stream: true` and the response comes back as SSE. Note that the node does n
 
 Returns `{ "input_tokens": N }` for a request body in the same shape as `/v1/messages`, minus `max_tokens`. Counting happens against this node's local model backend, so a node with no backend configured returns `503`.
 
+#### `POST /v1/systemone`
+
+Asks a **decision model** (Tev, Nimble, Jev: models that return typed answers and probabilities rather than text) a set of typed questions. The request and response follow [TypeSafe's System One API](https://docs.typesafe.ai/api.md) and cross the network unchanged: the node auctions the request like a chat completion, pays the winning provider via x402, and hands back the backend's JSON verbatim.
+
+```bash
+curl http://localhost:8080/v1/systemone \
+  -H "Authorization: Bearer sk-your-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tev1:0.8b",
+    "state": "Help! My payouts have been failing for 3 days.",
+    "questions": {
+      "is_urgent": { "type": "noul", "instructions": "Does this convey urgency?" }
+    }
+  }'
+```
+
+```json
+{ "model": "tev1:0.8b", "answers": { "is_urgent": { "type": "noul", "noul": 0.88 } }, "usage": { "input_tokens": 119, "output_tokens": 1 } }
+```
+
+Question types are `noul` (yes/no probability), `choice` (one of up to 255 options) and `score` (2 to 10 ordered levels). Only decision models can answer: find them with `GET /v1/models?type=decision`. A model that is not a decision model is a `400`; a model nobody on the network serves is a `503`. The state and questions are revealed only to the winning provider, and you pay for the real input and output tokens, capped by your `maxSpend`. Providers need a runtime that serves `POST /v1/systemone` (Ollama does); other runtimes work as soon as they implement that endpoint.
+
 #### `GET /v1/models`
 
-Returns a list of models available across the network.
+Returns a list of models available across the network. By default only **chat** models are listed, which keeps embedding and decision models out of the model pickers in tools like Claude Code. Pass `type` to ask for another kind: `chat`, `embedding`, `decision` or `all`. Every entry carries a `kind`.
 
 ```bash
 curl http://localhost:8080/v1/models \
   -H "Authorization: Bearer sk-your-key"
+
+# decision models, or everything
+curl "http://localhost:8080/v1/models?type=decision" -H "Authorization: Bearer sk-your-key"
+curl "http://localhost:8080/v1/models?type=all" -H "Authorization: Bearer sk-your-key"
 ```
 
 ### 🌍 Network

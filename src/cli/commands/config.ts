@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EnvironmentFile } from '../../environment/environment.types';
-import { validateEnvironment } from '../../environment/validate';
+import { environmentWarnings, validateEnvironment } from '../../environment/validate';
 import {
   ConfigError,
   configLocation,
@@ -84,6 +84,10 @@ function runConfigShow(asJson: boolean): void {
     warn('This configuration will not start:');
     for (const problem of problems) info(`  • ${problem}`);
   }
+  for (const warning of environmentWarnings(env)) {
+    info('');
+    warn(warning);
+  }
 }
 
 /**
@@ -155,6 +159,7 @@ async function runConfigEdit(): Promise<void> {
   if (location.legacy) {
     warn(`Your edits were written to ${target}; the deprecated ${location.path} is now unused and can be deleted.`);
   }
+  for (const warning of environmentWarnings(mergeConfig(parsed))) warn(warning);
   info(colour.dim('  Restart the node to apply: diiisco restart'));
 }
 

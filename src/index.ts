@@ -1,6 +1,7 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
 import { setLocalAddressProvider } from './libp2p/localAddresses';
-import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, reconnectToBootstrap, startConnectionHealthCheck, stopConnectionHealthCheck } from './libp2p/reconnection';
+import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, recoverAfterWake, startConnectionHealthCheck, startSleepDetector, stopConnectionHealthCheck } from './libp2p/reconnection';
+import { KeepAwake } from './utils/keepAwake';
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
 import algorand from "./utils/algorand";
@@ -13,9 +14,10 @@ import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
 import { MessageRouter } from './messaging/messageRouter';
 import { MessageProcessor } from './messaging/messageProcessor';
+import { RequestLedger } from './messaging/requestLedger';
 import { MeshReadinessMonitor } from './libp2p/meshReadinessMonitor';
 import { MeshMessageQueue } from './messaging/meshMessageQueue';
-import { decode } from 'msgpackr';
+import { parseWireMessage, addressedTo } from './messaging/wire';
 import { PubSubMessage } from './types/messages';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
 import { getMeshTopic } from './utils/topic';
@@ -34,9 +36,17 @@ class Application extends EventEmitter {
   private directHandler: DirectMessagingHandler | null = null;
   private messageRouter: MessageRouter | null = null;
   private messageProcessor: MessageProcessor | null = null;
+  // Which provider each of this node's requests went to; shared by the API
+  // (which chooses) and the message processor (which must hold replies to it).
+  private requests = new RequestLedger();
 
   private apiServer: Server | null = null;
   private isShuttingDown = false;
+
+  // Holds the machine awake while serving, and notices when it slept anyway.
+  private keepAwake = new KeepAwake();
+  private stopSleepDetector: (() => void) | null = null;
+  private recoveringFromSleep = false;
   
   // Track peers for reconnection
   private knownPeers: Map<string, { lastSeen: number; multiaddrs: string[] }> = new Map();
@@ -122,11 +132,9 @@ class Application extends EventEmitter {
         this.node,
         async (msg, peerId) => {
           if (this.messageProcessor) {
-            // Check if message is addressed to us
-            if ('to' in msg && msg.to === this.node.peerId.toString()) {
-              await this.messageProcessor.process(msg, peerId);
-            } else if (!('to' in msg)) {
-              // Messages without 'to' field (like list-models)
+            // Check if message is addressed to us. Messages without a `to`
+            // (like list-models) are broadcasts.
+            if (addressedTo(msg) === undefined || addressedTo(msg) === this.node.peerId.toString()) {
               await this.messageProcessor.process(msg, peerId);
             }
           }
@@ -149,7 +157,8 @@ class Application extends EventEmitter {
       this,
       this.messageRouter,
       this.node.peerId.toString(),
-      this.node
+      this.node,
+      this.requests
     );
 
     // Create a Relay PubSub Topic
@@ -164,23 +173,30 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests);
       this.apiServer = server;
     }
 
     // Listen for PubSub Messages
     this.node.services.pubsub.addEventListener('message', async (evt: { detail: { topic: string; data: Uint8Array; from: any; }; }) => {
-      if (this.topics.includes(evt.detail.topic) && this.messageProcessor) {
-        const msg: PubSubMessage = decode(evt.detail.data);
-        const sourcePeerId = evt.detail.from.toString();
+      // Nothing a peer publishes may throw out of here: an unhandled rejection
+      // takes the whole node down (see `installProcessGuards`).
+      try {
+        if (this.topics.includes(evt.detail.topic) && this.messageProcessor) {
+          const msg = parseWireMessage(evt.detail.data);
+          if (!msg) {
+            logger.debug('Dropped a malformed pubsub message.');
+            return;
+          }
+          const sourcePeerId = evt.detail.from.toString();
 
-        // Check if message is addressed to us (or is a broadcast message)
-        if ('to' in msg && msg.to === this.node.peerId.toString()) {
-          await this.messageProcessor.process(msg, sourcePeerId);
-        } else if (!('to' in msg)) {
-          // Messages without 'to' field (like quote-request, list-models)
-          await this.messageProcessor.process(msg, sourcePeerId);
+          // Check if message is addressed to us (or is a broadcast message)
+          if (addressedTo(msg) === undefined || addressedTo(msg) === this.node.peerId.toString()) {
+            await this.messageProcessor.process(msg, sourcePeerId);
+          }
         }
+      } catch (err: any) {
+        logger.warn(`⚠️ Dropped a pubsub message that could not be handled: ${err?.message ?? err}`);
       }
     });
 
@@ -245,6 +261,11 @@ class Application extends EventEmitter {
     // Start periodic connection health check
     startConnectionHealthCheck(this.createReconnectionDependencies());
 
+    // A node that serves has to stay reachable, and a machine that idles into
+    // sleep drops off the network. On by default; `power.preventSleep: false`
+    // opts out.
+    if (this.env.power?.preventSleep !== false) this.keepAwake.start();
+
     // Start sleep detection via wall-clock polling
     this.startSleepDetection();
 
@@ -274,37 +295,64 @@ class Application extends EventEmitter {
   /**
    * Poll wall-clock time to detect host machine waking from sleep.
    * A gap larger than the poll interval indicates the process was suspended.
+   * That still happens with `power.preventSleep` on — lid close and an explicit
+   * Sleep are not overridden — so the recovery below is not redundant.
    */
   private startSleepDetection() {
-    const POLL_INTERVAL = 2000;    // Poll every 2s
-    const SLEEP_THRESHOLD = 10000; // Gap > 10s means the machine was asleep
-    let lastCheck = Date.now();
-
-    setInterval(() => {
-      const now = Date.now();
-      const gap = now - lastCheck;
-      if (gap > SLEEP_THRESHOLD) {
-        logger.info(`💤 Wake from sleep detected (gap: ${Math.round(gap / 1000)}s) — forcing reconnection`);
-        this.handleWakeFromSleep();
-      }
-      lastCheck = now;
-    }, POLL_INTERVAL);
+    this.stopSleepDetector?.();
+    this.stopSleepDetector = startSleepDetector((gap) => {
+      logger.info(`💤 Wake from sleep detected (gap: ${Math.round(gap / 1000)}s) — forcing reconnection`);
+      void this.handleWakeFromSleep();
+    });
   }
 
   /**
-   * Close stale connections and force an immediate bootstrap reconnect after wake.
+   * Close stale connections and get back on the network after a wake, retrying
+   * until a connection exists: the network is often not up yet when the clock
+   * jumps, so a single bootstrap dial used to fail and leave the node offline
+   * until the next health check.
    */
   private async handleWakeFromSleep() {
-    const connections = this.node.getConnections();
-    logger.info(`🔌 Closing ${connections.length} potentially stale connection(s)...`);
-    for (const conn of connections) {
-      try { await conn.close(); } catch {}
+    // A second wake while recovering would only start a rival recovery.
+    if (this.recoveringFromSleep || this.isShuttingDown) return;
+    this.recoveringFromSleep = true;
+
+    try {
+      const connections = this.node.getConnections();
+      logger.info(`🔌 Closing ${connections.length} potentially stale connection(s)...`);
+      // A dead socket can hang `close()`, and the recovery waits behind it, so
+      // each close gets a short deadline and is then aborted outright.
+      await Promise.all(connections.map(async (conn: any) => {
+        try {
+          await Promise.race([
+            conn.close(),
+            new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+          ]);
+        } catch {}
+        try { conn.abort?.(new Error('stale connection after wake')); } catch {}
+      }));
+
+      // Reset exhausted reconnect attempt counters so cooldowns don't block recovery
+      this.reconnectAttempts.clear();
+
+      const result = await recoverAfterWake(this.createReconnectionDependencies(), {
+        isShuttingDown: () => this.isShuttingDown,
+        // Private networks have no relay to wait on; the mesh check is for the public one.
+        meshTopic: this.env.local?.enabled ? undefined : getMeshTopic(),
+      });
+
+      if (result.connected && result.meshReady) {
+        logger.info(`✅ Back on the network after waking (${result.attempts} attempt(s)).`);
+      } else if (result.connected) {
+        logger.warn('⚠️ Reconnected after waking, but the mesh has no subscribers yet; the health check will keep trying.');
+      } else if (!this.isShuttingDown) {
+        logger.warn('⚠️ Could not reconnect after waking; the connection health check will keep trying.');
+      }
+    } catch (err: any) {
+      logger.error(`❌ Recovery after waking failed: ${err.message}`);
+    } finally {
+      this.recoveringFromSleep = false;
     }
-
-    // Reset exhausted reconnect attempt counters so cooldowns don't block recovery
-    this.reconnectAttempts.clear();
-
-    await reconnectToBootstrap(this.createReconnectionDependencies());
   }
 
   /**
@@ -337,6 +385,8 @@ class Application extends EventEmitter {
 
       // 2. Stop background services (health checks, backend availability poll)
       stopConnectionHealthCheck();
+      this.stopSleepDetector?.();
+      this.keepAwake.stop();
       this.models.stop();
 
       // 3. Unsubscribe from pubsub topics
@@ -367,7 +417,7 @@ class Application extends EventEmitter {
 export { Application };
 export { configureEnvironment } from './environment/runtime';
 export { DEFAULT_ENVIRONMENT, withDefaults } from './environment/defaults';
-export { validateEnvironment } from './environment/validate';
+export { validateEnvironment, environmentWarnings } from './environment/validate';
 export { installProcessGuards } from './utils/processGuards';
 export type { Environment } from './environment/environment.types';
 

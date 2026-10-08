@@ -10,6 +10,7 @@ import { logger } from './logger';
 import { Environment } from "../environment/environment.types";
 import { Model } from "openai/resources/index";
 import EventEmitter from "events";
+import { BackendRejectedError, type SystemOneRequest } from "./systemOne";
 
 /**
  * Optional generation params forwarded to the backend chat/completions call.
@@ -100,12 +101,14 @@ export function countInputTokens(inputs: any[], tools?: any[]): number {
 
 export class OpenAIInferenceModel {
   openai: OpenAI;
+  private baseURL: string;
   private env: Environment;
   nodeEventEmitter: EventEmitter;
   availableModels: Model[] = [];
 
   constructor(baseURL: string, nodeEvents: EventEmitter) {
     this.env = environment;
+    this.baseURL = baseURL.replace(/\/+$/, '');
     this.openai = new OpenAI({
       baseURL: baseURL,
       // Local backends (Ollama, LM Studio) don't require a key, but the OpenAI
@@ -130,6 +133,50 @@ export class OpenAIInferenceModel {
   }
 
   /**
+   * Ask a decision model a set of typed questions (`POST {baseURL}/systemone`).
+   *
+   * The OpenAI SDK has no such method, so this is a plain `fetch` to whatever
+   * runtime the node is configured with — nothing here is specific to Ollama.
+   * The backend's JSON comes back untouched. A non-2xx answer (a model that is
+   * not a decision model, a runtime without the endpoint) throws
+   * `BackendRejectedError` carrying the backend's status and message.
+   */
+  async systemOne(request: SystemOneRequest, signal?: AbortSignal): Promise<any> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseURL}/systemone`, {
+        method: 'POST',
+        signal,
+        headers: {
+          'content-type': 'application/json',
+          ...(this.env.models.apiKey ? { authorization: `Bearer ${this.env.models.apiKey}` } : {}),
+        },
+        body: JSON.stringify({ state: request.state, model: request.model, questions: request.questions }),
+      });
+    } catch (error) {
+      logger.error("Error getting System One response from the model backend:", error);
+      throw error;
+    }
+
+    const text = await response.text();
+    let body: any;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = undefined;
+    }
+
+    if (!response.ok) {
+      const detail = body?.error?.message ?? body?.error ?? (text.trim() || `HTTP ${response.status}`);
+      throw new BackendRejectedError(response.status, String(detail));
+    }
+    if (body === undefined) {
+      throw new BackendRejectedError(502, 'The model backend returned a System One response that was not JSON.');
+    }
+    return body;
+  }
+
+  /**
    * List the models the backend is currently serving.
    *
    * The optional `signal` is how `ModelAvailabilityMonitor` bounds its liveness
@@ -146,20 +193,33 @@ export class OpenAIInferenceModel {
   }
 
   async addModel(models: Model[]) {
+    // A peer's `list-models-response`: untrusted. Keep only entries that look
+    // like models, so the compile step below cannot be made to throw (it runs
+    // in a timer, where a throw would be an unhandled rejection and exit the node).
+    const valid = Array.isArray(models)
+      ? models.filter((m) => typeof m === 'object' && m !== null && typeof (m as Model).id === 'string')
+      : [];
+    if (!Array.isArray(models)) {
+      logger.warn('❌ Dropped a list-models-response whose models were not a list.');
+    }
 
     if (this.availableModels.length === 0) {
-      this.availableModels = models;
+      this.availableModels = valid;
       setTimeout(() => {
-        const uniqueModels = this.availableModels.filter((model, index, self) => 
-          index === self.findIndex((m) => m.id === model.id)
-        );
-        this.nodeEventEmitter.emit(`model-list-compiled`, uniqueModels);
-        logger.info(`✅ Model list compiled and event emitted: ${JSON.stringify(uniqueModels)}`);
-        this.availableModels = [];
+        try {
+          const uniqueModels = this.availableModels.filter((model, index, self) =>
+            index === self.findIndex((m) => m.id === model.id)
+          );
+          this.nodeEventEmitter.emit(`model-list-compiled`, uniqueModels);
+          logger.info(`✅ Model list compiled and event emitted: ${JSON.stringify(uniqueModels)}`);
+        } catch (err) {
+          logger.error(`❌ Could not compile the network model list: ${(err as Error).message}`);
+        } finally {
+          this.availableModels = [];
+        }
       }, environment.quoteEngine.waitTime || 5000);
     } else {
-      this.availableModels = [...this.availableModels, ...models];
+      this.availableModels = [...this.availableModels, ...valid];
     }
-    
   }
 }

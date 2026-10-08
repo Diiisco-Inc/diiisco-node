@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
-import { encode, decode } from 'msgpackr';
+import { encode } from 'msgpackr';
+import { parseWireMessage } from './wire';
 import { PubSubMessage } from '../types/messages';
 import environment from '../environment/runtime';
 import type { Connection, Stream } from '@libp2p/interface';
@@ -45,8 +46,9 @@ export class DirectMessagingHandler {
           throw new Error(`Message exceeds max size: ${directMessagingConfig.maxMessageSize} bytes`);
         }
 
-        // Decode message
-        const msg: PubSubMessage = decode(messageData);
+        // Decode message. A stream is untrusted input: drop what is not a message.
+        const msg = parseWireMessage(messageData);
+        if (!msg) throw new Error('Not a valid DIIISCO message');
         logger.info(`📥 Received direct message (${msg.role}) from ${peerId}`);
 
         // Process through unified handler

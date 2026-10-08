@@ -1,29 +1,12 @@
-import { readFileSync } from 'fs';
 import { NodeProfile } from '../types/profile';
 import { nodeStats } from './nodeStats';
 import { isPublicNode } from '../libp2p/node';
+import type { ModelKind } from '../types/models';
 import { getMeshTopic } from './topic';
 import environment from '../environment/runtime';
 import algorand from './algorand';
 import { getRatesPer1M } from './quoteCreationMethods';
-
-let cachedVersion: string | undefined;
-
-/** Package version, resolved relative to the bundled module (dist/index.js). */
-const getVersion = (): string | undefined => {
-  if (cachedVersion !== undefined) return cachedVersion;
-  for (const candidate of ['../package.json', '../../package.json']) {
-    try {
-      const pkg = JSON.parse(readFileSync(new URL(candidate, import.meta.url), 'utf-8'));
-      if (pkg.name === 'diiisco-node' && typeof pkg.version === 'string') {
-        cachedVersion = pkg.version;
-        return cachedVersion;
-      }
-    } catch {}
-  }
-  cachedVersion = undefined;
-  return undefined;
-};
+import { version } from './version';
 
 /**
  * Build this node's own public profile. Identity fields are always included;
@@ -31,7 +14,12 @@ const getVersion = (): string | undefined => {
  * Shared by the status page routes (serving `/node.json`) and the
  * `node-profile` message handler (answering queries from relays).
  */
-export const buildOwnProfile = (node: any, algo: algorand, availableModels: string[]): NodeProfile => {
+export const buildOwnProfile = (
+  node: any,
+  algo: algorand,
+  availableModels: string[],
+  kindOf: (id: string) => ModelKind = () => 'chat'
+): NodeProfile => {
   const localMode = environment.local?.enabled === true;
 
   let role: NodeProfile['role'] = 'direct';
@@ -52,15 +40,19 @@ export const buildOwnProfile = (node: any, algo: algorand, availableModels: stri
     online: true,
     network: localMode ? 'local' : 'public',
     observedAt: new Date().toISOString(),
-    version: getVersion(),
+    version: version(),
   };
 
   if (environment.node?.publicStats !== false) {
     profile.stats = {
       models: availableModels.map((id) => {
         const { input, output } = getRatesPer1M(id);
+        const kind = kindOf(id);
         return {
           id,
+          // Only the notable kinds are published: a chat model is the default,
+          // and leaving the key off keeps an ordinary node's profile unchanged.
+          ...(kind !== 'chat' ? { kind } : {}),
           pricePer1MTokens: input, // back-compat: legacy single rate = input rate
           pricePerInputToken1M: input,
           pricePerOutputToken1M: output,

@@ -27,8 +27,12 @@ function fakeBackend(behaviour: (call: number, signal?: AbortSignal) => Promise<
   };
 }
 
+// Kind detection would otherwise reach for a real runtime on localhost; these
+// tests are about availability, so by default every model is left as it came.
+const noKinds = { classify: async (models: any[]) => models };
+
 const monitorFor = (backend: OpenAIInferenceModel, options = {}) =>
-  new ModelAvailabilityMonitor(backend, { enabled: true, checkIntervalMs: 0, ...options });
+  new ModelAvailabilityMonitor(backend, { enabled: true, checkIntervalMs: 0, kindDetector: noKinds, ...options });
 
 describe('ModelAvailabilityMonitor', () => {
   test('a healthy probe publishes the backend model ids', async () => {
@@ -155,5 +159,46 @@ describe('ModelAvailabilityMonitor', () => {
     expect(monitor.list()).toEqual([]);
     expect(fake.calls).toBe(0);
     monitor.stop();
+  });
+});
+
+describe('ModelAvailabilityMonitor — model kinds', () => {
+  const tagging = (kinds: Record<string, string>) => ({
+    classify: async (models: any[]) => models.map((m) => ({ ...m, kind: kinds[m.id] ?? 'chat' })),
+  });
+
+  test('publishes each model with its kind and answers kindOf / isChat', async () => {
+    const { backend } = fakeBackend(async () => [model('gemma3'), model('embeddinggemma'), model('tev1:0.8b')]);
+    const monitor = monitorFor(backend, { kindDetector: tagging({ embeddinggemma: 'embedding', 'tev1:0.8b': 'decision' }) });
+
+    await monitor.refresh();
+
+    expect(monitor.kindOf('embeddinggemma')).toBe('embedding');
+    expect(monitor.kindOf('tev1:0.8b')).toBe('decision');
+    expect(monitor.isChat('gemma3')).toBe(true);
+    expect(monitor.isChat('embeddinggemma')).toBe(false);
+    expect(monitor.models().find((m) => m.id === 'tev1:0.8b')?.kind).toBe('decision');
+  });
+
+  test('an unknown model reads as chat', async () => {
+    const { backend } = fakeBackend(async () => [model('gemma3')]);
+    const monitor = monitorFor(backend);
+
+    await monitor.refresh();
+
+    expect(monitor.kindOf('never-heard-of-it')).toBe('chat');
+  });
+
+  test('a detector that throws leaves the backend healthy and every model served', async () => {
+    const { backend } = fakeBackend(async () => [model('gemma3'), model('embeddinggemma')]);
+    const monitor = monitorFor(backend, {
+      kindDetector: { classify: async () => { throw new Error('detector exploded'); } },
+    });
+
+    await monitor.refresh();
+
+    expect(monitor.isHealthy()).toBe(true);
+    expect(monitor.list().sort()).toEqual(['embeddinggemma', 'gemma3']);
+    expect(monitor.isChat('embeddinggemma')).toBe(true);
   });
 });

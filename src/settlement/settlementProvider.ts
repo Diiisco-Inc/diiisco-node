@@ -17,8 +17,10 @@ export interface PaymentRequest {
 
 /**
  * Proof-of-payment attached to `contract-signed` (requester → provider): the
- * signed payment authorization. x402: the `PaymentPayload` (carries the accepted
- * requirements inside it, so verify/settle need no separate state).
+ * signed payment authorization. x402: the `PaymentPayload`. It echoes the
+ * requirements the requester paid against, but that echo is the requester's
+ * word — the provider verifies and settles against the requirements it stored
+ * when it issued the challenge, never against the echo.
  */
 export interface PaymentEvidence {
   [key: string]: any;
@@ -45,17 +47,31 @@ export interface SettlementProvider {
     amount: bigint; // atomic units (micro-USDC)
   }): Promise<PaymentRequest>;
 
-  /** Confirm the requester has paid before serving. x402: facilitator `verify`. */
+  /**
+   * Confirm the requester has paid before serving. `expected` is the request
+   * this node issued (what `createPaymentRequest` returned), kept by the caller;
+   * the evidence must satisfy exactly that. x402: facilitator `verify`.
+   */
   verifyPayment(args: {
     quoteId: string;
-    expectedAmount: bigint;
+    expected: PaymentRequest;
     evidence: PaymentEvidence;
   }): Promise<VerifyResult>;
 
-  /** Finalize settlement, provider-side and off the critical path. x402: facilitator `settle`. */
-  settle(args: { quoteId: string; evidence: PaymentEvidence }): Promise<SettlementResult>;
+  /**
+   * Finalize settlement, provider-side and off the critical path, against the
+   * request this node issued. x402: facilitator `settle`.
+   */
+  settle(args: { quoteId: string; expected: PaymentRequest; evidence: PaymentEvidence }): Promise<SettlementResult>;
 
   // --- Requester side ---
+  /**
+   * Whether a payment request is one this node should ever sign: the right
+   * asset on the right network, payable to `payTo` (the wallet of the provider
+   * whose quote was accepted). Returns the reason it is not, or `null`.
+   */
+  checkRequest(request: PaymentRequest, payTo: string): string | null;
+
   /** Satisfy a payment request. x402: sign the ASA transfer group. */
   pay(args: {
     quoteId: string;

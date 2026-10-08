@@ -10,6 +10,7 @@ import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
 import { buildOwnProfile } from '../utils/nodeProfile';
 import { ModelAvailability } from '../utils/modelAvailability';
+import type { ModelKind } from '../types/models';
 import { NodeProfile, DirectoryEntry, ModelStats } from '../types/profile';
 import { NodeProfileRequest, NetworkNode } from '../types/messages';
 import { logger } from '../utils/logger';
@@ -53,6 +54,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   // Read live on every call, so a stopped backend empties the advertised model
   // list without a restart.
   const servedModels = (): string[] => models?.list() ?? [];
+  const kindOf = (id: string): ModelKind => models?.kindOf(id) ?? 'chat';
   const profileWaitTime = environment.api.profileWaitTime || PROFILE_WAIT_DEFAULT;
   const profileCacheTtl = environment.api.profileCacheTtl || PROFILE_CACHE_TTL_DEFAULT;
 
@@ -123,7 +125,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
    */
   const getProfile = async (peerId: string): Promise<NodeProfile | null> => {
     if (peerId === ownPeerId) {
-      return buildOwnProfile(node, algo, servedModels());
+      return buildOwnProfile(node, algo, servedModels(), kindOf);
     }
 
     const cached = profileCache.get(peerId);
@@ -196,7 +198,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     const sorted = [...entries.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || b.lastSeen - a.lastSeen);
 
     // The serving node itself, pinned to the top.
-    const own = buildOwnProfile(node, algo, servedModels());
+    const own = buildOwnProfile(node, algo, servedModels(), kindOf);
     sorted.unshift({
       peerId: ownPeerId,
       displayName: own.displayName,
@@ -227,23 +229,25 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       [...peerIds].map((peerId) => getProfile(peerId).catch(() => null))
     );
     const profiles: NodeProfile[] = [
-      buildOwnProfile(node, algo, servedModels()),
+      buildOwnProfile(node, algo, servedModels(), kindOf),
       ...remote.filter((p): p is NodeProfile => p !== null),
     ];
 
-    const byModel = new Map<string, { nodes: number; prices: number[] }>();
+    const byModel = new Map<string, { nodes: number; prices: number[]; kind?: ModelStats['kind'] }>();
     for (const profile of profiles) {
       for (const m of profile.stats?.models ?? []) {
         const entry = byModel.get(m.id) ?? { nodes: 0, prices: [] };
         entry.nodes += 1;
+        entry.kind ??= m.kind;
         if (typeof m.pricePer1MTokens === 'number') entry.prices.push(m.pricePer1MTokens);
         byModel.set(m.id, entry);
       }
     }
 
     return [...byModel.entries()]
-      .map(([model, { nodes, prices }]) => ({
+      .map(([model, { nodes, prices, kind }]) => ({
         model,
+        ...(kind ? { kind } : {}),
         nodes,
         minPrice: prices.length ? Math.min(...prices) : null,
         maxPrice: prices.length ? Math.max(...prices) : null,
@@ -376,7 +380,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   app.get('/', (req, res) => sendShell(res, req));
 
   app.get('/node.json', (_req, res) => {
-    sendJson(res, buildOwnProfile(node, algo, servedModels()));
+    sendJson(res, buildOwnProfile(node, algo, servedModels(), kindOf));
   });
 
   app.get('/nodes.json', (_req, res) => {

@@ -3,19 +3,18 @@
  *
  * A compiled single-file binary has no `package.json` to read at runtime, so
  * the values are baked in at build time. The build injects them with
- * `bun build --define process.env.DIIISCO_VERSION='"1.0.8"'` (and likewise
- * `DIIISCO_COMMIT` / `DIIISCO_INSTALL_SOURCE`); the fallbacks below keep
+ * `bun build --define process.env.DIIISCO_VERSION='"1.0.9"'` (and likewise
+ * `DIIISCO_COMMIT` / `DIIISCO_INSTALL_SOURCE`); the fallbacks keep
  * `bun run src/cli.ts` working in a plain checkout.
+ *
+ * `version()` itself lives in `src/utils/version.ts` so the node profile can use
+ * it without importing the CLI layer.
  */
+import { version } from '../utils/version';
 
-/** Kept in step with package.json's `version` field. */
-const FALLBACK_VERSION = '1.0.8';
+export { version };
 
 export type InstallSource = 'standalone' | 'desktop-bundled' | 'source';
-
-export function version(): string {
-  return process.env.DIIISCO_VERSION || FALLBACK_VERSION;
-}
 
 export function commit(): string | null {
   return process.env.DIIISCO_COMMIT || null;

@@ -176,6 +176,26 @@ a:hover {
   text-transform: none;
 }
 
+.badge-kind {
+  margin-left: 0.5rem;
+  text-transform: none;
+  letter-spacing: 0;
+  vertical-align: middle;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.badge-kind-decision {
+  color: #6d28d9;
+  background: #f5f3ff;
+  border-color: #ddd6fe;
+}
+
+.badge-kind-embedding {
+  color: #0369a1;
+  background: #f0f9ff;
+  border-color: #bae6fd;
+}
+
 .fields {
   display: grid;
   grid-template-columns: max-content 1fr;

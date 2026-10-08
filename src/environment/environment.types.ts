@@ -1,5 +1,6 @@
 import PeerId from 'peer-id';
 import { QuoteCreationFunction, QuoteSelectionFunction } from '../types/quotes';
+import type { ModelKind } from '../types/models';
 
 export interface AlgorandClientConfig {
   address: string;
@@ -45,6 +46,13 @@ export interface ModelsConfig {
     [key: string]: number;
   };
   availability?: ModelAvailabilityConfig;
+  /**
+   * Tell the node what kind of model something is, for runtimes that do not say.
+   * Keys are model ids or `*` globs (`"*embed*"`), values `chat | embedding |
+   * decision`. Always wins over anything the node detects. Models that are not
+   * `chat` are kept out of chat tools' model lists.
+   */
+  kinds?: Record<string, ModelKind>;
 }
 
 /**
@@ -59,11 +67,42 @@ export interface ModelAvailabilityConfig {
   timeoutMs?: number;       // default 2000 — per-probe timeout on the backend
 }
 
+/**
+ * Power management. A node that serves a model has to stay reachable, and a
+ * machine that idles into sleep drops off the network.
+ */
+export interface PowerConfig {
+  /**
+   * Hold the machine awake (idle sleep only) for as long as the node runs.
+   * Default true. Lid-close and an explicit Sleep still sleep the machine.
+   */
+  preventSleep?: boolean;
+}
+
 export interface ApiConfig {
   enabled: boolean;
   bearerAuthentication: boolean;
   keys: string[];
   port: number;
+  /**
+   * Address the HTTP API binds. Default `127.0.0.1`: only this machine can reach
+   * it, which matters because a request to it spends the node's wallet. Set
+   * `0.0.0.0` to serve other machines (and turn `bearerAuthentication` on).
+   */
+  host?: string;
+  /**
+   * Browser origins allowed to call the API cross-origin. Honoured only with
+   * `bearerAuthentication`; without it no origin is allowed, since any web page
+   * the user visits could otherwise drive the API. Default none.
+   */
+  corsOrigins?: string[];
+  /**
+   * Extra `Host` header names accepted while the API is loopback-bound and
+   * unauthenticated (the DNS-rebinding guard). `localhost`, `127.0.0.1`, `[::1]`
+   * and the host of `node.url` are always accepted; add the name a reverse proxy
+   * forwards here.
+   */
+  allowedHosts?: string[];
   networkWaitTime?: number;
   profileWaitTime?: number;  // ms to wait for a remote node-profile response (default 3000)
   profileCacheTtl?: number;  // ms to cache fetched profiles (default 45000)
@@ -158,6 +197,7 @@ export interface Environment {
     statusPages?: boolean;  // default true — set false to disable the public status page routes
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
+  power?: PowerConfig;                      // Optional: `preventSleep` defaults to true
   cli?: CliConfig;                          // Optional: DIIISCO CLI extensions (extra `launch` targets)
 }
 

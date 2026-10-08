@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import algosdk from 'algosdk';
 import { EnvironmentFile } from '../../environment/environment.types';
-import { validateEnvironment } from '../../environment/validate';
+import { environmentWarnings, validateEnvironment } from '../../environment/validate';
 import {
   ConfigError,
   configPath,
@@ -99,7 +99,13 @@ export async function runSetup(options: SetupOptions): Promise<void> {
     info('');
     info(colour.bold('Summary'));
     print(JSON.stringify(redactConfig(config), null, 2));
+    for (const warning of environmentWarnings(mergeConfig(config))) {
+      info('');
+      warn(warning);
+    }
     info('');
+    info(colour.dim('While it runs, the node keeps this machine from idle-sleeping so it stays on the network.'));
+    info(colour.dim('Turn that off with "power": { "preventSleep": false } in `diiisco config edit`.'));
     info(`Next: ${colour.cyan('diiisco start')}, then ${colour.cyan('diiisco launch claude')}.`);
   } finally {
     prompt.close();
@@ -151,12 +157,15 @@ async function buildConfig(
   const { baseURL, port: modelsPort } = splitModelsUrl(modelsUrl);
   await reportBackend(prompt, options, baseURL, modelsPort);
 
+  // Spread what is already there first: `models.kinds` (the only way to mark a
+  // decision model), `availability`, `chargePer1KTokens` and the rate tables are
+  // hand-edited and must survive a re-run. Only what setup asks about is replaced.
   config.models = {
+    ...existing.models,
     enabled: true,
     baseURL,
     port: modelsPort,
     apiKey: existing.models?.apiKey ?? '',
-    ...(existing.models?.chargePer1MTokens ? { chargePer1MTokens: existing.models.chargePer1MTokens } : {}),
   };
 
   // 3. API.
@@ -168,7 +177,9 @@ async function buildConfig(
   const bearer = await prompt.confirm('Require an API key from clients?', existing.api?.bearerAuthentication ?? false);
   const keys = bearer ? (existing.api?.keys?.length ? existing.api.keys : [generateApiKey()]) : (existing.api?.keys ?? ['diiisco']);
 
+  // As with `models`: keep `host`, `corsOrigins`, `profileWaitTime` and the rest.
   config.api = {
+    ...existing.api,
     enabled: true,
     bearerAuthentication: bearer,
     keys,
@@ -179,12 +190,13 @@ async function buildConfig(
   // 4. Wallet (public mode only) and 5. identity.
   if (mode === 'local') {
     config.local = {
+      ...existing.local,
       enabled: true,
       privateTopic: existing.local?.privateTopic ?? generatePrivateTopic(),
     };
     delete config.algorand;
   } else {
-    config.local = { enabled: false };
+    config.local = { ...existing.local, enabled: false };
     config.algorand = await buildWallet(prompt, options, existing, mnemonicFromStdin);
   }
 
@@ -223,15 +235,20 @@ async function buildWallet(
     (n) => (n > 0 ? null : 'It has to be greater than 0 — this is the ceiling on a single request.')
   ));
 
+  // Anything already in the `algorand` block that setup does not ask about
+  // (extra client or settlement fields) is kept rather than rebuilt away.
   return {
+    ...existing.algorand,
     mnemonic,
     network,
     client: {
+      ...existing.algorand?.client,
       address: algod,
       port: existing.algorand?.client?.port ?? 443,
       token: existing.algorand?.client?.token ?? '',
     },
     settlement: {
+      ...existing.algorand?.settlement,
       methods: ['x402'],
       maxSpend,
       x402: { ...existing.algorand?.settlement?.x402, selfSubmitFallback: existing.algorand?.settlement?.x402?.selfSubmitFallback ?? true },

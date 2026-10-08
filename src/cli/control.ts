@@ -17,16 +17,18 @@
  * The obvious alternative — `POST /internal/shutdown` on the existing Express
  * server — was rejected:
  *
- *  - That server binds `0.0.0.0` (see `src/api/server.ts`), so the route would
- *    be reachable from every interface and its loopback-only property would
- *    depend on a middleware check being correct forever. This server binds
+ *  - That server's bind address is operator-configurable (`api.host`, and
+ *    `0.0.0.0` serves every interface), so the route's loopback-only property
+ *    would depend on a middleware check being correct forever. This server binds
  *    `127.0.0.1`, so "not remotely reachable" is enforced by the kernel, not by
  *    our code.
  *  - The API's bearer key is shared with agent tools (`diiisco launch` hands it
  *    to Claude Code and friends). A kill switch must not be behind a credential
  *    users paste into other programs.
  *  - It works when `api.enabled` is false, and when the HTTP server is wedged
- *    serving a long inference request.
+ *    serving a long inference request. That is also why liveness lives here:
+ *    `start` used to poll the API's `/health`, which a node that serves only
+ *    inference (no API) can never answer.
  *
  * ## Security properties
  *
@@ -35,13 +37,16 @@
  *  - Authenticated by a 32-byte random token generated fresh at daemon start,
  *    compared with `timingSafeEqual`, recorded only in `daemon.json` (mode
  *    `0600`) and never logged, printed or passed through argv.
- *  - Exactly one instruction (`shutdown`). There is no other capability, and no
- *    way to read anything back.
+ *  - Two instructions: `shutdown`, and a read-only `status` that reports
+ *    non-secret liveness fields only (pid, version, whether the API is enabled,
+ *    whether startup finished). Nothing else can be read back and nothing else
+ *    can be done.
  *  - Sockets are capped (1 KiB request, 5 s idle) so an unauthenticated local
  *    process cannot hold resources open.
  */
 import { createServer, createConnection, type Server, type Socket } from 'node:net';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { version } from './version';
 
 /** Longest request we will read before hanging up. A shutdown line is ~90 bytes. */
 const MAX_REQUEST_BYTES = 1024;
@@ -59,6 +64,14 @@ export interface ControlServer {
   token: string;
   /** Stop accepting control connections. */
   close(): void;
+}
+
+/** What the daemon reports about itself to `status`. Mutated by `runServe`. */
+export interface ControlState {
+  /** True once `Application.start()` has finished — the node is fully up. */
+  ready: boolean;
+  /** Whether this node serves the HTTP API at all. */
+  apiEnabled: boolean;
 }
 
 export function generateControlToken(): string {
@@ -90,8 +103,11 @@ function isLoopback(socket: Socket): boolean {
 export function startControlServer(options: {
   token: string;
   onShutdown: (reason: string) => void;
+  /** Live view of the daemon's state for `status`; read on every request. */
+  state?: ControlState;
 }): Promise<ControlServer> {
   const { token, onShutdown } = options;
+  const state: ControlState = options.state ?? { ready: false, apiEnabled: true };
 
   return new Promise((resolve, reject) => {
     const server: Server = createServer((socket) => {
@@ -128,6 +144,13 @@ export function startControlServer(options: {
           // Deliberately vague: an unauthenticated caller learns nothing about
           // whether the token was wrong, missing or the wrong shape.
           socket.end(`${JSON.stringify({ ok: false, error: 'unauthorised' })}\n`);
+          return;
+        }
+
+        if (request?.action === 'status') {
+          socket.end(
+            `${JSON.stringify({ ok: true, pid: process.pid, version: version(), apiEnabled: state.apiEnabled, ready: state.ready })}\n`
+          );
           return;
         }
 
@@ -169,6 +192,21 @@ export function startControlServer(options: {
       });
     });
   });
+}
+
+export interface ControlStatus {
+  pid: number;
+  version: string;
+  apiEnabled: boolean;
+  /** True once the node has finished starting up. */
+  ready: boolean;
+}
+
+export interface ControlStatusResult {
+  ok: boolean;
+  status: ControlStatus | null;
+  /** Present when the daemon could not be asked; safe to show the user. */
+  error: string | null;
 }
 
 export interface ShutdownRequestResult {
@@ -218,5 +256,62 @@ export function requestShutdown(port: number, token: string, timeoutMs = 5_000):
       finish({ ok: false, error: reason });
     });
     socket.on('close', () => finish({ ok: false, error: 'the control channel closed without answering' }));
+  });
+}
+
+/**
+ * Ask the daemon at `127.0.0.1:port` how it is doing. Never throws: a node that
+ * is still booting, or one that has gone, simply yields `ok: false` with a reason.
+ */
+export function requestStatus(port: number, token: string, timeoutMs = 2_000): Promise<ControlStatusResult> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: ControlStatusResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+
+    const socket = createConnection({ port, host: '127.0.0.1' });
+    const timer = setTimeout(() => finish({ ok: false, status: null, error: `the control channel did not answer within ${timeoutMs}ms` }), timeoutMs);
+
+    let buffer = '';
+    socket.setEncoding('utf8');
+    socket.on('connect', () => {
+      socket.write(`${JSON.stringify({ action: 'status', token })}\n`);
+    });
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf('\n');
+      if (newline === -1) return;
+      try {
+        const response = JSON.parse(buffer.slice(0, newline));
+        if (response?.ok !== true) {
+          finish({ ok: false, status: null, error: String(response?.error ?? 'the node refused the status request') });
+          return;
+        }
+        finish({
+          ok: true,
+          status: {
+            pid: Number(response.pid),
+            version: String(response.version ?? 'unknown'),
+            apiEnabled: response.apiEnabled !== false,
+            ready: response.ready === true,
+          },
+          error: null,
+        });
+      } catch {
+        finish({ ok: false, status: null, error: 'the node sent an unreadable response on the control channel' });
+      }
+    });
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      const reason = err?.code === 'ECONNREFUSED'
+        ? 'nothing is listening on the recorded control port'
+        : String(err?.message ?? err);
+      finish({ ok: false, status: null, error: reason });
+    });
+    socket.on('close', () => finish({ ok: false, status: null, error: 'the control channel closed without answering' }));
   });
 }
