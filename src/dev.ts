@@ -9,7 +9,14 @@
  * The local override is loaded through a *dynamic* import with a non-literal
  * specifier so that a checkout without that file — CI, a fresh clone, or the
  * compiled binary — neither fails to build nor fails to run. When it is absent
- * the node simply starts on the committed defaults.
+ * the node simply starts on the committed defaults. The specifier carries a
+ * `.js` extension because the package is ESM and Node does not resolve
+ * extensionless relative imports (Bun maps `.js` to the `.ts` source, and the
+ * build compiles the override to `dist/environment/environment.js`).
+ *
+ * Only "the override file is not there" is treated as absence. A file that is
+ * present but throws is a broken config, and carrying on with half of it
+ * applied ends in a confusing crash later, so that stops the node.
  *
  * `src/cli.ts` must never import this module: the CLI's config comes from
  * `~/.diiisco/config.json`, not from a file inside the source tree.
@@ -21,19 +28,36 @@ import { installProcessGuards } from './utils/processGuards';
 
 // Assembled at runtime so bundlers cannot statically resolve (and therefore
 // cannot fail on) the gitignored module.
-const LOCAL_ENVIRONMENT_MODULE = ['.', 'environment', 'environment'].join('/');
+const LOCAL_ENVIRONMENT_MODULE = ['.', 'environment', 'environment.js'].join('/');
+
+/**
+ * True when the import failed because the override file itself is missing — not
+ * because the override exists and one of *its* imports is missing, which names
+ * a different module first in the message.
+ */
+function isOverrideMissing(err: any): boolean {
+  const message = String(err?.message ?? '');
+  if (err?.code !== 'ERR_MODULE_NOT_FOUND' && !message.startsWith('Cannot find module')) return false;
+  const missing = /^Cannot find (?:module|package) '([^']+)'/.exec(message)?.[1];
+  return missing !== undefined && /environment[\\/]environment(\.\w+)?$/.test(missing);
+}
 
 async function main(): Promise<void> {
   // Before anything opens a socket: an aborted dial must not take the node down.
   installProcessGuards();
 
   try {
-    const local = await import(/* @vite-ignore */ LOCAL_ENVIRONMENT_MODULE) as { default?: Partial<Environment> };
+    const specifier = new URL(LOCAL_ENVIRONMENT_MODULE, import.meta.url).href;
+    const local = await import(/* @vite-ignore */ specifier) as { default?: Partial<Environment> };
     if (local?.default) {
       configureEnvironment(local.default);
       logger.info('⚙️  Applied local src/environment/environment.ts override');
     }
-  } catch {
+  } catch (err: any) {
+    if (!isOverrideMissing(err)) {
+      logger.error('🚨  Failed to load the local src/environment/environment.ts override:', err);
+      process.exit(1);
+    }
     // No local override — run on the committed defaults.
   }
 
