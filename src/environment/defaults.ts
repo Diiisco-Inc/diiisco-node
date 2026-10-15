@@ -44,7 +44,7 @@ export function createDefaultEnvironment(): Environment {
       port: 11434, // Ollama's default port
       apiKey: '',
       chargePer1MTokens: {
-        default: 0.01703,
+        default: 0.01,
       },
     },
     api: {
