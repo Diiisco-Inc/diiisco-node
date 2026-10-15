@@ -23,6 +23,7 @@
  */
 import { Application, configureEnvironment } from './index';
 import type { Environment } from './environment/environment.types';
+import runtime from './environment/runtime';
 import { logger } from './utils/logger';
 import { installProcessGuards } from './utils/processGuards';
 
@@ -40,6 +41,23 @@ function isOverrideMissing(err: any): boolean {
   if (err?.code !== 'ERR_MODULE_NOT_FOUND' && !message.startsWith('Cannot find module')) return false;
   const missing = /^Cannot find (?:module|package) '([^']+)'/.exec(message)?.[1];
   return missing !== undefined && /environment[\\/]environment(\.\w+)?$/.test(missing);
+}
+
+/**
+ * The committed defaults carry neither an `algorand` block nor local mode, so a
+ * checkout with no override would otherwise die inside `new Application()` on
+ * `Cannot read properties of undefined (reading 'mnemonic')`. Say what is
+ * missing instead.
+ */
+function requireWalletOrLocalMode(): void {
+  if (runtime.local?.enabled === true || runtime.algorand) return;
+  logger.error(
+    '🚨  Nothing to run on: no local src/environment/environment.ts override was applied, and the defaults ' +
+      'have neither an `algorand` wallet nor `local.enabled`. Copy src/environment/example.environment.ts to ' +
+      'src/environment/environment.ts and configure a wallet (public network) or `local: { enabled: true, privateTopic }`, ' +
+      'then rebuild. To run the packaged node instead, use `diiisco setup` and `diiisco start`.',
+  );
+  process.exit(1);
 }
 
 async function main(): Promise<void> {
@@ -60,6 +78,8 @@ async function main(): Promise<void> {
     }
     // No local override — run on the committed defaults.
   }
+
+  requireWalletOrLocalMode();
 
   const app = new Application();
   process.on('SIGTERM', () => app.shutdown('SIGTERM'));
