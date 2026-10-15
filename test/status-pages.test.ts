@@ -93,8 +93,11 @@ suite('compiled binary — embedded status pages', () => {
           : response.headers.get('content-type');
       expect(response.headers.get('content-type')).toBe(expectedType);
 
-      // Content-hashed filenames, so the year-long immutable cache is correct.
-      expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+      // Only the content-hashed files under /assets/ get the year-long immutable
+      // cache; stable names such as /favicon.svg must keep revalidating.
+      expect(response.headers.get('cache-control')).toBe(
+        path.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
+      );
 
       const body = Buffer.from(await response.arrayBuffer());
       expect(body.length).toBeGreaterThan(0);
