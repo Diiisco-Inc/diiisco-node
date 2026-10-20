@@ -101,10 +101,14 @@ export const createLibp2pNode = async () => {
     privateKey: peer.privateKey,
     addresses: {
       listen: [
+        // Every node listens on TCP. mDNS can only advertise addresses we
+        // listen on, so a private node without one is invisible to (and cannot
+        // be dialed by) peers on the same LAN, even with no bootstrap set.
+        `/ip4/0.0.0.0/tcp/${port}`,
         // Required for circuitRelayTransport to call reserveRelay() and make
         // relay reservations. Without this entry pendingReservations stays empty
         // and every discovered relay peer is immediately rejected.
-        ...(isPublicNode ? [`/ip4/0.0.0.0/tcp/${port}`] : [...relayListenAddrs, '/p2p-circuit']),
+        ...(isPublicNode ? [] : [...relayListenAddrs, '/p2p-circuit']),
       ],
       // Announce the stable DNS name so relay circuit addresses returned to
       // clients carry the domain rather than a raw IP.
