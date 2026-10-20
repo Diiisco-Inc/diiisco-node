@@ -16,6 +16,7 @@ import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
 import { bootstrap } from '@libp2p/bootstrap';
 import environment from '../environment/runtime';
+import { PUBLIC_BOOTSTRAP_SERVERS } from '../environment/defaults';
 import { nfdToNodeAddress } from '../utils/algorand';
 
 // Maximum circuit-relay reservations a public relay node will accept from
@@ -23,13 +24,19 @@ import { nfdToNodeAddress } from '../utils/algorand';
 const MAX_RELAY_RESERVATIONS = 200;
 
 export const lookupBootstrapServers = async (): Promise<string[]> => {
+  // A private/local network never talks to the public bootstrap servers, but
+  // keeps any the operator added for their own network.
+  const configured = (environment.libp2pBootstrapServers ?? []).filter(
+    (addr: string) => !environment.local?.enabled || !PUBLIC_BOOTSTRAP_SERVERS.includes(addr.trim()),
+  );
+
   // No Bootstrap Servers Configured
-  if (!environment.libp2pBootstrapServers || environment.libp2pBootstrapServers.length === 0) {
+  if (configured.length === 0) {
     return [];
   }
 
   // Process Bootstrap Servers
-    const parsedBootstrapServers = (await Promise.all(environment.libp2pBootstrapServers.map(async (addr: string) => {
+    const parsedBootstrapServers = (await Promise.all(configured.map(async (addr: string) => {
       addr = addr.trim();
       if (addr?.endsWith('diiisco.algo')) {
         const nfdAddress = await nfdToNodeAddress(addr);
