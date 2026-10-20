@@ -53,9 +53,12 @@ export const buildOwnProfile = (
           // Only the notable kinds are published: a chat model is the default,
           // and leaving the key off keeps an ordinary node's profile unchanged.
           ...(kind !== 'chat' ? { kind } : {}),
-          pricePer1MTokens: input, // back-compat: legacy single rate = input rate
-          pricePerInputToken1M: input,
-          pricePerOutputToken1M: output,
+          // A local network settles nothing, so there is no price to publish.
+          ...(localMode ? {} : {
+            pricePer1MTokens: input, // back-compat: legacy single rate = input rate
+            pricePerInputToken1M: input,
+            pricePerOutputToken1M: output,
+          }),
         };
       }),
       connectedPeers: node.getConnections().length,
