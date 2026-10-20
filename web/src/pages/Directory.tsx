@@ -31,6 +31,12 @@ export function Directory() {
     };
   }, []);
 
+  // A local network has no cost, so the node publishes no prices and the price
+  // columns would be a wall of dashes.
+  const showPrices = (models ?? []).some(
+    (m) => m.minPrice != null || m.meanPrice != null || m.maxPrice != null,
+  );
+
   return (
     <>
       <h2>Known Nodes</h2>
@@ -92,9 +98,13 @@ export function Directory() {
               <tr>
                 <th>Model</th>
                 <th>Nodes</th>
-                <th>Min price / 1M</th>
-                <th>Mean price / 1M</th>
-                <th>Max price / 1M</th>
+                {showPrices ? (
+                  <>
+                    <th>Min price / 1M</th>
+                    <th>Mean price / 1M</th>
+                    <th>Max price / 1M</th>
+                  </>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -102,9 +112,13 @@ export function Directory() {
                 <tr key={m.model}>
                   <td data-label="Model" className="mono">{m.model}</td>
                   <td data-label="Nodes">{m.nodes}</td>
-                  <td data-label="Min price / 1M">{formatPrice(m.minPrice)}</td>
-                  <td data-label="Mean price / 1M">{formatPrice(m.meanPrice)}</td>
-                  <td data-label="Max price / 1M">{formatPrice(m.maxPrice)}</td>
+                  {showPrices ? (
+                    <>
+                      <td data-label="Min price / 1M">{formatPrice(m.minPrice)}</td>
+                      <td data-label="Mean price / 1M">{formatPrice(m.meanPrice)}</td>
+                      <td data-label="Max price / 1M">{formatPrice(m.maxPrice)}</td>
+                    </>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
