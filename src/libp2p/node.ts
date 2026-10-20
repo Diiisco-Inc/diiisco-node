@@ -18,6 +18,8 @@ import { bootstrap } from '@libp2p/bootstrap';
 import environment from '../environment/runtime';
 import { PUBLIC_BOOTSTRAP_SERVERS } from '../environment/defaults';
 import { nfdToNodeAddress } from '../utils/algorand';
+import { getNetworkId, PUBLIC_NETWORK_ID } from '../utils/topic';
+import { NetworkGuard, bootstrapPeerIds } from './networkGuard';
 
 // Maximum circuit-relay reservations a public relay node will accept from
 // NAT'd peers. Only relevant when this node runs the relay server.
@@ -78,7 +80,12 @@ export const createLibp2pNode = async () => {
   const parsedBootstrapServers = await lookupBootstrapServers();
 
   // Prepare Peer Discovery Modules
-  const peerDiscovery: any[] = [mdns()];
+  // A node in local mode uses its own mDNS service tag so it neither queries
+  // for nor answers to the public network's (and vice versa).
+  const networkId = getNetworkId();
+  const peerDiscovery: any[] = [
+    mdns(networkId === PUBLIC_NETWORK_ID ? {} : { serviceTag: `_diiisco-${networkId}._udp.local` }),
+  ];
 
   if (parsedBootstrapServers.length > 0) {
     peerDiscovery.push(bootstrap({
@@ -111,9 +118,14 @@ export const createLibp2pNode = async () => {
     }
   }
 
+  // Refuses connections to peers on another network. An operator's own
+  // bootstrap/relay servers are exempt: they may predate the network marker.
+  const guard = new NetworkGuard(networkId, bootstrapPeerIds(parsedBootstrapServers));
+
   // Create the Libp2p Node with connection management and keep-alive
   const node = await createLibp2p({
     privateKey: peer.privateKey,
+    connectionGater: guard.gater(),
     addresses: {
       listen: [
         // Every node listens on TCP. mDNS can only advertise addresses we
@@ -194,7 +206,9 @@ export const createLibp2pNode = async () => {
         // seenTTL: 120000,
       }),
 
-      dht: kadDHT(),
+      // Same DHT protocol only within one network: a private cluster must not
+      // walk (or be walked by) the public DHT.
+      dht: kadDHT(networkId === PUBLIC_NETWORK_ID ? {} : { protocol: `/diiisco/${networkId}/kad/1.0.0` }),
 
       // AutoNAT for detecting reachability
       autoNAT: autoNAT(),
@@ -230,6 +244,7 @@ export const createLibp2pNode = async () => {
   // Start the Libp2p Node
   await node.start()
   logger.info('✅ Node started with id:', node.peerId.toString());
+  await guard.attach(node);
 
   // Log relay role so it's immediately clear on startup
   if (isPublicNode) {
