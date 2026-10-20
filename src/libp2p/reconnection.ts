@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger';
+import { isPeerDenied } from './networkGuard';
 
 // Track health check interval for cleanup
 let healthCheckIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -31,6 +32,13 @@ export interface ReconnectionDependencies {
 }
 
 export async function scheduleReconnect(peerId: string, deps: ReconnectionDependencies) {
+  // A peer on another network is never redialled
+  if (isPeerDenied(peerId)) {
+    deps.knownPeers.delete(peerId);
+    deps.reconnectAttempts.delete(peerId);
+    return;
+  }
+
   const attemptInfo = deps.reconnectAttempts.get(peerId);
   const now = Date.now();
 

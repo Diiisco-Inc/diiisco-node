@@ -1,4 +1,5 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
+import { isPeerDenied } from './libp2p/networkGuard';
 import { setLocalAddressProvider } from './libp2p/localAddresses';
 import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, recoverAfterWake, startConnectionHealthCheck, startSleepDetector, stopConnectionHealthCheck } from './libp2p/reconnection';
 import { KeepAwake } from './utils/keepAwake';
@@ -203,6 +204,7 @@ class Application extends EventEmitter {
     // Listen for Peer Discovery Events
     this.node.addEventListener('peer:discovery', async (e: { detail: { id: any; multiaddrs?: any[] }; }) => {
       const id = e.detail.id;
+      if (isPeerDenied(id.toString())) return; // on another network
       logger.info('👋 Discovered Peer:', id.toString());
       
       // Store peer info for potential reconnection
