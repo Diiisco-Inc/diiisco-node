@@ -26,8 +26,16 @@ const MAX_RELAY_RESERVATIONS = 200;
 export const lookupBootstrapServers = async (): Promise<string[]> => {
   // A private/local network never talks to the public bootstrap servers, but
   // keeps any the operator added for their own network.
-  const configured = (environment.libp2pBootstrapServers ?? []).filter(
-    (addr: string) => !environment.local?.enabled || !PUBLIC_BOOTSTRAP_SERVERS.includes(addr.trim()),
+  // Arrays are replaced, not merged, by configureEnvironment, so an override
+  // with `libp2pBootstrapServers: []` (or every entry commented out) would
+  // otherwise wipe the defaults: unset or empty means "the public servers"
+  // on the public network.
+  const isLocal = environment.local?.enabled === true;
+  const requested = environment.libp2pBootstrapServers?.length
+    ? environment.libp2pBootstrapServers
+    : (isLocal ? [] : PUBLIC_BOOTSTRAP_SERVERS);
+  const configured = requested.filter(
+    (addr: string) => !isLocal || !PUBLIC_BOOTSTRAP_SERVERS.includes(addr.trim()),
   );
 
   // No Bootstrap Servers Configured
