@@ -16,6 +16,7 @@ import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
 import { bootstrap } from '@libp2p/bootstrap';
 import environment from '../environment/runtime';
+import { PUBLIC_BOOTSTRAP_SERVERS } from '../environment/defaults';
 import { nfdToNodeAddress } from '../utils/algorand';
 
 // Maximum circuit-relay reservations a public relay node will accept from
@@ -23,13 +24,27 @@ import { nfdToNodeAddress } from '../utils/algorand';
 const MAX_RELAY_RESERVATIONS = 200;
 
 export const lookupBootstrapServers = async (): Promise<string[]> => {
+  // A private/local network never talks to the public bootstrap servers, but
+  // keeps any the operator added for their own network.
+  // Arrays are replaced, not merged, by configureEnvironment, so an override
+  // with `libp2pBootstrapServers: []` (or every entry commented out) would
+  // otherwise wipe the defaults: unset or empty means "the public servers"
+  // on the public network.
+  const isLocal = environment.local?.enabled === true;
+  const requested = environment.libp2pBootstrapServers?.length
+    ? environment.libp2pBootstrapServers
+    : (isLocal ? [] : PUBLIC_BOOTSTRAP_SERVERS);
+  const configured = requested.filter(
+    (addr: string) => !isLocal || !PUBLIC_BOOTSTRAP_SERVERS.includes(addr.trim()),
+  );
+
   // No Bootstrap Servers Configured
-  if (!environment.libp2pBootstrapServers || environment.libp2pBootstrapServers.length === 0) {
+  if (configured.length === 0) {
     return [];
   }
 
   // Process Bootstrap Servers
-    const parsedBootstrapServers = (await Promise.all(environment.libp2pBootstrapServers.map(async (addr: string) => {
+    const parsedBootstrapServers = (await Promise.all(configured.map(async (addr: string) => {
       addr = addr.trim();
       if (addr?.endsWith('diiisco.algo')) {
         const nfdAddress = await nfdToNodeAddress(addr);
@@ -101,10 +116,14 @@ export const createLibp2pNode = async () => {
     privateKey: peer.privateKey,
     addresses: {
       listen: [
+        // Every node listens on TCP. mDNS can only advertise addresses we
+        // listen on, so a private node without one is invisible to (and cannot
+        // be dialed by) peers on the same LAN, even with no bootstrap set.
+        `/ip4/0.0.0.0/tcp/${port}`,
         // Required for circuitRelayTransport to call reserveRelay() and make
         // relay reservations. Without this entry pendingReservations stays empty
         // and every discovered relay peer is immediately rejected.
-        ...(isPublicNode ? [`/ip4/0.0.0.0/tcp/${port}`] : [...relayListenAddrs, '/p2p-circuit']),
+        ...(isPublicNode ? [] : [...relayListenAddrs, '/p2p-circuit']),
       ],
       // Announce the stable DNS name so relay circuit addresses returned to
       // clients carry the domain rather than a raw IP.

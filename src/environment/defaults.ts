@@ -4,6 +4,13 @@ import { deepMerge } from '../utils/deepMerge';
 import { diiiscoHome } from '../utils/paths';
 
 /**
+ * The public network's bootstrap/relay servers. Used only when `local.enabled`
+ * is false: a private network never dials them, but still honours any bootstrap
+ * server the operator added themselves.
+ */
+export const PUBLIC_BOOTSTRAP_SERVERS = ['lon.diiisco.algo', 'nyc.diiisco.algo'];
+
+/**
  * `~/.diiisco`, already resolved.
  *
  * The literal `~` used to be the default, which meant the `src/dev.ts` and
@@ -60,10 +67,7 @@ export function createDefaultEnvironment(): Environment {
       preferSelf: true,
       quoteSelectionFunction: selectHighestStakeQuote,
     },
-    libp2pBootstrapServers: [
-      'lon.diiisco.algo',
-      'nyc.diiisco.algo',
-    ],
+    libp2pBootstrapServers: [...PUBLIC_BOOTSTRAP_SERVERS],
     node: {
       url: 'http://localhost',
       port: 4242,
