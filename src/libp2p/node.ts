@@ -16,20 +16,37 @@ import { logger } from '../utils/logger';
 import { PeerIdManager } from './peerIdManager';
 import { bootstrap } from '@libp2p/bootstrap';
 import environment from '../environment/runtime';
+import { PUBLIC_BOOTSTRAP_SERVERS } from '../environment/defaults';
 import { nfdToNodeAddress } from '../utils/algorand';
+import { getNetworkId, PUBLIC_NETWORK_ID } from '../utils/topic';
+import { NetworkGuard, bootstrapPeerIds } from './networkGuard';
 
 // Maximum circuit-relay reservations a public relay node will accept from
 // NAT'd peers. Only relevant when this node runs the relay server.
 const MAX_RELAY_RESERVATIONS = 200;
 
 export const lookupBootstrapServers = async (): Promise<string[]> => {
+  // A private/local network never talks to the public bootstrap servers, but
+  // keeps any the operator added for their own network.
+  // Arrays are replaced, not merged, by configureEnvironment, so an override
+  // with `libp2pBootstrapServers: []` (or every entry commented out) would
+  // otherwise wipe the defaults: unset or empty means "the public servers"
+  // on the public network.
+  const isLocal = environment.local?.enabled === true;
+  const requested = environment.libp2pBootstrapServers?.length
+    ? environment.libp2pBootstrapServers
+    : (isLocal ? [] : PUBLIC_BOOTSTRAP_SERVERS);
+  const configured = requested.filter(
+    (addr: string) => !isLocal || !PUBLIC_BOOTSTRAP_SERVERS.includes(addr.trim()),
+  );
+
   // No Bootstrap Servers Configured
-  if (!environment.libp2pBootstrapServers || environment.libp2pBootstrapServers.length === 0) {
+  if (configured.length === 0) {
     return [];
   }
 
   // Process Bootstrap Servers
-    const parsedBootstrapServers = (await Promise.all(environment.libp2pBootstrapServers.map(async (addr: string) => {
+    const parsedBootstrapServers = (await Promise.all(configured.map(async (addr: string) => {
       addr = addr.trim();
       if (addr?.endsWith('diiisco.algo')) {
         const nfdAddress = await nfdToNodeAddress(addr);
@@ -63,7 +80,12 @@ export const createLibp2pNode = async () => {
   const parsedBootstrapServers = await lookupBootstrapServers();
 
   // Prepare Peer Discovery Modules
-  const peerDiscovery: any[] = [mdns()];
+  // A node in local mode uses its own mDNS service tag so it neither queries
+  // for nor answers to the public network's (and vice versa).
+  const networkId = getNetworkId();
+  const peerDiscovery: any[] = [
+    mdns(networkId === PUBLIC_NETWORK_ID ? {} : { serviceTag: `_diiisco-${networkId}._udp.local` }),
+  ];
 
   if (parsedBootstrapServers.length > 0) {
     peerDiscovery.push(bootstrap({
@@ -96,15 +118,24 @@ export const createLibp2pNode = async () => {
     }
   }
 
+  // Refuses connections to peers on another network. An operator's own
+  // bootstrap/relay servers are exempt: they may predate the network marker.
+  const guard = new NetworkGuard(networkId, bootstrapPeerIds(parsedBootstrapServers));
+
   // Create the Libp2p Node with connection management and keep-alive
   const node = await createLibp2p({
     privateKey: peer.privateKey,
+    connectionGater: guard.gater(),
     addresses: {
       listen: [
+        // Every node listens on TCP. mDNS can only advertise addresses we
+        // listen on, so a private node without one is invisible to (and cannot
+        // be dialed by) peers on the same LAN, even with no bootstrap set.
+        `/ip4/0.0.0.0/tcp/${port}`,
         // Required for circuitRelayTransport to call reserveRelay() and make
         // relay reservations. Without this entry pendingReservations stays empty
         // and every discovered relay peer is immediately rejected.
-        ...(isPublicNode ? [`/ip4/0.0.0.0/tcp/${port}`] : [...relayListenAddrs, '/p2p-circuit']),
+        ...(isPublicNode ? [] : [...relayListenAddrs, '/p2p-circuit']),
       ],
       // Announce the stable DNS name so relay circuit addresses returned to
       // clients carry the domain rather than a raw IP.
@@ -175,7 +206,9 @@ export const createLibp2pNode = async () => {
         // seenTTL: 120000,
       }),
 
-      dht: kadDHT(),
+      // Same DHT protocol only within one network: a private cluster must not
+      // walk (or be walked by) the public DHT.
+      dht: kadDHT(networkId === PUBLIC_NETWORK_ID ? {} : { protocol: `/diiisco/${networkId}/kad/1.0.0` }),
 
       // AutoNAT for detecting reachability
       autoNAT: autoNAT(),
@@ -211,6 +244,7 @@ export const createLibp2pNode = async () => {
   // Start the Libp2p Node
   await node.start()
   logger.info('✅ Node started with id:', node.peerId.toString());
+  await guard.attach(node);
 
   // Log relay role so it's immediately clear on startup
   if (isPublicNode) {

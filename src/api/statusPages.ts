@@ -233,13 +233,17 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       ...remote.filter((p): p is NodeProfile => p !== null),
     ];
 
+    // A local network settles nothing, so it has no prices to aggregate — even
+    // if an older peer still publishes one.
+    const isLocal = environment.local?.enabled === true;
+
     const byModel = new Map<string, { nodes: number; prices: number[]; kind?: ModelStats['kind'] }>();
     for (const profile of profiles) {
       for (const m of profile.stats?.models ?? []) {
         const entry = byModel.get(m.id) ?? { nodes: 0, prices: [] };
         entry.nodes += 1;
         entry.kind ??= m.kind;
-        if (typeof m.pricePer1MTokens === 'number') entry.prices.push(m.pricePer1MTokens);
+        if (!isLocal && typeof m.pricePer1MTokens === 'number') entry.prices.push(m.pricePer1MTokens);
         byModel.set(m.id, entry);
       }
     }

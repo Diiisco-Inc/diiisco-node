@@ -24,6 +24,8 @@ function KindChip({ kind }: { kind?: string }) {
 
 export function ProfileCard({ profile }: { profile: NodeProfile }) {
   const title = profile.displayName || shortPeerId(profile.peerId);
+  // A local network has no cost, so there is no price to show.
+  const showPrices = profile.network !== 'local';
 
   return (
     <div className="card">
@@ -91,7 +93,7 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
                 <thead>
                   <tr>
                     <th>Model</th>
-                    <th>Price / 1M tokens</th>
+                    {showPrices ? <th>Price / 1M tokens</th> : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -101,7 +103,7 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
                         {m.id}
                         <KindChip kind={m.kind} />
                       </td>
-                      <td>{m.pricePer1MTokens != null ? `$${m.pricePer1MTokens}` : '—'}</td>
+                      {showPrices ? <td>{m.pricePer1MTokens != null ? `$${m.pricePer1MTokens}` : '—'}</td> : null}
                     </tr>
                   ))}
                 </tbody>

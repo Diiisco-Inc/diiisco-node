@@ -40,7 +40,7 @@ export function requireBearer(req: any, res: any, next: any) {
 
   if (!allowedKeys().has(token)) return res.status(401).json({
     "error": {
-      "message": "Incorrect API key provided: " + token,
+      "message": "Incorrect API key provided.",
       "type": "authentication_error",
       "param": null,
       "code": null

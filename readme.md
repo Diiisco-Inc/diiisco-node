@@ -174,7 +174,7 @@ The comments below are for reading only. `diiisco.config.json` is parsed as stri
     "chargePer1MTokens": {
       // Price per 1M tokens in USDC. A bare number sets equal input/output
       // rates; use { input, output } to price them separately.
-      "default": 0.01703,
+      "default": 0.01,
       "llama3:8b": { "input": 0.01, "output": 0.03 }
     }
   },

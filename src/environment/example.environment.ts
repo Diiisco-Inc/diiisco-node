@@ -15,7 +15,7 @@ const environment: Environment = {
       // Price per 1M tokens in USDC. A bare number sets equal input/output
       // rates; use { input, output } to price them separately (x402 meters the
       // actual charge from real token usage, capped at the quoted maximum).
-      default: 0.01703,
+      default: 0.01,
       "gpt-oss:20b": { input: 0.02, output: 0.06 }, // Per-model split-rate override
     },
     // How often the node re-checks that the backend is really serving these

@@ -41,7 +41,7 @@ suite('install.sh', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('--install-dir');
     expect(result.stdout).toContain('--modify-path');
-    expect(result.stdout).toContain('--system');
+    expect(result.stdout).toContain('--user');
     expect(result.stdout).toContain('--version');
   });
 
@@ -55,8 +55,10 @@ suite('install.sh', () => {
     expect(source).toContain('SHA256SUMS');
     expect(source).toContain('Checksum mismatch');
     // Every mention of sudo must be inside a message telling the user what to
-    // run — the script itself must never invoke it.
-    for (const line of source.split('\n')) {
+    // run — the script itself must never invoke it. The --help text is a quoted
+    // heredoc, printed verbatim and never executed, so it is exempt.
+    const executable = source.replace(/<<'USAGE'\n[\s\S]*?\nUSAGE\n/, '');
+    for (const line of executable.split('\n')) {
       if (!line.includes('sudo')) continue;
       const isText = /^\s*(#|die |warn |say |info |.*")/.test(line);
       expect(isText).toBe(true);
