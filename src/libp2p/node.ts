@@ -170,18 +170,20 @@ export const createLibp2pNode = async () => {
     peerDiscovery,
     streamMuxers: [yamux()],
     
-    // Connection Manager - prevents aggressive connection pruning
+    // Connection Manager. (`minConnections` and `autoDialInterval` used to be
+    // set here; libp2p 3.x has neither, so they did nothing — keeping the
+    // connection count up is `src/libp2p/reconnection.ts`'s job.)
     connectionManager: {
-      // Minimum number of connections to maintain
-      minConnections: 2,
       // Maximum number of connections allowed
       maxConnections: 100,
-      // Auto-dial interval to maintain connections (ms)
-      autoDialInterval: 10000,
-      // Inbound connection threshold before pruning
+      // Inbound connections per host per window before new ones are refused
       inboundConnectionThreshold: 20,
-    } as any,
-    
+      // Peers tagged keep-alive (see `setKeepAlive`) are redialled by libp2p
+      // itself after a drop: this many tries, the first after this many ms.
+      reconnectRetries: 5,
+      reconnectRetryInterval: 2000,
+    },
+
     services: {
       identify: identify(),
       identifyPush: identifyPush(),
