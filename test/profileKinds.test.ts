@@ -39,7 +39,28 @@ describe('buildOwnProfile — model kinds', () => {
     expect(byId['embeddinggemma:latest'].kind).toBe('embedding');
     // No `kind` key at all for chat: an ordinary node's profile is unchanged.
     expect('kind' in byId['gemma4:12b']).toBe(false);
-    expect(byId['gemma4:12b'].pricePerInputToken1M).toBeDefined();
+    // A local network settles nothing, so no price is published (#93).
+    for (const key of ['pricePer1MTokens', 'pricePerInputToken1M', 'pricePerOutputToken1M']) {
+      expect(key in byId['gemma4:12b']).toBe(false);
+    }
+  });
+
+  test('a public network publishes each model\'s price alongside its kind', () => {
+    configureEnvironment({ local: { enabled: false } });
+    try {
+      const { buildOwnProfile } = require('../src/utils/nodeProfile');
+
+      const profile = buildOwnProfile(node, algo, Object.keys(KINDS), (id: string) => KINDS[id] ?? 'chat');
+      const byId = Object.fromEntries(profile.stats.models.map((m: any) => [m.id, m]));
+
+      expect(profile.network).toBe('public');
+      expect(byId['tev1:0.8b'].kind).toBe('decision');
+      for (const key of ['pricePer1MTokens', 'pricePerInputToken1M', 'pricePerOutputToken1M']) {
+        expect(typeof byId['gemma4:12b'][key]).toBe('number');
+      }
+    } finally {
+      configureEnvironment({ local: { enabled: true, privateTopic: 'profile-kinds-test/models/1.0.0' } });
+    }
   });
 
   test('without a kind lookup every model is a chat model with no kind published', () => {
