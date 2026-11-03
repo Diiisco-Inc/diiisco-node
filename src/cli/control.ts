@@ -37,9 +37,11 @@
  *  - Authenticated by a 32-byte random token generated fresh at daemon start,
  *    compared with `timingSafeEqual`, recorded only in `daemon.json` (mode
  *    `0600`) and never logged, printed or passed through argv.
- *  - Two instructions: `shutdown`, and a read-only `status` that reports
+ *  - Four instructions: `shutdown`; a read-only `status` that reports
  *    non-secret liveness fields only (pid, version, whether the API is enabled,
- *    whether startup finished). Nothing else can be read back and nothing else
+ *    whether startup finished); a read-only `peers` that reports who the node
+ *    is connected to (peer ids and counts); and `reconnect`, which asks the node
+ *    to redial its peers now. Nothing else can be read back and nothing else
  *    can be done.
  *  - Sockets are capped (1 KiB request, 5 s idle) so an unauthenticated local
  *    process cannot hold resources open.
@@ -47,12 +49,16 @@
 import { createServer, createConnection, type Server, type Socket } from 'node:net';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { version } from './version';
+import type { PeerReport, ReconnectReport } from '../libp2p/peerReport';
 
 /** Longest request we will read before hanging up. A shutdown line is ~90 bytes. */
 const MAX_REQUEST_BYTES = 1024;
 
 /** Idle timeout on a control connection. */
 const SOCKET_TIMEOUT_MS = 5_000;
+
+/** A `reconnect` runs dials that time out at 10 s and a DHT walk, so it may be quiet for longer. */
+export const RECONNECT_TIMEOUT_MS = 60_000;
 
 /** Addresses that count as loopback for a server bound to 127.0.0.1. */
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -105,8 +111,12 @@ export function startControlServer(options: {
   onShutdown: (reason: string) => void;
   /** Live view of the daemon's state for `status`; read on every request. */
   state?: ControlState;
+  /** Who the node is connected to, for `peers`. `null` while the node is still starting. */
+  onPeers?: () => unknown | null;
+  /** Redial now, for `reconnect`. Rejects with a message safe to show the user. */
+  onReconnect?: () => Promise<unknown>;
 }): Promise<ControlServer> {
-  const { token, onShutdown } = options;
+  const { token, onShutdown, onPeers, onReconnect } = options;
   const state: ControlState = options.state ?? { ready: false, apiEnabled: true };
 
   return new Promise((resolve, reject) => {
@@ -150,6 +160,26 @@ export function startControlServer(options: {
         if (request?.action === 'status') {
           socket.end(
             `${JSON.stringify({ ok: true, pid: process.pid, version: version(), apiEnabled: state.apiEnabled, ready: state.ready })}\n`
+          );
+          return;
+        }
+
+        if (request?.action === 'peers') {
+          const peers = onPeers?.() ?? null;
+          socket.end(`${JSON.stringify(peers === null ? { ok: false, error: 'the node is still starting' } : { ok: true, peers })}\n`);
+          return;
+        }
+
+        if (request?.action === 'reconnect') {
+          if (!onReconnect) {
+            socket.end(`${JSON.stringify({ ok: false, error: 'this node does not support reconnect' })}\n`);
+            return;
+          }
+          // A reconnect is quiet while its dials run; give it longer than the default.
+          socket.setTimeout(RECONNECT_TIMEOUT_MS, () => socket.destroy());
+          onReconnect().then(
+            (result) => socket.end(`${JSON.stringify({ ok: true, result })}\n`),
+            (err: unknown) => socket.end(`${JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) })}\n`),
           );
           return;
         }
@@ -314,4 +344,66 @@ export function requestStatus(port: number, token: string, timeoutMs = 2_000): P
     });
     socket.on('close', () => finish({ ok: false, status: null, error: 'the control channel closed without answering' }));
   });
+}
+
+export interface ControlQueryResult<T> {
+  ok: boolean;
+  value: T | null;
+  /** Present when the node could not be asked or refused; safe to show the user. */
+  error: string | null;
+}
+
+/** One request/response on the control channel. Never throws. */
+function controlQuery<T>(port: number, token: string, action: string, pick: (response: any) => T, timeoutMs: number): Promise<ControlQueryResult<T>> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: ControlQueryResult<T>) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+
+    const socket = createConnection({ port, host: '127.0.0.1' });
+    const timer = setTimeout(() => finish({ ok: false, value: null, error: `the control channel did not answer within ${timeoutMs}ms` }), timeoutMs);
+
+    let buffer = '';
+    socket.setEncoding('utf8');
+    socket.on('connect', () => {
+      socket.write(`${JSON.stringify({ action, token })}\n`);
+    });
+    socket.on('data', (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf('\n');
+      if (newline === -1) return;
+      try {
+        const response = JSON.parse(buffer.slice(0, newline));
+        if (response?.ok !== true) {
+          finish({ ok: false, value: null, error: String(response?.error ?? `the node refused the ${action} request`) });
+          return;
+        }
+        finish({ ok: true, value: pick(response), error: null });
+      } catch {
+        finish({ ok: false, value: null, error: 'the node sent an unreadable response on the control channel' });
+      }
+    });
+    socket.on('error', (err: NodeJS.ErrnoException) => {
+      const reason = err?.code === 'ECONNREFUSED'
+        ? 'nothing is listening on the recorded control port'
+        : String(err?.message ?? err);
+      finish({ ok: false, value: null, error: reason });
+    });
+    socket.on('close', () => finish({ ok: false, value: null, error: 'the control channel closed without answering' }));
+  });
+}
+
+/** Ask the daemon who it is connected to. */
+export function requestPeers(port: number, token: string, timeoutMs = 3_000): Promise<ControlQueryResult<PeerReport>> {
+  return controlQuery<PeerReport>(port, token, 'peers', (r) => r.peers as PeerReport, timeoutMs);
+}
+
+/** Ask the daemon to redial its peers now, and wait for the pass to finish. */
+export function requestReconnect(port: number, token: string, timeoutMs = RECONNECT_TIMEOUT_MS): Promise<ControlQueryResult<ReconnectReport>> {
+  return controlQuery<ReconnectReport>(port, token, 'reconnect', (r) => r.result as ReconnectReport, timeoutMs);
 }
