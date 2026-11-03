@@ -1,7 +1,7 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
 import { isPeerDenied } from './libp2p/networkGuard';
 import { setLocalAddressProvider } from './libp2p/localAddresses';
-import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, recoverAfterWake, startConnectionHealthCheck, startSleepDetector, stopConnectionHealthCheck } from './libp2p/reconnection';
+import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, recoverAfterWake, startConnectionHealthCheck, startSleepDetector, stopConnectionHealthCheck, rememberPeerAddresses, setKeepAlive, withPeerId, DEFAULT_TARGET_CONNECTIONS } from './libp2p/reconnection';
 import { KeepAwake } from './utils/keepAwake';
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
@@ -60,14 +60,15 @@ class Application extends EventEmitter {
   private statusPageUrlLogged: Set<string> = new Set();
   
   // Configuration
-  private readonly MAX_RECONNECT_ATTEMPTS = 5;
   private readonly RECONNECT_DELAY = 5000; // 5 seconds base delay
   private readonly RECONNECT_COOLDOWN = 300000; // 5 minutes before resetting attempts
   private readonly MIN_CONNECTIONS = 2;
+  private readonly TARGET_CONNECTIONS = DEFAULT_TARGET_CONNECTIONS;
   
   // Track last health check state to reduce log spam
   public lastConnectionCount = -1;
   public lastBootstrapAttempt = 0;
+  public lastDiscovery = 0;
   private readonly BOOTSTRAP_RETRY_INTERVAL = 120000; // Retry bootstrap every 2 minutes when disconnected
 
   constructor() {
@@ -80,19 +81,27 @@ class Application extends EventEmitter {
   }
   
   private createReconnectionDependencies(): ReconnectionDependencies {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const app = this;
     return {
       reconnectAttempts: this.reconnectAttempts,
       RECONNECT_COOLDOWN: this.RECONNECT_COOLDOWN,
-      MAX_RECONNECT_ATTEMPTS: this.MAX_RECONNECT_ATTEMPTS,
       RECONNECT_DELAY: this.RECONNECT_DELAY,
       attemptReconnect: async (peerId: string) => await attemptReconnect(peerId, this.createReconnectionDependencies()),
       node: this.node,
       knownPeers: this.knownPeers,
       MIN_CONNECTIONS: this.MIN_CONNECTIONS,
+      TARGET_CONNECTIONS: this.TARGET_CONNECTIONS,
       BOOTSTRAP_RETRY_INTERVAL: this.BOOTSTRAP_RETRY_INTERVAL,
-      lastBootstrapAttempt: this.lastBootstrapAttempt,
       bootstrapAddresses: this.bootstrapAddresses,
-      lastConnectionCount: this.lastConnectionCount,
+      // Live views: these used to be copied by value, so the health check's
+      // writes to its own snapshot were lost and the retry timers never advanced.
+      get lastBootstrapAttempt() { return app.lastBootstrapAttempt; },
+      set lastBootstrapAttempt(v: number) { app.lastBootstrapAttempt = v; },
+      get lastConnectionCount() { return app.lastConnectionCount; },
+      set lastConnectionCount(v: number) { app.lastConnectionCount = v; },
+      get lastDiscovery() { return app.lastDiscovery; },
+      set lastDiscovery(v: number) { app.lastDiscovery = v; },
     };
   }
 
@@ -208,16 +217,21 @@ class Application extends EventEmitter {
       logger.info('👋 Discovered Peer:', id.toString());
       
       // Store peer info for potential reconnection
-      const multiaddrs = e.detail.multiaddrs?.map((ma: any) => ma.toString()) || [];
-      this.knownPeers.set(id.toString(), {
+      const peerId = id.toString();
+      const multiaddrs = e.detail.multiaddrs?.map((ma: any) => withPeerId(ma.toString(), peerId)) || [];
+      this.knownPeers.set(peerId, {
         lastSeen: Date.now(),
-        multiaddrs
+        multiaddrs: multiaddrs.length > 0 ? multiaddrs : this.knownPeers.get(peerId)?.multiaddrs ?? [],
       });
-      
+
+      if (this.node.getConnections(id).length > 0) return;
+
       try { 
         await this.node.dial(id); 
-      } catch (err) {
-        logger.error('❌ Failed to connect to peer:', err);
+      } catch (err: any) {
+        // Not a dead end: back off and keep trying while the peer is in range.
+        logger.warn(`⚠️ Failed to connect to discovered peer ${peerId.slice(0, 16)}...: ${err?.message ?? err}`);
+        await scheduleReconnect(peerId, this.createReconnectionDependencies());
       }
     });
 
@@ -242,12 +256,28 @@ class Application extends EventEmitter {
           multiaddrs: []
         });
       }
+
+      // Remember how to reach the peer again, and have libp2p redial it too.
+      // A peer the network guard refuses is dropped from the peer store, which
+      // takes the tag with it.
+      if (!isPeerDenied(peerId)) {
+        void rememberPeerAddresses(this.node, this.knownPeers, evt.detail);
+        void setKeepAlive(this.node, evt.detail, true);
+      }
+    });
+
+    // Identify is what fills the peer store with a peer's addresses, and it
+    // finishes after peer:connect — so refresh what we remember about the peer here.
+    this.node.addEventListener('peer:identify', (evt: any) => {
+      const peerId = evt.detail?.peerId;
+      if (peerId && !isPeerDenied(peerId.toString())) void rememberPeerAddresses(this.node, this.knownPeers, peerId);
     });
 
     // Listen for Disconnection Events with automatic reconnection
     this.node.addEventListener('peer:disconnect', async (evt: any) => {
       const peerId = evt.detail.toString();
       logger.info(`💔 Disconnected from peer: ${peerId}`);
+      if (this.isShuttingDown) return;
       
       // Attempt to reconnect
       await scheduleReconnect(peerId, this.createReconnectionDependencies());
