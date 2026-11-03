@@ -19,6 +19,7 @@ ${b('Commands')}
   restart                Restart the daemon
   status [--json]        Show daemon status (pid, uptime, health, Algorand summary)
   logs [-f] [-n N]       Show (or follow) daemon logs (default 100 lines)
+  peers [--reconnect]    Show who the node is connected to; --reconnect redials now (no restart)
   serve                  Run the node in the foreground (Ctrl-C to stop)
   launch <app> [flags]   Point an agent tool at a DIIISCO node, starting one if needed
   config show|path|edit  Inspect or edit the config file

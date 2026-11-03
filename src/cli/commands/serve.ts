@@ -140,7 +140,13 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
   // Ctrl-C and which has no `daemon.json` to publish a token in.
   if (options.daemon) {
     try {
-      control = await startControlServer({ token: generateControlToken(), onShutdown: shutdown, state: controlState });
+      control = await startControlServer({
+        token: generateControlToken(),
+        onShutdown: shutdown,
+        state: controlState,
+        onPeers: () => app.getPeerReport(),
+        onReconnect: () => app.reconnectNow(),
+      });
       const recorded = await recordControlChannel({ port: control.port, token: control.token });
       if (!recorded) {
         warn('Could not record the control channel in daemon.json — `diiisco stop` will fall back to signals.');

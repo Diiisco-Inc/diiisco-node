@@ -1,7 +1,8 @@
 import { createLibp2pNode, lookupBootstrapServers } from './libp2p/node';
-import { isPeerDenied } from './libp2p/networkGuard';
+import { isPeerDenied, bootstrapPeerIds } from './libp2p/networkGuard';
 import { setLocalAddressProvider } from './libp2p/localAddresses';
-import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, recoverAfterWake, startConnectionHealthCheck, startSleepDetector, stopConnectionHealthCheck, rememberPeerAddresses, setKeepAlive, withPeerId, DEFAULT_TARGET_CONNECTIONS } from './libp2p/reconnection';
+import { ReconnectionDependencies, scheduleReconnect, attemptReconnect, recoverAfterWake, startConnectionHealthCheck, startSleepDetector, stopConnectionHealthCheck, rememberPeerAddresses, setKeepAlive, withPeerId, runMaintenancePass, DEFAULT_TARGET_CONNECTIONS } from './libp2p/reconnection';
+import { buildPeerReport, type PeerReport, type ReconnectReport } from './libp2p/peerReport';
 import { KeepAwake } from './utils/keepAwake';
 import { createApiServer } from './api/server';
 import { EventEmitter } from 'events';
@@ -103,6 +104,42 @@ class Application extends EventEmitter {
       get lastDiscovery() { return app.lastDiscovery; },
       set lastDiscovery(v: number) { app.lastDiscovery = v; },
     };
+  }
+
+  /** Who the node is connected to right now; `null` before the libp2p node exists. Read by `diiisco peers`. */
+  getPeerReport(): PeerReport | null {
+    if (!this.node) return null;
+    return buildPeerReport(this.node, {
+      bootstrapPeerIds: bootstrapPeerIds(this.bootstrapAddresses),
+      target: this.TARGET_CONNECTIONS,
+      known: this.knownPeers.size,
+    });
+  }
+
+  private reconnecting: Promise<ReconnectReport> | null = null;
+
+  /**
+   * Redial now: every known peer that is not connected, any missing bootstrap
+   * server, and a DHT walk, ignoring backoff and the connection target. Backs
+   * `diiisco peers --reconnect`, so a node that has lost peers can recover
+   * without a restart. One at a time: a second request joins the first.
+   */
+  reconnectNow(): Promise<ReconnectReport> {
+    if (!this.node) return Promise.reject(new Error('the node is still starting'));
+    if (this.isShuttingDown) return Promise.reject(new Error('the node is shutting down'));
+    if (this.reconnecting) return this.reconnecting;
+
+    const before = this.getPeerReport()!.connected;
+    logger.info(`🔄 Manual reconnect requested (${before} peer(s) connected)`);
+    this.reconnectAttempts.clear();
+    this.reconnecting = runMaintenancePass(this.createReconnectionDependencies(), Date.now(), { force: true })
+      .then(() => {
+        const report = this.getPeerReport()!;
+        logger.info(`✅ Manual reconnect finished: ${before} → ${report.connected} peer(s) connected`);
+        return { before, after: report.connected, report };
+      })
+      .finally(() => { this.reconnecting = null; });
+    return this.reconnecting;
   }
 
   async start() {
