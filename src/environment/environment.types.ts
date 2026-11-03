@@ -195,6 +195,12 @@ export interface Environment {
     displayName?: string;
     publicStats?: boolean;  // default true — set false to stop publishing detailed stats on status pages
     statusPages?: boolean;  // default true — set false to disable the public status page routes
+    /**
+     * Limits a public node's circuit-relay server puts on each relayed
+     * connection, which is cut when it reaches either one. Defaults: 60 minutes
+     * and 100 MB. Only relevant when `node.url` is set.
+     */
+    relay?: { connectionMinutes?: number; connectionMegabytes?: number };
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
   power?: PowerConfig;                      // Optional: `preventSleep` defaults to true
