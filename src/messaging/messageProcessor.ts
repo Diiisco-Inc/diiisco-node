@@ -210,7 +210,6 @@ export class MessageProcessor {
       logger.warn(`❌ Message (${String((msg as any)?.role).slice(0, 32)}) rejected: could not be verified (${err?.message ?? err}).`);
       return false;
     }
-    logger.info("🔐 Signature of incoming message has been successfully verified.");
 
     // Learn how to reach the sender directly. The signed message carries the
     // sender's current multiaddrs (incl. relay-circuit addresses), so we can
