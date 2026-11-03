@@ -14,6 +14,10 @@ export type DialTarget = PeerId | Multiaddr;
 export interface DialingNode {
   dial(target: DialTarget): Promise<unknown>;
   getConnections(): Array<{ remotePeer: { toString(): string } }>;
+  /** Absent on the stubs the tests use. */
+  peerId?: PeerId;
+  peerStore?: { get(peerId: PeerId): Promise<any>; merge(peerId: PeerId, data: any): Promise<unknown> };
+  peerRouting?: { getClosestPeers(key: Uint8Array, options?: any): AsyncIterable<{ id: PeerId; multiaddrs: Multiaddr[] }> };
   services?: any;
 }
 
