@@ -19,6 +19,8 @@ export const DEFAULT_TARGET_CONNECTIONS = 8;
 export const DEFAULT_MAX_DIALS_PER_PASS = 5;
 /** How often, while below target, the node walks the DHT for new peers. */
 export const DEFAULT_DISCOVERY_INTERVAL = 5 * 60 * 1000;
+/** Redials started by a manual reconnect, which is allowed more than a routine pass. */
+export const FORCE_MAX_DIALS_PER_PASS = 25;
 /** Addresses remembered per peer. */
 const MAX_STORED_ADDRESSES = 6;
 /** Tag that makes libp2p's own reconnect queue redial the peer too. */
@@ -291,13 +293,23 @@ export async function discoverMorePeers(deps: ReconnectionDependencies, connecte
  *    few at a time) and, now and then, walk the DHT for new ones;
  *  - forget peers not seen for a day.
  *
+ * `force` is for a manual reconnect (`diiisco peers --reconnect`): it ignores
+ * the target, the backoff and the retry timers, redials every known peer that
+ * is not connected (up to {@link FORCE_MAX_DIALS_PER_PASS}), redials missing
+ * bootstrap servers and walks the DHT, all right now.
+ *
  * Redialling known peers used to happen only below `MIN_CONNECTIONS`, which
  * three bootstrap connections always satisfied, so every other peer that
  * dropped stayed gone.
  */
-export async function runMaintenancePass(deps: ReconnectionDependencies, now: number = Date.now()): Promise<void> {
-  const target = deps.TARGET_CONNECTIONS ?? DEFAULT_TARGET_CONNECTIONS;
-  const maxDials = deps.MAX_DIALS_PER_PASS ?? DEFAULT_MAX_DIALS_PER_PASS;
+export async function runMaintenancePass(
+  deps: ReconnectionDependencies,
+  now: number = Date.now(),
+  options: { force?: boolean } = {},
+): Promise<void> {
+  const force = options.force === true;
+  const target = force ? Infinity : (deps.TARGET_CONNECTIONS ?? DEFAULT_TARGET_CONNECTIONS);
+  const maxDials = force ? FORCE_MAX_DIALS_PER_PASS : (deps.MAX_DIALS_PER_PASS ?? DEFAULT_MAX_DIALS_PER_PASS);
   const discoveryInterval = deps.DISCOVERY_INTERVAL ?? DEFAULT_DISCOVERY_INTERVAL;
 
   const uniquePeers = new Set(deps.node.getConnections().map((c) => c.remotePeer.toString()));
@@ -327,7 +339,7 @@ export async function runMaintenancePass(deps: ReconnectionDependencies, now: nu
   }
 
   // A bootstrap server that dropped is worth redialling even when others are up.
-  if (!bootstrapTried && (now - deps.lastBootstrapAttempt) > deps.BOOTSTRAP_RETRY_INTERVAL) {
+  if (!bootstrapTried && (force || (now - deps.lastBootstrapAttempt) > deps.BOOTSTRAP_RETRY_INTERVAL)) {
     const missing = missingBootstrapAddresses(deps, uniquePeers);
     if (missing.length > 0) {
       logger.info(`🔄 ${missing.length} bootstrap server(s) not connected — redialling...`);
@@ -339,8 +351,10 @@ export async function runMaintenancePass(deps: ReconnectionDependencies, now: nu
   if (connectionCount < target) {
     const due = [...deps.knownPeers.entries()]
       .filter(([peerId, info]) => {
-        if (uniquePeers.has(peerId) || pendingReconnects.has(peerId) || isPeerDenied(peerId)) return false;
+        if (uniquePeers.has(peerId) || isPeerDenied(peerId)) return false;
         if (now - info.lastSeen > KNOWN_PEER_WINDOW) return false;
+        if (force) return true;
+        if (pendingReconnects.has(peerId)) return false;
         const attempt = deps.reconnectAttempts.get(peerId);
         return !attempt || now - attempt.lastAttempt >= reconnectDelay(attempt.count, deps.RECONNECT_DELAY);
       })
@@ -360,7 +374,7 @@ export async function runMaintenancePass(deps: ReconnectionDependencies, now: nu
       }
     }));
 
-    if ((now - (deps.lastDiscovery ?? 0)) >= discoveryInterval) {
+    if (force || (now - (deps.lastDiscovery ?? 0)) >= discoveryInterval) {
       deps.lastDiscovery = now;
       await discoverMorePeers(deps, uniquePeers, maxDials, now);
     }
