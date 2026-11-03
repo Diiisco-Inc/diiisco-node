@@ -1,5 +1,6 @@
 import { logger } from '../utils/logger';
 import { isPeerDenied } from './networkGuard';
+import { toDialTarget, type DialingNode } from './dialTarget';
 
 // Track health check interval for cleanup
 let healthCheckIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -21,7 +22,7 @@ export interface ReconnectionDependencies {
   MAX_RECONNECT_ATTEMPTS: number;
   RECONNECT_DELAY: number;
   attemptReconnect: (peerId: string) => Promise<void>;
-  node: any; // Assuming node is needed by other functions
+  node: DialingNode;
   knownPeers: Map<string, { lastSeen: number; multiaddrs: string[] }>;
   MIN_CONNECTIONS: number;
   BOOTSTRAP_RETRY_INTERVAL: number;
@@ -89,19 +90,23 @@ export async function attemptReconnect(peerId: string, deps: ReconnectionDepende
     if (peerInfo && peerInfo.multiaddrs.length > 0) {
       // Try each multiaddr
       for (const addr of peerInfo.multiaddrs) {
+        const target = toDialTarget(addr);
+        if (!target) continue;
         try {
-          await deps.node.dial(addr);
+          await deps.node.dial(target);
           logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}... via stored multiaddr`);
           deps.reconnectAttempts.delete(peerId);
           return;
-        } catch (err) {
-          // Try next address
+        } catch (err: any) {
+          logger.warn(`⚠️ Dial to stored address ${addr.slice(0, 60)} failed: ${err?.message ?? err}`);
         }
       }
     }
 
     // Fall back to dialing by peer ID
-    await deps.node.dial(peerId);
+    const peerTarget = toDialTarget(peerId);
+    if (!peerTarget) throw new Error('not a valid peer id');
+    await deps.node.dial(peerTarget);
     logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}...`);
     deps.reconnectAttempts.delete(peerId);
 
@@ -126,14 +131,15 @@ export async function reconnectToBootstrap(deps: ReconnectionDependencies, settl
   let successCount = 0;
   
   for (const addr of deps.bootstrapAddresses) {
+    const target = toDialTarget(addr);
+    if (!target) continue;
     try {
       logger.info(`🔄 Dialing bootstrap: ${addr.slice(0, 60)}...`);
-      await deps.node.dial(addr);
+      await deps.node.dial(target);
       logger.info(`✅ Connected to bootstrap server`);
       successCount++;
     } catch (err: any) {
-      // Log at debug level to reduce spam
-      logger.debug(`❌ Failed to connect to bootstrap ${addr.slice(0, 40)}...: ${err.message}`);
+      logger.warn(`❌ Failed to connect to bootstrap ${addr.slice(0, 40)}...: ${err.message}`);
     }
   }
   
@@ -214,18 +220,24 @@ export function startConnectionHealthCheck(deps: ReconnectionDependencies) {
 
               if (peerInfo.multiaddrs.length > 0) {
                 for (const addr of peerInfo.multiaddrs) {
+                  const target = toDialTarget(addr);
+                  if (!target) continue;
                   try {
-                    await deps.node.dial(addr);
+                    await deps.node.dial(target);
                     logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}...`);
                     break;
-                  } catch {
-                    // Try next address
+                  } catch (err: any) {
+                    logger.warn(`⚠️ Dial to ${addr.slice(0, 60)} failed: ${err?.message ?? err}`);
                   }
                 }
               } else {
-                await deps.node.dial(peerId);
+                const target = toDialTarget(peerId);
+                if (!target) throw new Error('not a valid peer id');
+                await deps.node.dial(target);
+                logger.info(`✅ Reconnected to ${peerId.slice(0, 16)}...`);
               }
-            } catch (err) {
+            } catch (err: any) {
+              logger.warn(`⚠️ Could not reconnect to known peer ${peerId.slice(0, 16)}...: ${err?.message ?? err}`);
               // Track failed attempt
               const current = deps.reconnectAttempts.get(peerId) || { count: 0, lastAttempt: 0 };
               deps.reconnectAttempts.set(peerId, { count: current.count + 1, lastAttempt: now });
