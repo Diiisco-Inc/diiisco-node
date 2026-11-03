@@ -8,8 +8,11 @@ export interface ClosedConnection {
   remotePeer: { toString(): string };
   remoteAddr: { toString(): string };
   timeline?: { open?: number };
-  /** Set on a relayed connection: the relay's duration and data limits. */
-  limits?: { seconds?: bigint; bytes?: bigint };
+  /**
+   * Set on a relayed connection. libp2p exposes `seconds` as a live getter: the
+   * time *remaining* when it is read (a number), not the limit the relay set.
+   */
+  limits?: { seconds?: number | bigint; bytes?: number | bigint };
 }
 
 export const isRelayedAddress = (addr: string): boolean => addr.includes('/p2p-circuit');
@@ -17,6 +20,25 @@ export const isRelayedAddress = (addr: string): boolean => addr.includes('/p2p-c
 export interface CloseDescription {
   relayed: boolean;
   message: string;
+}
+
+/**
+ * The relay's duration limit in seconds, worked back from what libp2p reports.
+ *
+ * `limits.seconds` is the time remaining, so the limit is that plus how long
+ * the connection lasted. js-libp2p's relay server (which every DIIISCO relay
+ * runs) puts its limit in *milliseconds* into a field the protocol defines in
+ * seconds, so the figure comes out 1000 times too large (a 10 minute limit
+ * reads 600000). A figure of a minute or more once divided by 1000 is taken to
+ * be that; anything smaller is taken at face value, as a relay that sends
+ * seconds correctly would give.
+ */
+export function relayLimitSeconds(lastedSeconds: number, remaining: number | bigint | undefined): number | undefined {
+  if (remaining === undefined) return undefined;
+  const reported = lastedSeconds + Number(remaining);
+  if (!Number.isFinite(reported) || reported <= 0) return undefined;
+  const fromMilliseconds = reported / 1000;
+  return fromMilliseconds >= 60 ? Math.round(fromMilliseconds) : Math.round(reported);
 }
 
 /**
@@ -33,7 +55,8 @@ export function describeClose(conn: ClosedConnection, now: number = Date.now()):
 
   if (!relayed) return { relayed, message: `🔌 Connection to ${peer}... closed${duration}` };
 
-  const limitSeconds = conn.limits?.seconds === undefined ? undefined : Number(conn.limits.seconds);
+  // Without how long it lasted the remaining time cannot be turned into a limit.
+  const limitSeconds = lasted === undefined ? undefined : relayLimitSeconds(lasted, conn.limits?.seconds);
   const atLimit = lasted !== undefined && limitSeconds !== undefined && Math.abs(lasted - limitSeconds) <= 5;
   const limit = limitSeconds === undefined ? '' : ` (relay limit ${limitSeconds}s)`;
   const cause = atLimit ? ' — cut by the relay at its duration limit' : '';
