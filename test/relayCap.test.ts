@@ -41,11 +41,12 @@ describe('relayLimits', () => {
   });
 });
 
-const conn = (addr: string, openedMsAgo: number, now: number, limitSeconds?: bigint) => ({
+/** `remaining` is libp2p's live `limits.seconds`: time left on the relay's limit when read. */
+const conn = (addr: string, openedMsAgo: number, now: number, remaining?: number | bigint) => ({
   remotePeer: { toString: () => '12D3KooWRyQYWaCBxeNY3YFz383qEuq8yV2RGK2ReSnMCy1KzJtU' },
   remoteAddr: { toString: () => addr },
   timeline: { open: now - openedMsAgo },
-  ...(limitSeconds === undefined ? {} : { limits: { seconds: limitSeconds } }),
+  ...(remaining === undefined ? {} : { limits: { seconds: remaining } }),
 });
 
 describe('describeClose', () => {
@@ -58,15 +59,31 @@ describe('describeClose', () => {
   });
 
   test('a relayed connection closed at its duration limit says the relay cut it', () => {
-    const d = describeClose(conn(RELAYED, 599_800, NOW, 600n), NOW);
+    // A 10 minute limit as js-libp2p reports it: 600000 in total, so 599400 remain after 600 s.
+    const d = describeClose(conn(RELAYED, 600_000, NOW, 599_400), NOW);
     expect(d.relayed).toBe(true);
     expect(d.message).toContain('after 600s');
     expect(d.message).toContain('relay limit 600s');
     expect(d.message).toContain('cut by the relay');
   });
 
+  test('a relay that reports its limit in true seconds is read as seconds', () => {
+    const d = describeClose(conn(RELAYED, 120_000, NOW, 0n), NOW);
+    expect(d.message).toContain('relay limit 120s');
+    expect(d.message).toContain('cut by the relay');
+  });
+
+  test('a fresh relayed connection shows the real limit, not the raw figure', () => {
+    // As seen in the field: closed after 0s with libp2p reporting 600000 remaining.
+    const d = describeClose(conn(RELAYED, 0, NOW, 600_000), NOW);
+    expect(d.message).toContain('after 0s');
+    expect(d.message).toContain('relay limit 600s');
+    expect(d.message).not.toContain('600000');
+    expect(d.message).not.toContain('cut by the relay');
+  });
+
   test('a relayed connection that closed early is not blamed on the relay', () => {
-    const d = describeClose(conn(RELAYED, 16_000, NOW, 600n), NOW);
+    const d = describeClose(conn(RELAYED, 16_000, NOW, 599_984), NOW);
     expect(d.relayed).toBe(true);
     expect(d.message).toContain('after 16s');
     expect(d.message).not.toContain('cut by the relay');
