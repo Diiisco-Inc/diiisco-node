@@ -20,6 +20,8 @@ import { PUBLIC_BOOTSTRAP_SERVERS } from '../environment/defaults';
 import { nfdToNodeAddress } from '../utils/algorand';
 import { getNetworkId, PUBLIC_NETWORK_ID } from '../utils/topic';
 import { NetworkGuard, bootstrapPeerIds } from './networkGuard';
+import { relayLimits } from './relayLimits';
+import { describeClose } from './connectionLog';
 
 // Maximum circuit-relay reservations a public relay node will accept from
 // NAT'd peers. Only relevant when this node runs the relay server.
@@ -170,18 +172,31 @@ export const createLibp2pNode = async () => {
     peerDiscovery,
     streamMuxers: [yamux()],
     
-    // Connection Manager - prevents aggressive connection pruning
+    // libp2p pings every connection and aborts one whose ping fails. The
+    // default timeout adapts down to 5 s, so a busy moment (pure-JS noise
+    // crypto, GC, a laptop waking) could abort many connections at once; give a
+    // ping 20-60 s. This is the only keep-alive: the app used to run a second
+    // ping loop that closed connections on a single failed ping.
+    connectionMonitor: {
+      pingInterval: 15000,
+      pingTimeout: { minTimeout: 20000, maxTimeout: 60000 },
+      abortConnectionOnPingFailure: true,
+    },
+
+    // Connection Manager. (`minConnections` and `autoDialInterval` used to be
+    // set here; libp2p 3.x has neither, so they did nothing — keeping the
+    // connection count up is `src/libp2p/reconnection.ts`'s job.)
     connectionManager: {
-      // Minimum number of connections to maintain
-      minConnections: 2,
       // Maximum number of connections allowed
       maxConnections: 100,
-      // Auto-dial interval to maintain connections (ms)
-      autoDialInterval: 10000,
-      // Inbound connection threshold before pruning
+      // Inbound connections per host per window before new ones are refused
       inboundConnectionThreshold: 20,
-    } as any,
-    
+      // Peers tagged keep-alive (see `setKeepAlive`) are redialled by libp2p
+      // itself after a drop: this many tries, the first after this many ms.
+      reconnectRetries: 5,
+      reconnectRetryInterval: 2000,
+    },
+
     services: {
       identify: identify(),
       identifyPush: identifyPush(),
@@ -218,15 +233,14 @@ export const createLibp2pNode = async () => {
         relay: circuitRelayServer({
           reservations: {
             maxReservations: MAX_RELAY_RESERVATIONS,
-            // Bound relayed connections to the OpenAI API envelope rather than
-            // libp2p's tiny 128KB / 2-min default (which truncates real
-            // completions) or an unlimited relay (which invites abuse):
-            //  - 10 min: the OpenAI SDK default request timeout.
-            //  - 25 MB: OpenAI's documented max content size (26,214,400 bytes),
-            //    ample for any completion while capping relay abuse.
-            // DCUtR still upgrades heavy traffic to a direct connection off the relay.
-            defaultDurationLimit: 10 * 60 * 1000,
-            defaultDataLimit: BigInt(25 * 1024 * 1024),
+            // A relayed connection is cut when it reaches either limit, taking
+            // GossipSub and any request in flight with it. They were 10 minutes
+            // and 25 MB, which dropped every relayed peer 10 minutes after it
+            // connected; see `relayLimits.ts` and `node.relay` in the config.
+            // libp2p's own default (128 KB / 2 min) truncates real completions,
+            // and an unlimited relay invites abuse, so there is still a bound.
+            defaultDurationLimit: relayLimits(environment.node?.relay).durationLimitMs,
+            defaultDataLimit: relayLimits(environment.node?.relay).dataLimitBytes,
           },
         })
       } : {}),
@@ -269,47 +283,20 @@ export const createLibp2pNode = async () => {
     }
   });
 
-  // Start keep-alive ping loop for connected peers
-  startKeepAlive(node);
+  // Say when a relayed connection closes and how long it lasted: a connection
+  // closing at the relay's duration limit is the relay cutting it, not the peer.
+  node.addEventListener('connection:close', (evt: any) => {
+    try {
+      const { relayed, message } = describeClose(evt.detail);
+      if (relayed) logger.info(message);
+      else logger.debug(message);
+    } catch {
+      // Logging must never throw out of an event listener.
+    }
+  });
 
   return node;
 };
-
-/**
- * Periodically ping connected peers to keep connections alive
- * This prevents NAT timeouts and detects dead peers early
- */
-async function startKeepAlive(node: any) {
-  const PING_INTERVAL = 30000; // Ping every 30 seconds
-  const PING_TIMEOUT = 10000;  // 10 second timeout per ping
-
-  setInterval(async () => {
-    const connections = node.getConnections();
-    
-    if (connections.length === 0) {
-      logger.debug('🔄 Keep-alive: No connections to ping');
-      return;
-    }
-
-    logger.debug(`🔄 Keep-alive: Pinging ${connections.length} peer(s)...`);
-
-    for (const conn of connections) {
-      const peerId = conn.remotePeer;
-      
-      try {
-        const latency = await node.services.ping.ping(peerId, {
-          signal: AbortSignal.timeout(PING_TIMEOUT)
-        });
-        logger.debug(`📶 Ping to ${peerId.toString().slice(0, 16)}...: ${latency}ms`);
-      } catch (err: any) {
-        logger.warn(`⚠️ Keep-alive ping failed for ${peerId.toString().slice(0, 16)}... — closing dead connection`);
-        try { await conn.close(); } catch {}
-      }
-    }
-  }, PING_INTERVAL);
-
-  logger.info('🔄 Keep-alive ping service started (interval: 30s)');
-}
 
 export async function waitForMesh(node: any, topic: string, { min = 1, timeoutMs = 10000 } = {}) {
   const start = Date.now()
