@@ -15,7 +15,6 @@ const MAX_CONCURRENT_LOOKUPS = 8;
 const MAX_CACHED_LOOKUPS = 2000;
 
 export default class algorand {
-  mnemonic: string;
   account: algosdk.Account;
   nfdAddr: string | null;
   nfdVerified: boolean = false;
@@ -31,16 +30,15 @@ export default class algorand {
     if (this.env.local?.enabled) {
       // Generate an ephemeral keypair used only for P2P message signing — no blockchain interaction.
       this.account = algosdk.generateAccount();
-      this.mnemonic = algosdk.secretKeyToMnemonic(this.account.sk);
       this.nfdAddr = null;
       // algod client is not used in local mode; assign a placeholder to satisfy TS.
       this.algod = null as unknown as algosdk.Algodv2;
       return;
     }
 
-    this.mnemonic = this.env.algorand!.mnemonic;
     this.nfdAddr = this.env.algorand!.nfd || null;
-    this.account = algosdk.mnemonicToSecretKey(this.mnemonic);
+    // The secret key is derived once; the mnemonic is not kept on this object.
+    this.account = algosdk.mnemonicToSecretKey(this.env.algorand!.mnemonic);
 
     this.algod = new algosdk.Algodv2(this.env.algorand!.client.token, this.env.algorand!.client.address, this.env.algorand!.client.port);
   }
@@ -111,7 +109,7 @@ export default class algorand {
 
     // Sign the Payload
     const bytes = new TextEncoder().encode(canonicalize(obj));
-    const signedBytes = algosdk.signBytes(bytes, algosdk.mnemonicToSecretKey(this.mnemonic).sk);
+    const signedBytes = algosdk.signBytes(bytes, this.account.sk);
     const signatureB64 = Buffer.from(signedBytes).toString('base64');
     return signatureB64;
   }
@@ -189,7 +187,7 @@ export default class algorand {
   }
 
   async optInToAsset(address: string, assetId: number) {
-    const sk = algosdk.mnemonicToSecretKey(this.mnemonic).sk;
+    const sk = this.account.sk;
 
     const sp = await this.getSuggestedParams();
     const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
