@@ -110,7 +110,7 @@ keeps its inline mnemonic and is unaffected.
 
 ### Messaging pipeline
 
-All on-wire messages are msgpack-encoded (`msgpackr`) and typed by `role` field (see `src/types/messages.ts`). Every byte is a stranger's, and an unhandled rejection exits the process (`installProcessGuards`), so decode goes through `parseWireMessage` (`src/messaging/wire.ts`: never throws, returns `null` unless the shape is plausible), `process()` treats a throwing verification as a rejection, and `quoteEngine` / `OpenAIInferenceModel.addModel` validate what a peer sends before it enters a queue a timer later reads. Anything new that reads peer data in a timer or listener must do the same.
+All on-wire messages are msgpack-encoded (`msgpackr`) and typed by `role` field (see `src/types/messages.ts`). Every byte is a stranger's, and an unhandled rejection exits the process (`installProcessGuards`), so decode goes through `parseWireMessage` (`src/messaging/wire.ts`: never throws, returns `null` unless the shape is plausible), `process()` treats a throwing verification as a rejection, and `quoteEngine` / `ModelListCollector` validate what a peer sends before it enters a queue a timer later reads. Anything new that reads peer data in a timer or listener must do the same.
 
 **Message flow for an inference request:**
 1. API server receives `POST /v1/chat/completions`

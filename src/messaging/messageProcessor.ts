@@ -40,6 +40,7 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import { ExpiringMap } from '../utils/expiringMap';
 import { RequestLedger } from './requestLedger';
+import { ModelListCollector } from './modelListCollector';
 
 const QUOTE_TTL_MS = 120_000;      // validity window advertised on quotes (x402 requires one)
 const COMPLETION_TTL_MS = 120_000; // how long a withheld completion is held awaiting payment
@@ -94,6 +95,8 @@ export class MessageProcessor {
   private contracts = new ExpiringMap<string, IssuedContract>();
   // Requester side: who each of our requests was handed to (see `RequestLedger`).
   private requests: RequestLedger;
+  // Requester side: `list-models` requests of ours still collecting answers.
+  private modelLists: ModelListCollector;
 
   constructor(
     algo: algorand,
@@ -104,7 +107,8 @@ export class MessageProcessor {
     messageRouter: MessageRouter,
     ownPeerId: string,
     node: any,
-    requests: RequestLedger = new RequestLedger()
+    requests: RequestLedger = new RequestLedger(),
+    modelLists: ModelListCollector = new ModelListCollector()
   ) {
     this.algo = algo;
     this.model = model;
@@ -116,6 +120,7 @@ export class MessageProcessor {
     this.ownPeerId = ownPeerId;
     this.node = node;
     this.requests = requests;
+    this.modelLists = modelLists;
     this.speculativeCache = new SpeculativeInferenceCache(
       this.env.quoteEngine?.maxSpeculativeJobs ?? 2
     );
@@ -318,9 +323,12 @@ export class MessageProcessor {
   }
 
   private async handleListModelsResponse(msg: ListModelsResponse, sourcePeerId: string) {
-    // Note: msg.to check removed because we need the peer ID from the node, not from this class
-    // This will be handled by checking if the message is addressed to us in the main handler
-    this.model.addModel(msg.payload.models);
+    // Request ids are visible on the broadcast, so any peer can address a list
+    // to us. Only a request this node has open may receive one, and only the
+    // first answer from each peer is kept (see `ModelListCollector`).
+    if (!this.modelLists.add(msg.id, sourcePeerId, msg.payload?.models)) {
+      logger.debug(`🚫 Dropped a list-models-response for ${msg.id} from ${sourcePeerId.slice(0, 16)}... — no open request, a repeat, or not a list.`);
+    }
   }
 
   private async handleListNetwork(msg: ListNetworkRequest, sourcePeerId: string) {
