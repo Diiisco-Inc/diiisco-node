@@ -155,4 +155,25 @@ describe('direct messaging', () => {
     expect(await sender.sendDirect(a.peerId.toString(), message())).toBe(false);
     expect(calls).toBe(1);
   }, 30_000);
+
+  describe('size limits', () => {
+    test('an announced length over the limit is refused before the body is read', async () => {
+      const { a, b, received } = await pair();
+      const stream = await b.dialProtocol(a.peerId, PROTOCOL);
+      // Only a length prefix: 64 MB announced, nothing behind it. A reader with
+      // no cap would sit buffering; this one rejects the announcement.
+      const varint = (n: number) => { const out: number[] = []; while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128); } out.push(n); return Uint8Array.from(out); };
+      stream.send(varint(64 * 1024 * 1024));
+      const closed = await until(() => stream.status === 'aborted' || stream.status === 'reset' || stream.status === 'closed', 5000);
+      expect(closed).toBe(true);
+      expect(received()).toBe(0);
+    }, 30_000);
+
+    test('the sender refuses a message over the limit instead of sending it', async () => {
+      const { a, sender, received } = await pair();
+      const big = { ...message(), payload: 'x'.repeat(DEFAULT_DIRECT_MESSAGING_CONFIG.maxMessageSize + 1) };
+      expect(await sender.sendDirect(a.peerId.toString(), big)).toBe(false);
+      expect(received()).toBe(0);
+    }, 30_000);
+  });
 });

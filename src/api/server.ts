@@ -29,11 +29,13 @@ import { registerStatusPages } from './statusPages';
 import { nodeStats } from '../utils/nodeStats';
 import { RequestLedger } from '../messaging/requestLedger';
 import { ModelListCollector } from '../messaging/modelListCollector';
+import { DIRECT_MESSAGE_ENVELOPE_BYTES, maxDirectMessageBytes } from '../messaging/directMessaging';
 import { isLoopbackHost, hostnameOfHostHeader, hostnameOfUrl } from '../utils/hosts';
 import { environmentWarnings } from '../environment/validate';
 import {
   NoProviderError,
   InferenceTimeoutError,
+  RequestTooLargeError,
   ProviderFailedError,
   statusForInferenceError,
   messageForInferenceError,
@@ -443,6 +445,13 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     if (preferSelf && model && models && await models.ensureAvailable(body.model) && models.kindOf(body.model) === wantedKind) {
       logger.info(`⚡ Serving request locally (preferSelf). Model: ${body.model}`);
       return runLocally(model);
+    }
+
+    // The prompt travels to the provider in one direct message, which has a size
+    // limit. Refuse now, with a 413, rather than let a provider drop it unread.
+    const wireBytes = Buffer.byteLength(JSON.stringify(body)) + DIRECT_MESSAGE_ENVELOPE_BYTES;
+    if (wireBytes > maxDirectMessageBytes()) {
+      throw new RequestTooLargeError(wireBytes, maxDirectMessageBytes());
     }
 
     // A provider that reports `inference-failed` is excluded and the request is
