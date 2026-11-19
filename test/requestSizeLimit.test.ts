@@ -53,3 +53,25 @@ describe('request size limit', () => {
     expect(messageForInferenceError(err)).toContain('at most 10 bytes');
   });
 });
+
+describe('request shape the network can carry', () => {
+  const ok = { model: 'm', messages: [{ role: 'user', content: 'hi' }] };
+
+  test.each([
+    ['a model that is not a string', { ...ok, model: { x: 1 } }],
+    ['max_tokens as a string', { ...ok, max_tokens: '100' }],
+    ['a negative max_tokens', { ...ok, max_tokens: -5 }],
+    ['a zero max_tokens', { ...ok, max_tokens: 0 }],
+  ])('%s is a 400, not a request every peer silently drops', async (_name, body) => {
+    const before = enqueued.length;
+    const res = await post(body);
+    expect(res.status).toBe(400);
+    expect(enqueued.length).toBe(before);
+  });
+
+  test('a null max_tokens is treated as absent', async () => {
+    environment.quoteEngine.auctionTimeout = 50;
+    const res = await post({ ...ok, max_tokens: null });
+    expect(res.status).toBe(503); // reached the auction
+  });
+});

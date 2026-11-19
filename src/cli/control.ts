@@ -243,6 +243,12 @@ export interface ShutdownRequestResult {
   ok: boolean;
   /** Present when the instruction was not accepted; safe to show the user. */
   error: string | null;
+  /**
+   * True when the connection was refused: nothing is listening on the recorded
+   * port. A running node always listens there, so whatever holds the recorded
+   * pid is not that node (or it has already begun to exit).
+   */
+  refused?: boolean;
 }
 
 /**
@@ -283,7 +289,7 @@ export function requestShutdown(port: number, token: string, timeoutMs = 5_000):
       const reason = err?.code === 'ECONNREFUSED'
         ? 'nothing is listening on the recorded control port'
         : String(err?.message ?? err);
-      finish({ ok: false, error: reason });
+      finish({ ok: false, error: reason, refused: err?.code === 'ECONNREFUSED' });
     });
     socket.on('close', () => finish({ ok: false, error: 'the control channel closed without answering' }));
   });
