@@ -7,8 +7,12 @@ import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
 import { getLocalMultiaddrs } from '../libp2p/localAddresses';
 import { diiiscoAssets } from './diiiscoAssets';
+import { ExpiringMap } from './expiringMap';
 
 const SUGGESTED_PARAMS_TTL_MS = 4500;
+const ASSET_LOOKUP_TTL_MS = 60_000;
+const MAX_CONCURRENT_LOOKUPS = 8;
+const MAX_CACHED_LOOKUPS = 2000;
 
 export default class algorand {
   mnemonic: string;
@@ -17,6 +21,8 @@ export default class algorand {
   nfdVerified: boolean = false;
   private env: Environment;
   private algod: algosdk.Algodv2;
+  private assetLookups = new ExpiringMap<string, { optedIn: boolean; balance: bigint }>(30_000, MAX_CACHED_LOOKUPS);
+  private assetLookupsInFlight = new Map<string, Promise<{ optedIn: boolean; balance: bigint }>>();
   private suggestedParamsCache: { params: algosdk.SuggestedParams; fetchedAt: number } | null = null;
 
   constructor() {
@@ -128,7 +134,36 @@ export default class algorand {
     return verified;
   }
 
-  async checkIfOptedInToAsset(address: string, assetId: number): Promise<{ optedIn: boolean; balance: BigInt }> {
+  /**
+   * Opt-in and balance of `address` for an asset. `cache: true` is for lookups a
+   * stranger can provoke (a quote request names any wallet it likes): the answer
+   * is reused for a minute, concurrent identical lookups share one algod call,
+   * and no more than `MAX_CONCURRENT_LOOKUPS` run at once, so a flood cannot
+   * turn this node into an algod-rate-limit exhauster. Errors are never cached.
+   */
+  async checkIfOptedInToAsset(address: string, assetId: number, options: { cache?: boolean } = {}): Promise<{ optedIn: boolean; balance: bigint }> {
+    if (!options.cache) return this.lookupAsset(address, assetId);
+
+    const key = `${address}:${assetId}`;
+    const hit = this.assetLookups.get(key);
+    if (hit) return hit;
+    const pending = this.assetLookupsInFlight.get(key);
+    if (pending) return pending;
+    if (this.assetLookupsInFlight.size >= MAX_CONCURRENT_LOOKUPS) {
+      throw new Error('too many concurrent account lookups');
+    }
+
+    const lookup = this.lookupAsset(address, assetId)
+      .then((result) => {
+        this.assetLookups.set(key, result, ASSET_LOOKUP_TTL_MS);
+        return result;
+      })
+      .finally(() => this.assetLookupsInFlight.delete(key));
+    this.assetLookupsInFlight.set(key, lookup);
+    return lookup;
+  }
+
+  private async lookupAsset(address: string, assetId: number): Promise<{ optedIn: boolean; balance: bigint }> {
     try {
       // Fetch full account info
       const accountInfo = await this.algod.accountInformation(address).do();
@@ -138,7 +173,7 @@ export default class algorand {
 
       if (!asset) {
         // Not opted-in
-        return { optedIn: false, balance: BigInt(0) };
+        return { optedIn: false, balance: 0n };
       }
 
       // Opted in; amount is in base units (respect asset decimals)
@@ -146,7 +181,7 @@ export default class algorand {
     } catch (err: any) { // TODO: Refine error type
       if (err.response?.body?.message?.includes("account does not exist")) {
         // The address has never been funded
-        return { optedIn: false, balance: BigInt(0) };
+        return { optedIn: false, balance: 0n };
       }
       console.error("Error checking if opted in:", err);
       throw err;
