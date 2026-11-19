@@ -130,6 +130,7 @@ export interface PeerIdConfig extends PeerId.JSONPeerId {}
 export interface DirectMessagingConfig {
   enabled: boolean;
   timeout: number;
+  /** Fall back to GossipSub when a direct send fails. Applies only to non-private roles (profiles); prompts, payments and completions never fall back. */
   fallbackToGossipsub: boolean;
   protocol: string;
   maxMessageSize: number;
