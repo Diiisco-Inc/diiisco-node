@@ -1,4 +1,3 @@
-import PeerId from 'peer-id';
 import { QuoteCreationFunction, QuoteSelectionFunction } from '../types/quotes';
 import type { ModelKind } from '../types/models';
 
@@ -125,7 +124,12 @@ export interface PeerIdStorageConfig {
   path: string;
 }
 
-export interface PeerIdConfig extends PeerId.JSONPeerId {}
+/** The JSON form of a peer identity: its id and, optionally, its base64 keys. */
+export interface PeerIdConfig {
+  id: string;
+  privKey?: string;
+  pubKey?: string;
+}
 
 export interface DirectMessagingConfig {
   enabled: boolean;

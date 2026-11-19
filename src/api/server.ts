@@ -4,12 +4,10 @@ import { requireBearer } from "../utils/endpoint";
 import environment from "../environment/runtime";
 import { sha256 } from "js-sha256";
 import { EventEmitter } from 'events';
-import { encode } from "msgpackr";
-import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsResponse, ListModelsRequest, ListNetworkRequest, NetworkNode } from "../types/messages";
+import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsRequest, ListNetworkRequest, NetworkNode } from "../types/messages";
 import { logger } from '../utils/logger';
-import { Libp2p } from '@libp2p/interface';
+import { Libp2p, Connection } from '@libp2p/interface';
 import { MeshMessageQueue } from '../messaging/meshMessageQueue';
-import { Connection } from 'libp2p-tcp';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
@@ -93,11 +91,11 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     registerStatusPages({ app, node, nodeEvents, algo, messageRouter, models });
   }
 
-  app.get('/health', (req, res) => {
+  app.get('/health', (_req, res) => {
     res.status(200).send('API is healthy');
   });
 
-  app.get('/health/algorand', async (req, res) => {
+  app.get('/health/algorand', async (_req, res) => {
     try {
       const diagnostics = await algo.getDiagnostics();
       // Healthy on the public network when algod is reachable and the wallet is
@@ -110,7 +108,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     }
   });
 
-  app.get('/peers', async (req, res) => {
+  app.get('/peers', async (_req, res) => {
     try {
       const peers = node.getConnections().map((conn: Connection) => {
         return {

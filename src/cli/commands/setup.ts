@@ -222,7 +222,7 @@ async function buildWallet(
     options.network ?? (await prompt.choose('Network', ['mainnet', 'testnet'] as const, existing.algorand?.network ?? 'mainnet'))
   );
 
-  const mnemonic = await resolveMnemonic(prompt, options, existing, mnemonicFromStdin);
+  const mnemonic = await resolveMnemonic(prompt, existing, mnemonicFromStdin);
 
   const defaultAlgod = network === 'mainnet'
     ? 'https://mainnet-api.algonode.cloud/'
@@ -269,7 +269,6 @@ async function buildWallet(
  */
 async function resolveMnemonic(
   prompt: Prompter,
-  options: SetupOptions,
   existing: EnvironmentFile,
   mnemonicFromStdin: string | null
 ): Promise<string> {

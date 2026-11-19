@@ -20,7 +20,6 @@ import {
   ListModelsResponse,
   ListNetworkRequest,
   ListNetworkResponse,
-  NetworkNode,
   NodeProfileRequest,
   NodeProfileResponse,
 } from "../types/messages";
