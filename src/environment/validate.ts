@@ -2,6 +2,9 @@ import { Environment } from './environment.types';
 import { MODEL_KINDS, type ModelKind } from '../types/models';
 import { isLoopbackHost } from '../utils/hosts';
 
+/** Keys that shipped as defaults, or are what a client presents when it has none: never valid as a secret. */
+export const KNOWN_DEFAULT_API_KEYS: ReadonlySet<string> = new Set(['diiisco']);
+
 /**
  * Validate a fully-merged environment and return human-actionable problems.
  *
@@ -127,6 +130,8 @@ export function validateEnvironment(env: Environment): string[] {
     }
     if (env.api.bearerAuthentication && (!Array.isArray(env.api.keys) || env.api.keys.length === 0)) {
       errors.push('`api.bearerAuthentication` is on but `api.keys` is empty — no client could ever authenticate. Add a key or set `api.bearerAuthentication` to false.');
+    } else if (env.api.bearerAuthentication && env.api.keys.some((k) => typeof k === 'string' && KNOWN_DEFAULT_API_KEYS.has(k.trim().toLowerCase()))) {
+      errors.push('`api.bearerAuthentication` is on but `api.keys` contains a well-known default key ("diiisco"), which anyone can guess. Replace it with a random key (`diiisco setup` generates one).');
     }
     if (env.api.host !== undefined && (typeof env.api.host !== 'string' || env.api.host.trim() === '')) {
       errors.push(`\`api.host\` must be an address to bind, e.g. "127.0.0.1" (this machine only) or "0.0.0.0" (every interface) (got ${JSON.stringify(env.api.host)}).`);

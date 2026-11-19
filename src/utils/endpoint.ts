@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import environment from "../environment/runtime";
 
 /**
@@ -16,14 +17,32 @@ function parseApiKey(req: any) {
 }
 
 /**
- * Build the allowlist from the current environment. Computed per request rather
- * than once at module load: when the node is embedded (e.g. the desktop app),
- * `api.keys` is populated via `configureEnvironment` AFTER this module is
- * imported, so an allowlist frozen at import time would be empty and reject
- * every key. Reading it per request keeps it in sync with the live config.
+ * The accepted keys, as SHA-256 digests. Read per request rather than once at
+ * module load: when the node is embedded (e.g. the desktop app), `api.keys` is
+ * populated via `configureEnvironment` AFTER this module is imported, so an
+ * allowlist frozen at import time would be empty and reject every key.
  */
-function allowedKeys(): Set<string> {
-  return new Set(environment.api.keys.map((s: string) => s.trim()).filter(Boolean));
+function allowedDigests(): Buffer[] {
+  return environment.api.keys
+    .map((s: string) => s.trim())
+    .filter(Boolean)
+    .map(digest);
+}
+
+const digest = (key: string): Buffer => createHash("sha256").update(key).digest();
+
+/**
+ * Constant-time key check. Digests have a fixed length, so neither a key's
+ * length nor how much of it matches is observable, and every allowed key is
+ * compared so the position of a match is not either.
+ */
+function isAllowedKey(token: string): boolean {
+  const presented = digest(token);
+  let ok = false;
+  for (const allowed of allowedDigests()) {
+    if (timingSafeEqual(presented, allowed)) ok = true;
+  }
+  return ok;
 }
 
 /** Bearer auth middleware */
@@ -38,7 +57,7 @@ export function requireBearer(req: any, res: any, next: any) {
     }
   });
 
-  if (!allowedKeys().has(token)) return res.status(401).json({
+  if (!isAllowedKey(token)) return res.status(401).json({
     "error": {
       "message": "Incorrect API key provided.",
       "type": "authentication_error",
