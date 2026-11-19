@@ -4,6 +4,7 @@ import { requireBearer } from "../utils/endpoint";
 import environment from "../environment/runtime";
 import { collect, abortOnClose } from './collect';
 import { newRequestId } from '../utils/requestId';
+import { guarded } from '../utils/processGuards';
 import { EventEmitter } from 'events';
 import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsRequest, ListNetworkRequest, NetworkNode } from "../types/messages";
 import { logger } from '../utils/logger';
@@ -275,10 +276,14 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       // the message processor can hold `contract-created` to it too.
       let selectedPeerId: string | undefined;
 
+      // Nobody awaits an event listener, so whatever `onSelected` throws would be
+      // an unhandled rejection. Guarded, the overall deadline reports it instead.
+      const onSelectedGuarded = guarded('Accepting the selected quote', (quote: { msg: QuoteResponse, from: string }) => onSelected(quote));
+
       const cleanup = () => {
         nodeEvents.off(`inference-response-${id}`, onResponse);
         nodeEvents.off(`inference-failed-${id}`, onFailed);
-        nodeEvents.off(`quote-selected-${id}`, onSelected);
+        nodeEvents.off(`quote-selected-${id}`, onSelectedGuarded);
         requests.release(id);
         clearTimeout(auctionTimer);
         clearTimeout(overallTimer);
@@ -377,7 +382,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
       nodeEvents.on(`inference-response-${id}`, onResponse);
       nodeEvents.on(`inference-failed-${id}`, onFailed);
-      nodeEvents.once(`quote-selected-${id}`, onSelected);
+      nodeEvents.once(`quote-selected-${id}`, onSelectedGuarded);
 
       const overallMs = inferenceTimeoutMs();
       overallTimer = setTimeout(

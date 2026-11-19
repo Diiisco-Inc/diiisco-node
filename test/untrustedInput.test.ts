@@ -163,3 +163,40 @@ describe('API defaults and warnings', () => {
     expect(errors.some((e) => e.includes('api.allowedHosts'))).toBe(true);
   });
 });
+
+describe('guarded()', () => {
+  const { guarded } = require('../src/utils/processGuards');
+
+  test('a listener that throws synchronously is logged, not thrown', () => {
+    expect(() => guarded('test', () => { throw new Error('sync boom'); })()).not.toThrow();
+  });
+
+  test('an async listener that rejects does not become an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      guarded('test', async () => { throw new Error('async boom'); })();
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
+  test('arguments reach the wrapped function and a normal run is untouched', async () => {
+    const seen: number[] = [];
+    guarded('test', async (a: number, b: number) => { seen.push(a + b); })(2, 3);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual([5]);
+  });
+
+  test('it works as an EventEmitter listener that can be removed again', () => {
+    const events = new EventEmitter();
+    const fn = guarded('test', () => { throw new Error('boom'); });
+    events.on('x', fn);
+    expect(() => events.emit('x')).not.toThrow();
+    events.off('x', fn);
+    expect(events.listenerCount('x')).toBe(0);
+  });
+});

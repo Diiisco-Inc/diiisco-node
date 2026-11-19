@@ -2,6 +2,7 @@ import type { Model } from "openai/resources/index";
 import environment from "../environment/runtime";
 import { OpenAIInferenceModel } from "./models";
 import { logger } from "./logger";
+import { guarded } from "./processGuards";
 import type { ModelInfo, ModelKind } from "../types/models";
 import { ModelKindDetector } from "./modelCapabilities";
 
@@ -234,7 +235,7 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
 
   start(): void {
     if (!this.enabled || this.checkIntervalMs <= 0 || this.timer) return;
-    this.timer = setInterval(() => void this.refresh(), this.checkIntervalMs);
+    this.timer = setInterval(guarded('Checking the model backend', () => this.refresh()), this.checkIntervalMs);
     // Never hold the process open on the poll alone.
     this.timer.unref?.();
   }
