@@ -26,6 +26,7 @@ import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
 import { getMeshTopic } from './utils/topic';
 import type { Server } from 'http';
 import { join } from 'path';
+import { guarded } from './utils/processGuards';
 import { resolvePath } from './utils/paths';
 
 /** Where accepted-but-unsettled payments are kept: beside the peer identity. In-memory only without a wallet. */
@@ -269,7 +270,7 @@ class Application extends EventEmitter {
     });
 
     // Listen for Peer Discovery Events
-    this.node.addEventListener('peer:discovery', async (e: { detail: { id: any; multiaddrs?: any[] }; }) => {
+    this.node.addEventListener('peer:discovery', guarded('Handling a discovered peer', async (e: { detail: { id: any; multiaddrs?: any[] }; }) => {
       const id = e.detail.id;
       if (isPeerDenied(id.toString())) return; // on another network
       logger.info('👋 Discovered Peer:', id.toString());
@@ -291,7 +292,7 @@ class Application extends EventEmitter {
         logger.warn(`⚠️ Failed to connect to discovered peer ${peerId.slice(0, 16)}...: ${err?.message ?? err}`);
         await scheduleReconnect(peerId, this.createReconnectionDependencies());
       }
-    });
+    }));
 
     // Listen for Connection Events
     this.node.addEventListener('peer:connect', (evt: any) => {
@@ -332,14 +333,14 @@ class Application extends EventEmitter {
     });
 
     // Listen for Disconnection Events with automatic reconnection
-    this.node.addEventListener('peer:disconnect', async (evt: any) => {
+    this.node.addEventListener('peer:disconnect', guarded('Handling a peer disconnect', async (evt: any) => {
       const peerId = evt.detail.toString();
       logger.info(`💔 Disconnected from peer: ${peerId}`);
       if (this.isShuttingDown) return;
       
       // Attempt to reconnect
       await scheduleReconnect(peerId, this.createReconnectionDependencies());
-    });
+    }));
 
     // The bootstrap relay connection is usually established during libp2p
     // startup, before the peer:connect listener above exists — announce any
