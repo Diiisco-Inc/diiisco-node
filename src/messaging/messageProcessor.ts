@@ -364,6 +364,17 @@ export class MessageProcessor {
     }
   }
 
+  /**
+   * Sign a message and hand it to the router: the tail of every reply this node
+   * sends. `directTo` is the peer a direct-delivery role goes to (see
+   * `PRIVATE_ROLES`); a discovery broadcast leaves it out. The signing and the
+   * routing choice live here and nowhere else.
+   */
+  private async deliver(message: PubSubMessage, directTo?: string): Promise<void> {
+    message.signature = await this.algo.signObject(message);
+    await this.messageRouter.sendMessage(message, directTo);
+  }
+
   private async handleListModels(msg: ListModelsRequest, sourcePeerId: string) {
     if (!this.env.models.enabled) {
       return;
@@ -383,10 +394,9 @@ export class MessageProcessor {
         models: models_list,
       }
     };
-    response.signature = await this.algo.signObject(response);
 
     // Send via router (will use GossipSub for discovery messages)
-    await this.messageRouter.sendMessage(response);
+    await this.deliver(response);
     logger.info(`📤 Sent list-models-response to ${sourcePeerId}`);
   }
 
@@ -415,8 +425,7 @@ export class MessageProcessor {
         }
       }
     };
-    response.signature = await this.algo.signObject(response);
-    await this.messageRouter.sendMessage(response);
+    await this.deliver(response);
     logger.info(`📤 Sent list-network-response to ${sourcePeerId}`);
   }
 
@@ -453,8 +462,7 @@ export class MessageProcessor {
         profile: buildOwnProfile(this.node, this.algo, this.models.list(), (id) => this.models.kindOf(id)),
       }
     };
-    response.signature = await this.algo.signObject(response);
-    await this.messageRouter.sendMessage(response, sourcePeerId);
+    await this.deliver(response, sourcePeerId);
     logger.info(`📤 Sent node-profile-response to ${sourcePeerId}`);
   }
 
@@ -584,10 +592,9 @@ export class MessageProcessor {
       }
     };
 
-    response.signature = await this.algo.signObject(response);
 
     // Send via router (will use GossipSub for discovery messages)
-    await this.messageRouter.sendMessage(response);
+    await this.deliver(response);
     logger.info(`📤 Sent quote-response to ${sourcePeerId}`);
   }
 
@@ -705,9 +712,8 @@ export class MessageProcessor {
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: { ...msg.payload, paymentRequirements },
     };
-    response.signature = await this.algo.signObject(response);
 
-    await this.messageRouter.sendMessage(response, sourcePeerId);
+    await this.deliver(response, sourcePeerId);
     logger.info(`📤 Sent contract-created (payment challenge) to ${sourcePeerId}`);
   }
 
@@ -782,9 +788,8 @@ export class MessageProcessor {
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: { ...msg.payload, paymentPayload },
     };
-    response.signature = await this.algo.signObject(response);
 
-    await this.messageRouter.sendMessage(response, sourcePeerId);
+    await this.deliver(response, sourcePeerId);
     logger.info(`📤 Sent contract-signed (proof-of-payment) to ${sourcePeerId}`);
   }
 
@@ -891,8 +896,7 @@ export class MessageProcessor {
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: { ...msg.payload, completion },
     };
-    response.signature = await this.algo.signObject(response);
-    await this.messageRouter.sendMessage(response, sourcePeerId);
+    await this.deliver(response, sourcePeerId);
     logger.info(`📤 Sent inference-response to ${sourcePeerId}`);
   }
 
@@ -937,8 +941,7 @@ export class MessageProcessor {
       payload: { model: msg.payload?.model, reason },
     };
     try {
-      response.signature = await this.algo.signObject(response);
-      await this.messageRouter.sendMessage(response, sourcePeerId);
+      await this.deliver(response, sourcePeerId);
       logger.info(`📤 Sent inference-failed (${reason}) to ${sourcePeerId}`);
     } catch (err) {
       // Best-effort: the requester's deadline is the backstop.
