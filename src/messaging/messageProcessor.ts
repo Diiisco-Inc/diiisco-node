@@ -49,6 +49,11 @@ const DEFAULT_REQUEST_BURST = 30;
 /** Answers and the payment exchange are several messages per request, so they get a larger budget. */
 const RESPONSE_BUDGET_FACTOR = 4;
 
+/** How far a message's timestamp may differ from this node's clock before it is refused. */
+const DEFAULT_CLOCK_SKEW_MS = 5 * 60_000;
+/** Most broadcast message ids remembered for replay detection. */
+const MAX_SEEN_MESSAGES = 20_000;
+
 const QUOTE_TTL_MS = 120_000;      // validity window advertised on quotes (x402 requires one)
 const COMPLETION_TTL_MS = 120_000; // how long a withheld completion is held awaiting payment
 const MIN_CHARGE = 0.000001;       // 1 µUSDC — x402/facilitator reject a zero-value transfer
@@ -102,6 +107,8 @@ export class MessageProcessor {
   private contracts = new ExpiringMap<string, IssuedContract>();
   // Requester side: who each of our requests was handed to (see `RequestLedger`).
   private requests: RequestLedger;
+  // Broadcast requests already handled, so a replayed copy is dropped (see `process`).
+  private seenRequests: ExpiringMap<string, true>;
   // Per-peer budgets, spent before any signature check or lookup (see `node.rateLimit`).
   private requestLimiter: RateLimiter;
   private otherLimiter: RateLimiter;
@@ -134,6 +141,7 @@ export class MessageProcessor {
     const rate = this.env.node?.rateLimit;
     const perMin = rate?.requestsPerMinute ?? DEFAULT_REQUESTS_PER_MINUTE;
     const burst = rate?.burst ?? DEFAULT_REQUEST_BURST;
+    this.seenRequests = new ExpiringMap<string, true>(30_000, MAX_SEEN_MESSAGES);
     this.requestLimiter = perMinute(perMin, burst);
     this.otherLimiter = perMinute(perMin * RESPONSE_BUDGET_FACTOR, burst * RESPONSE_BUDGET_FACTOR);
     this.speculativeCache = new SpeculativeInferenceCache(
@@ -213,6 +221,15 @@ export class MessageProcessor {
       }
     }
 
+    // A signed message stays valid for ever, so one captured today could be
+    // replayed tomorrow. Refuse any whose timestamp is not close to now.
+    // (The timestamp is inside the signature, so it cannot be rewritten.)
+    const skewMs = this.env.node?.clockSkewToleranceMs ?? DEFAULT_CLOCK_SKEW_MS;
+    if (typeof msg.timestamp !== 'number' || !Number.isFinite(msg.timestamp) || Math.abs(Date.now() - msg.timestamp) > skewMs) {
+      logger.debug(`🚫 Dropped a ${String(msg.role).slice(0, 32)} from ${sourcePeerId.slice(0, 16)}... — its timestamp is not within ${Math.round(skewMs / 1000)}s of now.`);
+      return false;
+    }
+
     // Verify the sender's address and signature. The message is a stranger's
     // bytes: a malformed address or signature makes these throw, and a throw
     // here would be an unhandled rejection, which exits the process. Treat
@@ -240,6 +257,17 @@ export class MessageProcessor {
     } catch (err: any) {
       logger.warn(`❌ Message (${String((msg as any)?.role).slice(0, 32)}) rejected: could not be verified (${err?.message ?? err}).`);
       return false;
+    }
+
+    // A broadcast request is answered once. Recorded only now, after the
+    // signature checked out: otherwise a forged copy could use up a real id.
+    if (REQUEST_ROLES.has(msg.role) && sourcePeerId !== this.ownPeerId) {
+      const key = `${msg.role}|${msg.fromWalletAddr}|${(msg as any).id}`;
+      if (this.seenRequests.has(key)) {
+        logger.debug(`🚫 Dropped a replayed ${msg.role} (${String((msg as any).id).slice(0, 16)}) from ${sourcePeerId.slice(0, 16)}...`);
+        return false;
+      }
+      this.seenRequests.set(key, true, 2 * skewMs);
     }
 
     // Learn how to reach the sender directly. The signed message carries the
@@ -379,7 +407,14 @@ export class MessageProcessor {
   }
 
   private async handleListNetworkResponse(msg: ListNetworkResponse, _sourcePeerId: string) {
-    const node = msg.payload.node;
+    const node = msg.payload?.node;
+    // A peer lists only itself. Without this a node could announce another
+    // peer's id under its own wallet, cluttering the directory and costing us
+    // two NFD lookups for each.
+    if (!node || node.peerId !== _sourcePeerId) {
+      logger.warn(`❌ Dropping list-network-response: it describes ${String(node?.peerId).slice(0, 16)}... but came from ${_sourcePeerId.slice(0, 16)}...`);
+      return;
+    }
     let verifiedNfd: string | undefined = undefined;
     if (node.nfd) {
       const isValid = await verifyNFD(node.peerId, node.walletAddr, node.nfd).catch(() => false);
