@@ -393,7 +393,11 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
           await messageRouter.sendMessage(acceptance, quote.from.toString());
           logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}`);
         } catch (err) {
-          settle(() => reject(err as Error));
+          // The prompt could not be delivered to this provider directly (and is
+          // never broadcast instead), so treat it as having bowed out: the
+          // request is re-auctioned to another provider.
+          const reason = (err as Error)?.message ?? 'could not deliver the request';
+          settle(() => reject(new ProviderFailedError(body.model, selectedPeerId!, reason)));
         }
       }
 
