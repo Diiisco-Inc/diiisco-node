@@ -476,6 +476,18 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       return res.status(400).send({ error: "Missing model or messages in request body." });
     };
 
+    // What goes into the broadcast quote-request must be the shape every peer
+    // expects (see `payloadProblem`): a client that sends `"max_tokens": "100"`
+    // or a model that is not a string would otherwise be dropped by the whole
+    // network and surface as a baffling 503.
+    if (typeof req.body.model !== 'string') {
+      return res.status(400).send({ error: "`model` must be a string." });
+    }
+    if (req.body.max_tokens === null) delete req.body.max_tokens;
+    if (req.body.max_tokens !== undefined && !(typeof req.body.max_tokens === 'number' && Number.isFinite(req.body.max_tokens) && req.body.max_tokens > 0)) {
+      return res.status(400).send({ error: "`max_tokens` must be a positive number." });
+    }
+
     if (req.body.messages) {
       req.body.inputs = req.body.messages;
       delete req.body.messages;

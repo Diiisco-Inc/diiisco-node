@@ -16,6 +16,7 @@ import { NodeProfile, DirectoryEntry, ModelStats } from '../types/profile';
 import { NodeProfileRequest, NetworkNode } from '../types/messages';
 import { logger } from '../utils/logger';
 import { perMinute } from '../utils/rateLimiter';
+import { ExpiringMap } from '../utils/expiringMap';
 
 /**
  * Public, unauthenticated status pages: this node's home page, a directory of
@@ -29,6 +30,8 @@ import { perMinute } from '../utils/rateLimiter';
 const PROFILE_WAIT_DEFAULT = 3000;
 const PROFILE_CACHE_TTL_DEFAULT = 45_000;
 const NEGATIVE_CACHE_TTL = 10_000;
+const MAX_CACHED_PROFILES = 2000;
+const MAX_KNOWN_NODES = 5000;
 const RATE_LIMIT_CAPACITY = 30;          // burst
 const RATE_LIMIT_PER_MINUTE = 30;
 
@@ -70,6 +73,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   const recordSighting = (s: { peerId: string; displayName?: string; nfd?: string; walletAddr?: string; role?: NodeProfile['role']; network?: NodeProfile['network'] }) => {
     if (!s.peerId || s.peerId === ownPeerId) return;
     const existing = knownNodes.get(s.peerId);
+    knownNodes.delete(s.peerId); // re-insert: Map order is then least recently seen first
     knownNodes.set(s.peerId, {
       peerId: s.peerId,
       displayName: s.displayName ?? existing?.displayName,
@@ -79,13 +83,21 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       network: s.network ?? existing?.network,
       lastSeen: Date.now(),
     });
+    // A stranger can mint peer ids freely, so the registry is bounded too.
+    while (knownNodes.size > MAX_KNOWN_NODES) {
+      const oldest = knownNodes.keys().next();
+      if (oldest.done) break;
+      knownNodes.delete(oldest.value);
+    }
   };
 
   nodeEvents.on('network-node-received', (n: NetworkNode) => recordSighting(n));
 
   // ---- Profile cache + single-flight ----------------------------------------
-  const profileCache = new Map<string, { profile: NodeProfile; expiresAt: number }>();
-  const negativeCache = new Map<string, number>();
+  // Keyed by peer ids an anonymous visitor (or a stranger on the mesh) chooses,
+  // so both are bounded: the oldest entry makes way when full.
+  const profileCache = new ExpiringMap<string, NodeProfile>(30_000, MAX_CACHED_PROFILES);
+  const negativeCache = new ExpiringMap<string, true>(30_000, MAX_CACHED_PROFILES);
   const inflight = new Map<string, Promise<NodeProfile | null>>();
 
   const fetchRemoteProfile = async (peerId: string): Promise<NodeProfile | null> => {
@@ -130,9 +142,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     }
 
     const cached = profileCache.get(peerId);
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.profile;
-    }
+    if (cached) return cached;
 
     const offlineFallback = (): NodeProfile | null => {
       const known = knownNodes.get(peerId);
@@ -149,7 +159,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       };
     };
 
-    if ((negativeCache.get(peerId) ?? 0) > Date.now()) {
+    if (negativeCache.has(peerId)) {
       return offlineFallback();
     }
 
@@ -161,12 +171,12 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
 
     const profile = await pending;
     if (profile) {
-      profileCache.set(peerId, { profile, expiresAt: Date.now() + profileCacheTtl });
+      profileCache.set(peerId, profile, profileCacheTtl);
       recordSighting(profile);
       return profile;
     }
 
-    negativeCache.set(peerId, Date.now() + NEGATIVE_CACHE_TTL);
+    negativeCache.set(peerId, true, NEGATIVE_CACHE_TTL);
     return offlineFallback();
   };
 
