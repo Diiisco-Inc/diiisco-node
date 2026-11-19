@@ -14,6 +14,7 @@ import type { ModelKind } from '../types/models';
 import { NodeProfile, DirectoryEntry, ModelStats } from '../types/profile';
 import { NodeProfileRequest, NetworkNode } from '../types/messages';
 import { logger } from '../utils/logger';
+import { perMinute } from '../utils/rateLimiter';
 
 /**
  * Public, unauthenticated status pages: this node's home page, a directory of
@@ -28,7 +29,7 @@ const PROFILE_WAIT_DEFAULT = 3000;
 const PROFILE_CACHE_TTL_DEFAULT = 45_000;
 const NEGATIVE_CACHE_TTL = 10_000;
 const RATE_LIMIT_CAPACITY = 30;          // burst
-const RATE_LIMIT_REFILL_PER_MS = 30 / 60_000; // 30 requests/minute
+const RATE_LIMIT_PER_MINUTE = 30;
 
 interface KnownNodeSighting {
   peerId: string;
@@ -261,29 +262,13 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   };
 
   // ---- Rate limiting ---------------------------------------------------------
-  // Simple per-IP token bucket on the proxy-lookup route so an HTTP crawler
-  // can't turn this node into a mesh-query amplifier.
-  const buckets = new Map<string, { tokens: number; last: number }>();
+  // Per-IP token bucket on the proxy-lookup route so an HTTP crawler can't turn
+  // this node into a mesh-query amplifier.
+  const limiter = perMinute(RATE_LIMIT_PER_MINUTE, RATE_LIMIT_CAPACITY, 1000);
 
   const rateLimit = (req: Request, res: Response, next: NextFunction) => {
-    const ip = req.ip || 'unknown';
-    const now = Date.now();
-    const bucket = buckets.get(ip) ?? { tokens: RATE_LIMIT_CAPACITY, last: now };
-    bucket.tokens = Math.min(RATE_LIMIT_CAPACITY, bucket.tokens + (now - bucket.last) * RATE_LIMIT_REFILL_PER_MS);
-    bucket.last = now;
-
-    if (bucket.tokens < 1) {
-      buckets.set(ip, bucket);
+    if (!limiter.take(req.ip || 'unknown')) {
       return res.status(429).json({ error: 'Too many requests' });
-    }
-    bucket.tokens -= 1;
-    buckets.set(ip, bucket);
-
-    // Opportunistic cleanup of idle buckets
-    if (buckets.size > 1000) {
-      for (const [key, b] of buckets) {
-        if (now - b.last > 120_000) buckets.delete(key);
-      }
     }
     next();
   };

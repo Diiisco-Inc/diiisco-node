@@ -40,6 +40,14 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { ExpiringMap } from '../utils/expiringMap';
 import { RequestLedger } from './requestLedger';
 import { ModelListCollector } from './modelListCollector';
+import { perMinute, RateLimiter } from '../utils/rateLimiter';
+
+/** Roles that ask this node to do work for a stranger (a lookup, a model probe, a reply). */
+const REQUEST_ROLES: ReadonlySet<string> = new Set(['quote-request', 'list-models', 'list-network', 'node-profile']);
+const DEFAULT_REQUESTS_PER_MINUTE = 60;
+const DEFAULT_REQUEST_BURST = 30;
+/** Answers and the payment exchange are several messages per request, so they get a larger budget. */
+const RESPONSE_BUDGET_FACTOR = 4;
 
 const QUOTE_TTL_MS = 120_000;      // validity window advertised on quotes (x402 requires one)
 const COMPLETION_TTL_MS = 120_000; // how long a withheld completion is held awaiting payment
@@ -94,6 +102,9 @@ export class MessageProcessor {
   private contracts = new ExpiringMap<string, IssuedContract>();
   // Requester side: who each of our requests was handed to (see `RequestLedger`).
   private requests: RequestLedger;
+  // Per-peer budgets, spent before any signature check or lookup (see `node.rateLimit`).
+  private requestLimiter: RateLimiter;
+  private otherLimiter: RateLimiter;
   // Requester side: `list-models` requests of ours still collecting answers.
   private modelLists: ModelListCollector;
 
@@ -120,6 +131,11 @@ export class MessageProcessor {
     this.node = node;
     this.requests = requests;
     this.modelLists = modelLists;
+    const rate = this.env.node?.rateLimit;
+    const perMin = rate?.requestsPerMinute ?? DEFAULT_REQUESTS_PER_MINUTE;
+    const burst = rate?.burst ?? DEFAULT_REQUEST_BURST;
+    this.requestLimiter = perMinute(perMin, burst);
+    this.otherLimiter = perMinute(perMin * RESPONSE_BUDGET_FACTOR, burst * RESPONSE_BUDGET_FACTOR);
     this.speculativeCache = new SpeculativeInferenceCache(
       this.env.quoteEngine?.maxSpeculativeJobs ?? 2
     );
@@ -186,6 +202,17 @@ export class MessageProcessor {
    * @returns true if message was processed successfully
    */
   async process(msg: PubSubMessage, sourcePeerId: string): Promise<boolean> {
+    // Per-peer budget, spent first: verifying a signature, and the lookups
+    // behind several handlers, are work a peer must not be able to demand
+    // without limit. Our own messages (emitSelf) are exempt.
+    if (sourcePeerId !== this.ownPeerId) {
+      const limiter = REQUEST_ROLES.has(msg.role) ? this.requestLimiter : this.otherLimiter;
+      if (!limiter.take(sourcePeerId)) {
+        logger.debug(`🚫 Rate limit: dropped a ${String(msg.role).slice(0, 32)} from ${sourcePeerId.slice(0, 16)}...`);
+        return false;
+      }
+    }
+
     // Verify the sender's address and signature. The message is a stranger's
     // bytes: a malformed address or signature makes these throw, and a throw
     // here would be an unhandled rejection, which exits the process. Treat
@@ -433,7 +460,7 @@ export class MessageProcessor {
         logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - no settlement provider registered.`);
         return;
       }
-      const x = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoAssets.asset);
+      const x = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoAssets.asset, { cache: true });
       if (!x.optedIn) {
         logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
         return;

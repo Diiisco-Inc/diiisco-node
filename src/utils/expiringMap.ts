@@ -10,11 +10,21 @@ export class ExpiringMap<K, V> {
   private entries = new Map<K, { value: V; expiresAt: number }>();
   private lastSweep = Date.now();
 
-  constructor(private readonly sweepEveryMs = 30_000) {}
+  constructor(
+    private readonly sweepEveryMs = 30_000,
+    /** Most entries held. When full, the oldest is dropped to make room. Unbounded if omitted. */
+    private readonly maxEntries = Infinity,
+  ) {}
 
   set(key: K, value: V, ttlMs: number): void {
     this.sweepIfDue();
+    this.entries.delete(key);
     this.entries.set(key, { value, expiresAt: Date.now() + ttlMs });
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (oldest.done) break;
+      this.entries.delete(oldest.value);
+    }
   }
 
   get(key: K): V | undefined {

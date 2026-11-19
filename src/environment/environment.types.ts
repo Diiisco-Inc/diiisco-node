@@ -206,6 +206,15 @@ export interface Environment {
      * and 100 MB. Only relevant when `node.url` is set.
      */
     relay?: { connectionMinutes?: number; connectionMegabytes?: number };
+    /**
+     * Per-peer limit on messages this node will process. Every message costs
+     * a signature check and some cost an on-chain or HTTP lookup, so one peer
+     * cannot be allowed to send an unbounded number. `requestsPerMinute` bounds
+     * broadcast requests (quote-request, list-models, list-network, node-profile)
+     * with bursts up to `burst`; all other messages (answers and the payment
+     * exchange) get four times that. Defaults: 60 a minute, burst 30.
+     */
+    rateLimit?: { requestsPerMinute?: number; burst?: number };
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
   power?: PowerConfig;                      // Optional: `preventSleep` defaults to true
