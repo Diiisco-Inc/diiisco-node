@@ -126,7 +126,11 @@ All on-wire messages are msgpack-encoded (`msgpackr`) and typed by `role` field 
 
 **When a provider can't deliver.** If inference fails at any point after the quote was accepted — the operator stopped Ollama between steps 5 and 6 is the usual case — the provider sends `inference-failed` (model + a coarse reason, never the prompt or a partial answer) and re-probes its own backend, so it drops out of the next auction. The requester excludes that provider and re-auctions the request (`quoteEngine.maxRetries`, default 1). Backing all of this up, the requester holds two deadlines: `quoteEngine.auctionTimeout` (no quote selected → 503) and `quoteEngine.inferenceTimeout` (no answer → 504). A request that can't be served now fails; it does not hang.
 
-**Message routing** (`src/messaging/messageRouter.ts`): discovery-phase messages (`quote-request`, `list-models`, `list-network`) go via GossipSub broadcast. Post-selection messages (`quote-accepted`, `contract-*`, `inference-response`, `inference-failed`) use direct libp2p streams (`DirectMessagingHandler`) with GossipSub fallback.
+**Message routing** (`src/messaging/messageRouter.ts`): discovery-phase messages (`quote-request`, `list-models`, `list-network`) go via GossipSub broadcast. Post-selection messages (`quote-accepted`, `contract-*`, `inference-response`, `inference-failed`) are the `PRIVATE_ROLES`: they carry the prompt, the payment and the completion, so they go over a direct libp2p stream (`DirectMessagingHandler`) and are **never** published to GossipSub — a failed direct send throws, and for `quote-accepted` the requester re-auctions. Only the non-private profile roles may fall back (`directMessaging.fallbackToGossipsub`). A direct message is capped on the reader (`directMessaging.maxMessageSize`, default 10 MB) and the API answers 413 for a request that cannot fit in one.
+
+**What `process()` does before a handler runs**, in order: a per-peer token bucket (`node.rateLimit`; our own messages exempt), the per-role payload shape check (`payloadProblem`, `wire.ts`), the timestamp window (`node.clockSkewToleranceMs`, default 5 min), the signature, then a replay check on broadcast request ids (recorded only after the signature verifies). A `list-models-response` is kept only for a `list-models` request this node has open (`ModelListCollector`, one answer per peer, bounded), and a `list-network-response` must describe the peer that sent it. Anything a stranger can provoke that costs an algod lookup goes through `algorand.checkIfOptedInToAsset(..., { cache: true })`, which caches, shares and caps concurrent lookups. A provider quotes only for a requester that is opted in to USDC with a balance covering its input.
+
+**Settlement is durable.** An accepted payment is written to `pending-settlements.json` (beside the peer identity, `0600`) before it is settled and removed only on success; `resumeSettlements()` retries what a restart left, until the payment's transaction can no longer be submitted (~50 min). `GET /health/algorand` reports `unsettledPayments`.
 
 All messages are signed with the Algorand account key and verified by `MessageProcessor.process()` before any handling.
 
@@ -168,3 +172,18 @@ The `diiisco` command, shipped as a self-contained Bun-compiled binary (no Node,
 - Runtime state lives in `~/.diiisco/` (`DIIISCO_HOME` overrides): `diiisco.config.json`, `algorand-key.json`, `diiisco-peer-id.protobuf`, `daemon.json`, `logs/`. `config path --key` prints the key file's location — DIIISCO Desktop asks the binary rather than re-deriving the precedence.
 
 See `.claude/docs/plans/003-diiisco-cli.md` for the full spec, including packaging, `install.sh`, and the Electrobun desktop integration.
+
+## Development principles
+
+These came out of the 1.0.12 review (see `.claude/docs/plans/016-release-1.0.13-remediation.md`). Where a check enforces one, it is named.
+
+1. **Check before adding a dependency.** Look for something already installed or written that does the job; remove a dependency in the same change that stops using it. *Enforced:* `npm run check:deps` (`scripts/check-deps.mjs`; also in `release.yml`) fails on an unused or undeclared dependency.
+2. **No dead code.** *Enforced:* `noUnusedLocals` and `noUnusedParameters` in `tsconfig.json` (prefix a deliberately unused parameter with `_`).
+3. **Extend before you duplicate.** Before writing a new request/response flow, timeout, id generator or rate limiter, find the existing one (`collect()` in `src/api/collect.ts`, `newRequestId()`, `RateLimiter`, `ExpiringMap`, `RequestLedger`, `guarded()`) and generalise it.
+4. **Every inbound message is hostile.** A handler states what it checks — sender identity, an open request of ours, size, freshness, rate — before it does work or I/O; no unsolicited message may start a timer, allocate without bound or query an external service. Anything that reads peer data later (a timer, a listener) validates it on arrival. *Enforced:* `test/untrustedInput.test.ts`, `wirePayloads.test.ts`, `messageFreshness.test.ts`, `peerRateLimit.test.ts`.
+5. **Privacy is a property of the transport.** Prompts, payments and completions never fall back to a broadcast channel; failure means the request fails or is retried. *Enforced:* `test/messageRouter.test.ts`.
+6. **Defaults are safe, not convenient.** No default credentials; a known default secret is a validation error, not a warning.
+7. **Keep generated and binary artefacts out of git** unless there is a stated reason (the web manifest has one: `scripts/build-web-manifest.mjs`). One installer per platform.
+8. **Nothing the process does on its own may crash it.** Listeners and timers nobody awaits are wrapped in `guarded()` (`src/utils/processGuards.ts`); a background chain keeps its state somewhere a restart can find it (see the settlement queue).
+9. **Comments explain constraints, not code.** Say why something is the way it is when it would otherwise look wrong; do not restate the next line.
+10. **Tests prove invariants, not coverage.** Each security fix lands with a test that fails without it. A change that adds a subsystem says in its plan what it replaces.
