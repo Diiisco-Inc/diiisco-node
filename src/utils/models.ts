@@ -186,7 +186,7 @@ export class OpenAIInferenceModel {
     return resp.data;
   }
 
-  async countEmbeddings(model: string, inputs: any[], tools?: any[]) {
+  async countEmbeddings(_model: string, inputs: any[], tools?: any[]) {
     return countInputTokens(inputs, tools);
   }
 }

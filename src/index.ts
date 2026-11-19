@@ -21,7 +21,6 @@ import { RequestLedger } from './messaging/requestLedger';
 import { MeshReadinessMonitor } from './libp2p/meshReadinessMonitor';
 import { MeshMessageQueue } from './messaging/meshMessageQueue';
 import { parseWireMessage, addressedTo } from './messaging/wire';
-import { PubSubMessage } from './types/messages';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
 import { getMeshTopic } from './utils/topic';
 import type { Server } from 'http';

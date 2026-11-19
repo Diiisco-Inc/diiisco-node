@@ -8,10 +8,6 @@ import { canonicalize } from 'json-canonicalize';
 import { getLocalMultiaddrs } from '../libp2p/localAddresses';
 import { diiiscoAssets } from './diiiscoAssets';
 
-function makeSigner(acct: algosdk.Account): algosdk.TransactionSigner {
-  return algosdk.makeBasicAccountTransactionSigner(acct);
-}
-
 const SUGGESTED_PARAMS_TTL_MS = 4500;
 
 export default class algorand {
@@ -21,7 +17,6 @@ export default class algorand {
   nfdVerified: boolean = false;
   private env: Environment;
   private algod: algosdk.Algodv2;
-  private signer: algosdk.TransactionSigner;
   private suggestedParamsCache: { params: algosdk.SuggestedParams; fetchedAt: number } | null = null;
 
   constructor() {
@@ -32,7 +27,6 @@ export default class algorand {
       this.account = algosdk.generateAccount();
       this.mnemonic = algosdk.secretKeyToMnemonic(this.account.sk);
       this.nfdAddr = null;
-      this.signer = makeSigner(this.account);
       // algod client is not used in local mode; assign a placeholder to satisfy TS.
       this.algod = null as unknown as algosdk.Algodv2;
       return;
@@ -41,7 +35,6 @@ export default class algorand {
     this.mnemonic = this.env.algorand!.mnemonic;
     this.nfdAddr = this.env.algorand!.nfd || null;
     this.account = algosdk.mnemonicToSecretKey(this.mnemonic);
-    this.signer = makeSigner(this.account);
 
     this.algod = new algosdk.Algodv2(this.env.algorand!.client.token, this.env.algorand!.client.address, this.env.algorand!.client.port);
   }
@@ -236,7 +229,7 @@ export default class algorand {
 
 export async function nfdToNodeAddress(addr: string): Promise<string | null> {
   const nfd = new NfdClient();
-  const nfdData = await nfd.resolve(addr, { view: 'full'}).catch((err) => null);
+  const nfdData = await nfd.resolve(addr, { view: 'full'}).catch(() => null);
   const diiiscohost: string | null = nfdData?.properties?.userDefined?.diiiscohost ?? null;
   const libp2pAddressRegex = /^\/(dns4|ip4)\/[a-zA-Z0-9.-]+\/tcp\/\d+\/p2p\/[a-zA-Z0-9]+$/;
   if (diiiscohost && libp2pAddressRegex.test(diiiscohost)) {
@@ -249,7 +242,7 @@ export async function nfdToNodeAddress(addr: string): Promise<string | null> {
 
 export async function nfdToWalletAddress(nfdAddr: string): Promise<string | null> {
   const nfd = new NfdClient();
-  const nfdData = await nfd.resolve(nfdAddr, { view: 'full'}).catch((err) => null);
+  const nfdData = await nfd.resolve(nfdAddr, { view: 'full'}).catch(() => null);
   const walletAddr: string | null = nfdData?.owner ?? null;
   if (walletAddr && algosdk.isValidAddress(walletAddr)) {
     return walletAddr;
