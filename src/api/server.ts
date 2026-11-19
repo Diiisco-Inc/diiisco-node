@@ -41,7 +41,7 @@ import {
   messageForInferenceError,
 } from './inferenceErrors';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector()) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector(), pendingSettlements: () => number = () => 0) => {
   const app = express();
   const port = environment.api.port || 8080;
   // Loopback unless the operator opts in: a request to this API spends the wallet.
@@ -99,7 +99,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
   app.get('/health/algorand', async (_req, res) => {
     try {
-      const diagnostics = await algo.getDiagnostics();
+      const diagnostics = { ...(await algo.getDiagnostics()), unsettledPayments: pendingSettlements() };
       // Healthy on the public network when algod is reachable and the wallet is
       // opted into USDC (required to settle x402 payments).
       const ok = diagnostics.localMode
