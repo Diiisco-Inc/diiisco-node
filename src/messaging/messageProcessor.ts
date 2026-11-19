@@ -40,6 +40,7 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import { ExpiringMap } from '../utils/expiringMap';
 import { RequestLedger } from './requestLedger';
+import { payloadProblem } from './wire';
 import { ModelListCollector } from './modelListCollector';
 import { perMinute, RateLimiter } from '../utils/rateLimiter';
 
@@ -224,6 +225,14 @@ export class MessageProcessor {
         logger.debug(`🚫 Rate limit: dropped a ${String(msg.role).slice(0, 32)} from ${sourcePeerId.slice(0, 16)}...`);
         return false;
       }
+    }
+
+    // Shape first, before any signature work: every handler below reads fields
+    // of `payload` and assumes their types (see `payloadProblem`).
+    const shapeProblem = payloadProblem(msg);
+    if (shapeProblem) {
+      logger.debug(`🚫 Dropped a ${String(msg.role).slice(0, 32)} from ${sourcePeerId.slice(0, 16)}... — ${shapeProblem}.`);
+      return false;
     }
 
     // A signed message stays valid for ever, so one captured today could be
