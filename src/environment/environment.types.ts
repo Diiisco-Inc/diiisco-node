@@ -215,6 +215,13 @@ export interface Environment {
      * exchange) get four times that. Defaults: 60 a minute, burst 30.
      */
     rateLimit?: { requestsPerMinute?: number; burst?: number };
+    /**
+     * How far a message's timestamp may be from this node's clock before it is
+     * dropped, in milliseconds (default 300000: five minutes). Bounds how long a
+     * captured signed message could be replayed; a node whose clock is further
+     * out than this will be ignored by its peers.
+     */
+    clockSkewToleranceMs?: number;
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
   power?: PowerConfig;                      // Optional: `preventSleep` defaults to true
