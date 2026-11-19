@@ -3,7 +3,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveWebAssets, type WebAsset } from './webAssets';
 import { EventEmitter } from 'events';
-import { sha256 } from 'js-sha256';
+import { collect } from './collect';
+import { newRequestId } from '../utils/requestId';
 import { peerIdFromString } from '@libp2p/peer-id';
 import environment from '../environment/runtime';
 import algorand from '../utils/algorand';
@@ -92,31 +93,30 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       role: 'node-profile',
       to: peerId,
       timestamp: Date.now(),
-      id: sha256(`${Date.now()}-node-profile-${peerId}-${Math.random()}`).slice(0, 56),
+      id: newRequestId(),
       fromWalletAddr: algo.account.addr.toString(),
       payload: { peerId },
     };
-    request.signature = await algo.signObject(request);
+    const eventName = `node-profile-received-${request.id}`;
 
-    return new Promise<NodeProfile | null>((resolve) => {
-      const eventName = `node-profile-received-${request.id}`;
-      const timer = setTimeout(() => {
-        nodeEvents.removeAllListeners(eventName);
-        resolve(null);
-      }, profileWaitTime);
-
-      nodeEvents.once(eventName, (profile: NodeProfile) => {
-        clearTimeout(timer);
-        resolve(profile);
+    try {
+      const { items } = await collect<NodeProfile>({
+        windowMs: profileWaitTime,
+        until: 1, // the first answer is the answer
+        subscribe: (push) => {
+          nodeEvents.on(eventName, push);
+          return () => nodeEvents.off(eventName, push);
+        },
+        send: async () => {
+          request.signature = await algo.signObject(request);
+          await messageRouter.sendMessage(request, peerId);
+        },
       });
-
-      messageRouter.sendMessage(request, peerId).catch((err: Error) => {
-        logger.debug(`Could not send node-profile to ${peerId.slice(0, 16)}...: ${err.message}`);
-        clearTimeout(timer);
-        nodeEvents.removeAllListeners(eventName);
-        resolve(null);
-      });
-    });
+      return items[0] ?? null;
+    } catch (err) {
+      logger.debug(`Could not send node-profile to ${peerId.slice(0, 16)}...: ${(err as Error).message}`);
+      return null;
+    }
   };
 
   /**

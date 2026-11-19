@@ -2,7 +2,8 @@ import express from 'express';
 import cors from "cors";
 import { requireBearer } from "../utils/endpoint";
 import environment from "../environment/runtime";
-import { sha256 } from "js-sha256";
+import { collect, abortOnClose } from './collect';
+import { newRequestId } from '../utils/requestId';
 import { EventEmitter } from 'events';
 import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsRequest, ListNetworkRequest, NetworkNode } from "../types/messages";
 import { logger } from '../utils/logger';
@@ -127,40 +128,31 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
   app.get('/network', async (req, res) => {
     try {
-      const nodes: NetworkNode[] = [];
-      const waitTime = environment.api?.networkWaitTime || 5000;
-
-      const onNodeReceived = (node: NetworkNode) => {
-        nodes.push(node);
-      };
-      nodeEvents.on('network-node-received', onNodeReceived);
-
       const networkListMessage: ListNetworkRequest = {
         role: "list-network",
         timestamp: Date.now(),
-        id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
+        id: newRequestId(),
         fromWalletAddr: algo.account.addr.toString(),
       };
-      networkListMessage.signature = await algo.signObject(networkListMessage);
 
-      meshQueue.enqueue(networkListMessage).then(() => {
-        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${networkListMessage.id}`);
-
-        setTimeout(() => {
-          nodeEvents.off('network-node-received', onNodeReceived);
-          res.status(200).send({
-            "object": "list",
-            "data": nodes,
-          });
-        }, waitTime);
-      }).catch((err: Error) => {
-        nodeEvents.off('network-node-received', onNodeReceived);
-        logger.error(`❌ Error dispatching network list message: ${err}`);
-        return res.status(500).send({ error: "No peers available to handle the request." });
+      const { items, aborted } = await collect<NetworkNode>({
+        windowMs: environment.api?.networkWaitTime || 5000,
+        signal: abortOnClose(req, res),
+        subscribe: (push) => {
+          nodeEvents.on('network-node-received', push);
+          return () => nodeEvents.off('network-node-received', push);
+        },
+        send: async () => {
+          networkListMessage.signature = await algo.signObject(networkListMessage);
+          await meshQueue.enqueue(networkListMessage);
+          logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${networkListMessage.id}`);
+        },
       });
+      if (aborted) return;
+      res.status(200).send({ "object": "list", "data": items });
     } catch (error) {
       logger.error("Error fetching network:", error);
-      res.status(500).send({ error: "Error fetching network" });
+      res.status(500).send({ error: "No peers available to handle the request." });
     }
   });
 
@@ -177,49 +169,35 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       // Collect the answers to our own broadcast for one window, then reply.
       // Only responses to *this* request are kept (see `ModelListCollector`);
       // if nobody answers, fall back to what this node itself serves.
-      const collectMs = environment.quoteEngine?.waitTime || 5000;
-
       const modelListMessage: ListModelsRequest = {
         role: "list-models",
         timestamp: Date.now(),
-        id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
+        id: newRequestId(),
         fromWalletAddr: algo.account.addr.toString(),
       };
       const listId = modelListMessage.id;
-      modelLists.open(listId, collectMs + 5000);
+      const windowMs = environment.quoteEngine?.waitTime || 5000;
 
-      let answered = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const finish = (): boolean => {
-        if (answered) return false;
-        answered = true;
-        clearTimeout(timer);
-        modelLists.close(listId);
-        return true;
-      };
-      // A client that has gone away must not leave the collection open.
-      res.on('close', finish);
-
-      modelListMessage.signature = await algo.signObject(modelListMessage);
-
-      meshQueue.enqueue(modelListMessage).then(() => {
-        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${listId}`);
-        if (answered) return;
-        timer = setTimeout(() => {
-          if (answered) return;
-          const heard = modelLists.close(listId);
-          answered = true;
-          const data = heard.length > 0 ? heard : (models?.models() ?? []);
-          res.status(200).send({ "object": "list", "data": filterModelsByKind(data as any[], kindFilter) });
-        }, collectMs);
-      }).catch((err: Error) => {
-        logger.error(`❌ Error dispatching model list message: ${err}`);
-        if (answered) return;
-        if (finish()) res.status(500).send({ error: "No peers available to handle the request." });
+      const { items, aborted } = await collect<any>({
+        windowMs,
+        signal: abortOnClose(req, res),
+        subscribe: () => {
+          modelLists.open(listId, windowMs + 5000);
+          return () => { modelLists.close(listId); };
+        },
+        read: () => modelLists.close(listId),
+        send: async () => {
+          modelListMessage.signature = await algo.signObject(modelListMessage);
+          await meshQueue.enqueue(modelListMessage);
+          logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${listId}`);
+        },
       });
+      if (aborted) return;
+      const data = items.length > 0 ? items : (models?.models() ?? []);
+      res.status(200).send({ "object": "list", "data": filterModelsByKind(data as any[], kindFilter) });
     } catch (error) {
       logger.error("Error fetching models:", error);
-      res.status(500).send({ error: "Error fetching models" });
+      res.status(500).send({ error: "No peers available to handle the request." });
     }
   })
 
@@ -248,7 +226,6 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
    */
   const runAuction = async (
     body: any,
-    attempt: number,
     excluded: Set<string>
   ): Promise<any> => {
     // A System One request is auctioned like a chat one, but only decision
@@ -259,9 +236,9 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       from: node.peerId.toString(),
       fromWalletAddr: algo.account.addr.toString(),
       timestamp: Date.now(),
-      // The attempt number keeps a retry's id distinct from the attempt it
-      // replaces, so their events and listeners can't collide.
-      id: sha256(`${Date.now()}:${attempt}:${JSON.stringify(body)}`).slice(0, 56),
+      // A fresh random id per attempt, so a retry's events and listeners can't
+      // collide with the attempt it replaces.
+      id: newRequestId(),
       // Broadcast to every provider — so it carries only what's needed to quote:
       // the model, our own input-token count, budget, and output cap. The prompt
       // content stays local and goes only to the winning provider (quote-accepted),
@@ -462,7 +439,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
     for (let attempt = 1; ; attempt++) {
       try {
-        return await runAuction(body, attempt, excluded);
+        return await runAuction(body, excluded);
       } catch (err) {
         if (!(err instanceof ProviderFailedError) || attempt > maxRetries) throw err;
         excluded.add(err.providerPeerId);
