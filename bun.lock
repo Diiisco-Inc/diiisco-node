@@ -9,6 +9,7 @@
         "@libp2p/autonat": "^3.0.21",
         "@libp2p/bootstrap": "^12.0.7",
         "@libp2p/circuit-relay-v2": "^4.2.6",
+        "@libp2p/crypto": "^5.1.21",
         "@libp2p/dcutr": "^3.0.21",
         "@libp2p/gossipsub": "^15.0.7",
         "@libp2p/identify": "^4.0.5",
@@ -27,7 +28,6 @@
         "algosdk": "^3.5.2",
         "cors": "^2.8.5",
         "express": "^5.1.0",
-        "js-sha256": "^0.11.1",
         "json-canonicalize": "2.0.0",
         "libp2p": "^3.3.5",
         "llama-tokenizer-js": "^1.2.2",
@@ -41,6 +41,7 @@
         "@types/cors": "^2.8.19",
         "@types/express": "^5.0.3",
         "@types/node": "^24.8.1",
+        "esbuild": "^0.25.11",
         "pm2": "^6.0.5",
         "tsup": "^8.5.0",
         "typescript": "^5.9.3",
@@ -622,7 +623,7 @@
 
     "js-git": ["js-git@0.7.8", "", { "dependencies": { "bodec": "^0.1.0", "culvert": "^0.1.2", "git-sha1": "^0.1.2", "pako": "^0.2.5" } }, "sha512-+E5ZH/HeRnoc/LW0AmAyhU+mNcWBzAKE+30+IDMLSLbbK+Tdt02AdkOKq9u15rlJsDEGFqtgckc8ZM59LhhiUA=="],
 
-    "js-sha256": ["js-sha256@0.11.1", "", {}, "sha512-o6WSo/LUvY2uC4j7mO50a2ms7E/EAdbP0swigLV+nzHKTTaYnaLIWJ02VdXrsJX0vGedDESQnLsOekr94ryfjg=="],
+    "js-sha256": ["js-sha256@0.9.0", "", {}, "sha512-sga3MHh9sgQN2+pJ9VYZ+1LPwXOxuBJBA5nrR5/ofPfuiJBE2hnjsaN8se8JznOmGLN2p49Pe5U/ttafcs/apA=="],
 
     "js-sha3": ["js-sha3@0.8.0", "", {}, "sha512-gF1cRrHhIzNfToc802P800N8PpXS+evLLXfsVpowqmAFR9uwbi89WvXg2QspOmXL8QL86J4T1EpFu+yUkwJY3Q=="],
 
@@ -1053,8 +1054,6 @@
     "@types/serve-static/@types/send": ["@types/send@0.17.5", "", { "dependencies": { "@types/mime": "^1", "@types/node": "*" } }, "sha512-z6F2D3cOStZvuk2SaP6YrwkNO65iTZcwA2ZkSABegdkAh/lf+Aa/YQndZVfmEXT5vgAp6zv06VQ3ejSVjAny4w=="],
 
     "@x402/avm/@algorandfoundation/algokit-utils": ["@algorandfoundation/algokit-utils@10.0.0-alpha.46", "", { "dependencies": { "@algorandfoundation/xhd-wallet-api": "2.0.0-canary.1", "@noble/curves": "^2.0.1", "@noble/ed25519": "^3.0.0", "@noble/hashes": "^2.0.1", "algorand-msgpack": "^1.1.0", "buffer": "^6.0.3", "dotenv": "^16.4.5", "hi-base32": "^0.5.1", "json-bigint": "^1.0.0", "tweetnacl": "^1.0.3", "vlq": "^2.0.4" } }, "sha512-Lx56ET6RmrDCFGwx6qyIr7YRX3Q3MyKgqkNeumLkFHXVkqMnXnK1aLeEbV59EOK8UHQ5UPJofSj1zvRMm9Du7w=="],
-
-    "algosdk/js-sha256": ["js-sha256@0.9.0", "", {}, "sha512-sga3MHh9sgQN2+pJ9VYZ+1LPwXOxuBJBA5nrR5/ofPfuiJBE2hnjsaN8se8JznOmGLN2p49Pe5U/ttafcs/apA=="],
 
     "anymatch/picomatch": ["picomatch@2.3.2", "", {}, "sha512-V7+vQEJ06Z+c5tSye8S+nHUfI51xoXIXjHQ99cQtKUkQqqO1kO/KCJUfZXuB47h/YBlDhah2H3hdUGXn8ie0oA=="],
 

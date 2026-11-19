@@ -138,6 +138,10 @@ jobs:
       - name: Typecheck
         run: bunx tsc --noEmit
 
+      # Unused or undeclared dependencies fail the release (scripts/check-deps.mjs).
+      - name: Check dependencies
+        run: node scripts/check-deps.mjs
+
       # The status pages *are* embedded in the binary, from the committed
       # `src/api/webManifest.generated.json`. Rebuilding them here is a check,
       # not a build input: if the manifest does not match a fresh `web/` build,

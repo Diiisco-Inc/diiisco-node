@@ -31,7 +31,8 @@
     "node:restart": "npm run build && pm2 restart diiisco-node",
     "node:status": "pm2 status diiisco-node",
     "node:logs": "pm2 logs diiisco-node --lines 100",
-    "node:monit": "pm2 monit"
+    "node:monit": "pm2 monit",
+    "check:deps": "node scripts/check-deps.mjs"
   },
   "author": "",
   "license": "ISC",
@@ -43,6 +44,7 @@
     "@libp2p/autonat": "^3.0.21",
     "@libp2p/bootstrap": "^12.0.7",
     "@libp2p/circuit-relay-v2": "^4.2.6",
+    "@libp2p/crypto": "^5.1.21",
     "@libp2p/dcutr": "^3.0.21",
     "@libp2p/gossipsub": "^15.0.7",
     "@libp2p/identify": "^4.0.5",
@@ -61,7 +63,6 @@
     "algosdk": "^3.5.2",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "js-sha256": "^0.11.1",
     "json-canonicalize": "2.0.0",
     "libp2p": "^3.3.5",
     "llama-tokenizer-js": "^1.2.2",
@@ -75,6 +76,7 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^24.8.1",
+    "esbuild": "^0.25.11",
     "pm2": "^6.0.5",
     "tsup": "^8.5.0",
     "typescript": "^5.9.3"
