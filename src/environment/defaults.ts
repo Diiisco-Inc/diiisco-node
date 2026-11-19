@@ -57,7 +57,7 @@ export function createDefaultEnvironment(): Environment {
     api: {
       enabled: true,
       bearerAuthentication: false,
-      keys: ['diiisco'],
+      keys: [], // none shipped: `setup` generates a random key when a key is required
       port: 8080,
       host: '127.0.0.1', // loopback only: a request to the API spends the wallet
       networkWaitTime: 10000,

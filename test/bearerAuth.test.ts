@@ -72,3 +72,63 @@ describe('requireBearer', () => {
     expect(req.auth).toEqual({ token: VALID_KEY, type: 'opaque' });
   });
 });
+
+describe('requireBearer key comparison', () => {
+  let originalKeys: string[];
+  beforeAll(() => { originalKeys = environment.api.keys; });
+  afterAll(() => { environment.api.keys = originalKeys; });
+
+  test('any of several keys is accepted, whitespace around a configured key is ignored', () => {
+    environment.api.keys = ['  first-key  ', 'second-key'];
+    expect(run({ authorization: 'Bearer first-key' }).nexted).toBe(true);
+    expect(run({ 'x-api-key': 'second-key' }).nexted).toBe(true);
+  });
+
+  test('a prefix, an extension or a different-length key is refused', () => {
+    environment.api.keys = ['correct-horse-battery'];
+    for (const wrong of ['correct-horse', 'correct-horse-battery-staple', 'c', 'Correct-horse-battery']) {
+      expect(run({ authorization: `Bearer ${wrong}` }).status).toBe(401);
+    }
+  });
+
+  test('with no keys configured nothing authenticates', () => {
+    environment.api.keys = [];
+    expect(run({ authorization: 'Bearer anything' }).status).toBe(401);
+    environment.api.keys = ['  '];
+    expect(run({ authorization: 'Bearer ' }).status).toBe(401);
+  });
+});
+
+describe('API key defaults', () => {
+  test('no key ships by default', async () => {
+    const { createDefaultEnvironment } = await import('../src/environment/defaults');
+    expect(createDefaultEnvironment().api.keys).toEqual([]);
+  });
+
+  test('authentication with the well-known default key is a validation error', async () => {
+    const { createDefaultEnvironment } = await import('../src/environment/defaults');
+    const { validateEnvironment } = await import('../src/environment/validate');
+    const env = createDefaultEnvironment();
+    env.local = { enabled: true, privateTopic: 'key-default-test/models/1.0.0' };
+    env.api.bearerAuthentication = true;
+
+    env.api.keys = ['diiisco'];
+    expect(validateEnvironment(env).join('\n')).toContain('well-known default key');
+    env.api.keys = [' DIIISCO '];
+    expect(validateEnvironment(env).join('\n')).toContain('well-known default key');
+    env.api.keys = [];
+    expect(validateEnvironment(env).join('\n')).toContain('`api.keys` is empty');
+    env.api.keys = ['a-random-key-9f2c1b'];
+    expect(validateEnvironment(env).filter((e) => e.includes('api.keys'))).toEqual([]);
+  });
+
+  test('the default key alongside authentication being off is not an error', async () => {
+    const { createDefaultEnvironment } = await import('../src/environment/defaults');
+    const { validateEnvironment } = await import('../src/environment/validate');
+    const env = createDefaultEnvironment();
+    env.local = { enabled: true, privateTopic: 'key-default-test/models/1.0.0' };
+    env.api.bearerAuthentication = false;
+    env.api.keys = ['diiisco'];
+    expect(validateEnvironment(env).filter((e) => e.includes('api.keys'))).toEqual([]);
+  });
+});
