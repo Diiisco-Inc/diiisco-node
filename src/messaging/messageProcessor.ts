@@ -453,6 +453,8 @@ export class MessageProcessor {
       return;
     }
 
+    let usdc: { optedIn: boolean; balance: bigint } | undefined;
+
     // On the public network a node must have a settlement method to sell.
     // (Local mode bypasses settlement entirely.)
     if (!this.env.local?.enabled) {
@@ -460,9 +462,18 @@ export class MessageProcessor {
         logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - no settlement provider registered.`);
         return;
       }
-      const x = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoAssets.asset, { cache: true });
-      if (!x.optedIn) {
-        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
+      // A requester that cannot pay would win the auction, have us run
+      // inference for it, and then never settle. Payment is in USDC, so it is
+      // the requester's USDC position that matters: opted in, and holding
+      // enough for at least the input it is asking us to read.
+      const maxSpend = msg.payload.maxSpend;
+      if (typeof maxSpend !== 'number' || !(maxSpend > 0)) {
+        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - it states no maxSpend budget.`);
+        return;
+      }
+      usdc = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoAssets.usdc, { cache: true });
+      if (!usdc.optedIn) {
+        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - not opted in to USDC.`);
         return;
       }
     }
@@ -472,6 +483,18 @@ export class MessageProcessor {
     if (rawQuote === null) {
       logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - no quote creation function returned a quote.`);
       return;
+    }
+
+    // Funds check, now the price is known: the requester must hold at least the
+    // cost of the input it is sending (and never less than the 1 µUSDC minimum
+    // transfer), or whatever it is promised could not be paid.
+    if (usdc) {
+      const inputCost = (rawQuote.inputTokens * rawQuote.pricePerInputToken1M) / 1_000_000;
+      const needed = BigInt(Math.ceil(Math.max(inputCost, MIN_CHARGE) * 1_000_000));
+      if (usdc.balance < needed) {
+        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - USDC balance ${usdc.balance} is below the ${needed} µUSDC its input costs.`);
+        return;
+      }
     }
 
     // Remember what was promised: the accept is checked against this, not
