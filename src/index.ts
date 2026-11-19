@@ -17,6 +17,7 @@ import { DirectMessagingHandler } from './messaging/directMessaging';
 import { MessageRouter } from './messaging/messageRouter';
 import { MessageProcessor } from './messaging/messageProcessor';
 import { ModelListCollector } from './messaging/modelListCollector';
+import { SettlementQueue } from './settlement/settlementQueue';
 import { RequestLedger } from './messaging/requestLedger';
 import { MeshReadinessMonitor } from './libp2p/meshReadinessMonitor';
 import { MeshMessageQueue } from './messaging/meshMessageQueue';
@@ -24,6 +25,15 @@ import { parseWireMessage, addressedTo } from './messaging/wire';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
 import { getMeshTopic } from './utils/topic';
 import type { Server } from 'http';
+import { join } from 'path';
+import { resolvePath } from './utils/paths';
+
+/** Where accepted-but-unsettled payments are kept: beside the peer identity. In-memory only without a wallet. */
+function settlementQueuePath(): string | undefined {
+  if (environment.local?.enabled || !environment.algorand) return undefined;
+  const dir = environment.peerIdStorage?.path;
+  return dir ? join(resolvePath(dir), 'pending-settlements.json') : undefined;
+}
 
 class Application extends EventEmitter {
   private node: any;
@@ -43,6 +53,8 @@ class Application extends EventEmitter {
   private requests = new RequestLedger();
   // `list-models` requests of ours still collecting answers (see ModelListCollector).
   private modelLists = new ModelListCollector();
+  // Payments accepted but not yet settled on-chain; persisted so a restart resumes them.
+  private settlements!: SettlementQueue;
 
   private apiServer: Server | null = null;
   private isShuttingDown = false;
@@ -197,6 +209,10 @@ class Application extends EventEmitter {
     // Initialize message router
     this.messageRouter = new MessageRouter(this.node, this.directHandler);
 
+    // Payments accepted in an earlier run and not yet settled on-chain.
+    this.settlements = new SettlementQueue(settlementQueuePath());
+    this.settlements.load();
+
     // Initialize unified message processor with loaded models
     this.messageProcessor = new MessageProcessor(
       this.algo,
@@ -208,8 +224,10 @@ class Application extends EventEmitter {
       this.node.peerId.toString(),
       this.node,
       this.requests,
-      this.modelLists
+      this.modelLists,
+      this.settlements
     );
+    this.messageProcessor.resumeSettlements();
 
     // Create a Relay PubSub Topic
     const topic = getMeshTopic();
@@ -223,7 +241,7 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests, this.modelLists);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests, this.modelLists, () => this.messageProcessor?.pendingSettlements() ?? 0);
       this.apiServer = server;
     }
 

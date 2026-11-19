@@ -33,8 +33,9 @@ import { RawQuote } from "../types/quotes";
 import { priceFromUsage, planBudget } from "../utils/quoteCreationMethods";
 import { MessageRouter } from './messageRouter';
 import { SpeculativeInferenceCache } from './speculativeInferenceCache';
-import { SettlementRegistry, SettlementProvider, SettlementMethod, PaymentRequest } from '../settlement/settlementProvider';
+import { SettlementRegistry, SettlementProvider, SettlementMethod, PaymentRequest, PaymentEvidence } from '../settlement/settlementProvider';
 import { X402Settlement } from '../settlement/x402Settlement';
+import { SettlementQueue } from '../settlement/settlementQueue';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import { ExpiringMap } from '../utils/expiringMap';
@@ -114,6 +115,8 @@ export class MessageProcessor {
   private otherLimiter: RateLimiter;
   // Requester side: `list-models` requests of ours still collecting answers.
   private modelLists: ModelListCollector;
+  // Accepted payments awaiting on-chain settlement (see `settleInBackground`).
+  private settlements: SettlementQueue;
 
   constructor(
     algo: algorand,
@@ -125,7 +128,8 @@ export class MessageProcessor {
     ownPeerId: string,
     node: any,
     requests: RequestLedger = new RequestLedger(),
-    modelLists: ModelListCollector = new ModelListCollector()
+    modelLists: ModelListCollector = new ModelListCollector(),
+    settlements: SettlementQueue = new SettlementQueue()
   ) {
     this.algo = algo;
     this.model = model;
@@ -138,6 +142,7 @@ export class MessageProcessor {
     this.node = node;
     this.requests = requests;
     this.modelLists = modelLists;
+    this.settlements = settlements;
     const rate = this.env.node?.rateLimit;
     const perMin = rate?.requestsPerMinute ?? DEFAULT_REQUESTS_PER_MINUTE;
     const burst = rate?.burst ?? DEFAULT_REQUEST_BURST;
@@ -960,22 +965,64 @@ export class MessageProcessor {
     });
   }
 
+  /** Delays between settlement attempts within one run; a payment still unsettled after them is retried on the next start. */
+  private settleDelaysMs = [1000, 2000, 4000, 8000];
+  private settling = new Set<string>();
+
+  /**
+   * Record a payment that has unlocked an answer, then settle it off the
+   * critical path. The record is written first and removed only on success, so
+   * a failure, or a restart mid-settlement, leaves it to be retried.
+   */
   private settleInBackground(settlement: SettlementProvider, quoteId: string, expected: PaymentRequest, evidence: any): void {
-    const DELAYS_MS = [1000, 2000, 4000, 8000];
+    this.settlements.add({ quoteId, method: settlement.method, expected, evidence, createdAt: Date.now(), attempts: 0 });
+    void this.runSettlement(quoteId);
+  }
 
-    const attempt = (i: number): void => {
-      settlement.settle({ quoteId, expected, evidence }).then((result) => {
-        logger.info(`✅ Quote ${quoteId} settled (attempt ${i + 1})${result.txid ? ` — txid ${result.txid}` : ''}`);
-      }).catch((err: Error) => {
-        if (i < DELAYS_MS.length - 1) {
-          logger.warn(`⚠️ Settlement attempt ${i + 1} failed for ${quoteId}, retrying in ${DELAYS_MS[i]}ms: ${err.message}`);
-          setTimeout(() => attempt(i + 1), DELAYS_MS[i]);
-        } else {
-          logger.error(`💀 Settlement permanently failed for quote ${quoteId}: ${err.message}`, { quoteId });
+  /** Pick up payments left unsettled by a previous run. Call once after start. */
+  resumeSettlements(): void {
+    const pending = this.settlements.list();
+    if (pending.length === 0) return;
+    logger.info(`♻️ Resuming ${pending.length} unsettled payment(s) from a previous run.`);
+    for (const entry of pending) void this.runSettlement(entry.quoteId);
+  }
+
+  /** Number of payments accepted but not yet settled. */
+  pendingSettlements(): number {
+    return this.settlements.size;
+  }
+
+  /** Never rejects: a failure is logged, and the entry stays queued for the next start. */
+  private async runSettlement(quoteId: string): Promise<void> {
+    if (this.settling.has(quoteId)) return;
+    this.settling.add(quoteId);
+    try {
+      for (let i = 0; i < this.settleDelaysMs.length; i++) {
+        const entry = this.settlements.get(quoteId);
+        if (!entry) return; // settled elsewhere, or past the point it could be submitted
+        try {
+          const provider = this.settlement.get(entry.method as SettlementMethod);
+          const result = await provider.settle({ quoteId, expected: entry.expected as PaymentRequest, evidence: entry.evidence as PaymentEvidence });
+          this.settlements.remove(quoteId);
+          logger.info(`✅ Quote ${quoteId} settled (attempt ${i + 1})${result.txid ? ` — txid ${result.txid}` : ''}`);
+          return;
+        } catch (err) {
+          this.settlements.recordAttempt(quoteId);
+          if (i < this.settleDelaysMs.length - 1) {
+            logger.warn(`⚠️ Settlement attempt ${i + 1} failed for ${quoteId}, retrying in ${this.settleDelaysMs[i]}ms: ${(err as Error).message}`);
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, this.settleDelaysMs[i]);
+              (timer as any).unref?.();
+            });
+          } else {
+            logger.error(`💀 Settlement of quote ${quoteId} failed ${i + 1} times: ${(err as Error).message}. It stays queued and is retried on the next start while its payment is still valid.`, { quoteId });
+          }
         }
-      });
-    };
-
-    attempt(0);
+      }
+    } catch (err) {
+      logger.error(`❌ Unexpected error settling ${quoteId}: ${(err as Error).message}`);
+    } finally {
+      this.settling.delete(quoteId);
+    }
   }
 }
