@@ -30,6 +30,7 @@ import { getMeshTopic } from '../utils/topic';
 import { registerStatusPages } from './statusPages';
 import { nodeStats } from '../utils/nodeStats';
 import { RequestLedger } from '../messaging/requestLedger';
+import { ModelListCollector } from '../messaging/modelListCollector';
 import { isLoopbackHost, hostnameOfHostHeader, hostnameOfUrl } from '../utils/hosts';
 import { environmentWarnings } from '../environment/validate';
 import {
@@ -40,7 +41,7 @@ import {
   messageForInferenceError,
 } from './inferenceErrors';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger()) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector()) => {
   const app = express();
   const port = environment.api.port || 8080;
   // Loopback unless the operator opts in: a request to this API spends the wallet.
@@ -173,52 +174,48 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     }
 
     try {
-      // `model-list-compiled` only ever fires once some peer replies, so an
-      // unanswered broadcast used to hang this route too. Fall back to what
-      // this node itself serves once the collection window has passed.
-      const listWaitTime = environment.api?.networkWaitTime || 10000;
-      let answered = false;
-      let fallbackTimer: ReturnType<typeof setTimeout>;
-
-      const onCompiled = (response: ListModelsResponse) => {
-        if (answered) return;
-        answered = true;
-        clearTimeout(fallbackTimer);
-        res.status(200).send({
-            "object": "list",
-            "data": filterModelsByKind(response as unknown as any[], kindFilter),
-        });
-      };
-      nodeEvents.once('model-list-compiled', onCompiled);
-
-      fallbackTimer = setTimeout(() => {
-        if (answered) return;
-        answered = true;
-        nodeEvents.off('model-list-compiled', onCompiled);
-        res.status(200).send({
-          "object": "list",
-          "data": filterModelsByKind(models?.models() ?? [], kindFilter),
-        });
-      }, listWaitTime);
+      // Collect the answers to our own broadcast for one window, then reply.
+      // Only responses to *this* request are kept (see `ModelListCollector`);
+      // if nobody answers, fall back to what this node itself serves.
+      const collectMs = environment.quoteEngine?.waitTime || 5000;
 
       const modelListMessage: ListModelsRequest = {
-       role: "list-models",
+        role: "list-models",
         timestamp: Date.now(),
         id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
         fromWalletAddr: algo.account.addr.toString(),
       };
+      const listId = modelListMessage.id;
+      modelLists.open(listId, collectMs + 5000);
+
+      let answered = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): boolean => {
+        if (answered) return false;
+        answered = true;
+        clearTimeout(timer);
+        modelLists.close(listId);
+        return true;
+      };
+      // A client that has gone away must not leave the collection open.
+      res.on('close', finish);
 
       modelListMessage.signature = await algo.signObject(modelListMessage);
 
       meshQueue.enqueue(modelListMessage).then(() => {
-        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${modelListMessage.id}`);
+        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${listId}`);
+        if (answered) return;
+        timer = setTimeout(() => {
+          if (answered) return;
+          const heard = modelLists.close(listId);
+          answered = true;
+          const data = heard.length > 0 ? heard : (models?.models() ?? []);
+          res.status(200).send({ "object": "list", "data": filterModelsByKind(data as any[], kindFilter) });
+        }, collectMs);
       }).catch((err: Error) => {
         logger.error(`❌ Error dispatching model list message: ${err}`);
         if (answered) return;
-        answered = true;
-        clearTimeout(fallbackTimer);
-        nodeEvents.off('model-list-compiled', onCompiled);
-        return res.status(500).send({ error: "No peers available to handle the request." });
+        if (finish()) res.status(500).send({ error: "No peers available to handle the request." });
       });
     } catch (error) {
       logger.error("Error fetching models:", error);
