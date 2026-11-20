@@ -1,9 +1,23 @@
 // Mirrors src/types/profile.ts in the node — keep the two in sync when the
 // profile shape changes.
 
+export interface PerformanceFigure {
+  value: number;
+  samples: number;
+}
+
+// Self-reported by each node; see src/types/performance.ts.
+export interface ModelPerformance {
+  ttftColdMs?: PerformanceFigure;
+  ttftHotMs?: PerformanceFigure;
+  tokensPerSecond?: PerformanceFigure;
+  updatedAt: number;
+  coldStart?: 'forced' | 'observed';
+}
+
 export interface NodeProfileStats {
   // `kind` is only present for models that are not chat models.
-  models: { id: string; pricePer1MTokens?: number; kind?: 'embedding' | 'decision' }[];
+  models: { id: string; pricePer1MTokens?: number; kind?: 'embedding' | 'decision'; performance?: ModelPerformance }[];
   connectedPeers: number;
   meshReady: boolean;
   uptimeSeconds: number;
@@ -22,6 +36,7 @@ export interface NodeProfile {
   network: 'public' | 'local';
   observedAt: string;
   version?: string;
+  tags?: string[];
   stats?: NodeProfileStats;
 }
 
@@ -32,6 +47,17 @@ export interface ModelStats {
   minPrice: number | null;
   maxPrice: number | null;
   meanPrice: number | null;
+  // Absent from older nodes' /models.json, hence optional here.
+  tokensPerSecond?: FigureRange | null;
+  ttftHotMs?: FigureRange | null;
+  ttftColdMs?: FigureRange | null;
+}
+
+export interface FigureRange {
+  min: number;
+  median: number;
+  max: number;
+  nodes: number;
 }
 
 export interface DirectoryEntry {

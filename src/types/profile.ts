@@ -1,4 +1,5 @@
 import type { ModelKind } from './models';
+import type { ModelPerformance } from './performance';
 
 /**
  * Public profile of a node, served unauthenticated on the status pages
@@ -16,6 +17,8 @@ export interface NodeProfileStats {
     pricePerOutputToken1M?: number;
     /** Present only for models that are not `chat`; absent means a chat model (or an older node). */
     kind?: Exclude<ModelKind, 'chat'>;
+    /** Measured figures for a chat model (plan 018). Self-reported; absent until measured. */
+    performance?: ModelPerformance;
   }[];
   connectedPeers: number;
   meshReady: boolean;
@@ -35,6 +38,8 @@ export interface NodeProfile {
   network: 'public' | 'local';
   observedAt: string;
   version?: string;
+  /** The operator's `node.tags`. Identity, so published even when `publicStats` is false. Self-declared. */
+  tags?: string[];
   stats?: NodeProfileStats;
 }
 
@@ -51,6 +56,18 @@ export interface ModelStats {
   minPrice: number | null;
   maxPrice: number | null;
   meanPrice: number | null;
+  /** Spread of each figure across the nodes that publish one (plan 018); null when none do. */
+  tokensPerSecond: FigureRange | null;
+  ttftHotMs: FigureRange | null;
+  ttftColdMs: FigureRange | null;
+}
+
+export interface FigureRange {
+  min: number;
+  median: number;
+  max: number;
+  /** How many nodes contributed. */
+  nodes: number;
 }
 
 /**
