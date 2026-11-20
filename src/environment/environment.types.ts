@@ -198,6 +198,13 @@ export interface Environment {
     url?: string;
     port?: number;
     displayName?: string;
+    /**
+     * Free-form labels for this node's hardware or capabilities, e.g. "cuda",
+     * "apple-silicon-m4-pro", "nvidia-dgx-spark". Set by the operator, sent in
+     * every quote and shown on the status pages. Peers cannot verify them.
+     * Lowercase letters, digits and hyphens; at most 16 (see `src/utils/nodeInfo.ts`).
+     */
+    tags?: string[];
     publicStats?: boolean;  // default true — set false to stop publishing detailed stats on status pages
     statusPages?: boolean;  // default true — set false to disable the public status page routes
     /**

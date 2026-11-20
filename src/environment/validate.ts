@@ -1,6 +1,7 @@
 import { Environment } from './environment.types';
 import { MODEL_KINDS, type ModelKind } from '../types/models';
 import { isLoopbackHost } from '../utils/hosts';
+import { tagsProblem } from '../utils/nodeInfo';
 
 /** Keys that shipped as defaults, or are what a client presents when it has none: never valid as a secret. */
 export const KNOWN_DEFAULT_API_KEYS: ReadonlySet<string> = new Set(['diiisco']);
@@ -142,6 +143,11 @@ export function validateEnvironment(env: Environment): string[] {
         errors.push(`\`api.${key}\` must be a list of strings.`);
       }
     }
+  }
+
+  if (env.node?.tags !== undefined) {
+    const problem = tagsProblem(env.node.tags);
+    if (problem) errors.push(problem);
   }
 
   if (env.power?.preventSleep !== undefined && typeof env.power.preventSleep !== 'boolean') {
