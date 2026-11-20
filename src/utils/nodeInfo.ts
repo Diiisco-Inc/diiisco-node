@@ -6,6 +6,8 @@
  * not truth: the figures are the sender's own claims.
  */
 
+import { COLD_START_METHODS, type ColdStartMethod, type ModelPerformance, type PerformanceFigure } from '../types/performance';
+
 /** Lowercase letters, digits and hyphens, starting with a letter or digit, at most 48 characters. */
 export const TAG_PATTERN = /^[a-z0-9][a-z0-9-]{0,47}$/;
 export const MAX_TAGS = 16;
@@ -38,4 +40,49 @@ export function tagsProblem(value: unknown): string | null {
     seen.add(tag);
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Performance
+// ---------------------------------------------------------------------------
+
+const MAX_TTFT_MS = 600_000;
+const MAX_TOKENS_PER_SECOND = 100_000;
+const MAX_SAMPLES = 1_000_000;
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** A figure, `undefined` when absent, or `null` when present but malformed. */
+function parseFigure(value: unknown, max: number): PerformanceFigure | undefined | null {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) return null;
+  const { value: v, samples } = value;
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > max) return null;
+  if (typeof samples !== 'number' || !Number.isInteger(samples) || samples < 1 || samples > MAX_SAMPLES) return null;
+  return { value: v, samples };
+}
+
+/**
+ * A clean copy of a performance block, or `undefined` if `value` is not one.
+ * Any present field that is malformed or out of bounds rejects the whole block:
+ * a half-believed claim is worse than none. Unknown keys are not copied.
+ */
+export function parsePerformance(value: unknown): ModelPerformance | undefined {
+  if (!isObject(value)) return undefined;
+  const { updatedAt, coldStart } = value;
+  if (typeof updatedAt !== 'number' || !Number.isFinite(updatedAt) || updatedAt < 0) return undefined;
+  if (coldStart !== undefined && !COLD_START_METHODS.includes(coldStart as ColdStartMethod)) return undefined;
+
+  const ttftColdMs = parseFigure(value.ttftColdMs, MAX_TTFT_MS);
+  const ttftHotMs = parseFigure(value.ttftHotMs, MAX_TTFT_MS);
+  const tokensPerSecond = parseFigure(value.tokensPerSecond, MAX_TOKENS_PER_SECOND);
+  if (ttftColdMs === null || ttftHotMs === null || tokensPerSecond === null) return undefined;
+
+  return {
+    ...(ttftColdMs ? { ttftColdMs } : {}),
+    ...(ttftHotMs ? { ttftHotMs } : {}),
+    ...(tokensPerSecond ? { tokensPerSecond } : {}),
+    updatedAt,
+    ...(coldStart ? { coldStart: coldStart as ColdStartMethod } : {}),
+  };
 }

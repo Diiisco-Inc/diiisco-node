@@ -84,6 +84,12 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
   private checkedAt = 0;
   private inFlight: Promise<string[]> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Called with the served models after every successful probe (performance
+   * benchmarking hangs off this). Must be cheap and must not throw; a throw is
+   * caught and logged so it can never fail the probe.
+   */
+  onModels?: (models: ModelInfo[]) => void;
 
   constructor(backend: OpenAIInferenceModel, options: ModelAvailabilityOptions = {}) {
     const configured = environment.models?.availability ?? {};
@@ -193,6 +199,12 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     this.kinds = new Map(models.map((m) => [m.id, m.kind ?? 'chat']));
     this.healthy = true;
     this.checkedAt = Date.now();
+
+    try {
+      this.onModels?.(models);
+    } catch (err) {
+      logger.debug(`A model-list listener failed: ${(err as Error).message}`);
+    }
 
     // Say what is *not* a chat model, once per change — it explains why a model
     // does not appear in a tool's picker.

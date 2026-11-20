@@ -246,6 +246,11 @@ export const nameHeuristicSource: KindSource = {
 // The pipeline
 // ---------------------------------------------------------------------------
 
+/** The backend's origin (`http://localhost:11434`): no trailing slash, no `/v1`. Runtime-native APIs hang off it. */
+export function backendOrigin(baseURL: string, port: number): string {
+  return `${baseURL.replace(/\/+$/, '').replace(/\/v1$/, '')}:${port}`;
+}
+
 /** How long a backend-probing source that found nothing is left alone. */
 const DIALECT_RETRY_MS = 5 * 60_000;
 /** How long a model nobody could classify is assumed to be `chat` before asking again. */
@@ -284,7 +289,7 @@ export class ModelKindDetector {
   private readonly skipUntil = new Map<string, number>();
 
   constructor(options: ModelKindDetectorOptions) {
-    this.origin = `${options.baseURL.replace(/\/+$/, '').replace(/\/v1$/, '')}:${options.port}`;
+    this.origin = backendOrigin(options.baseURL, options.port);
     this.overrides = overrideSource(options.overrides);
     this.sources = options.sources ?? [selfDescribedSource, ollamaSource, lmStudioSource, nameHeuristicSource];
     this.fetchImpl = options.fetch ?? fetch;

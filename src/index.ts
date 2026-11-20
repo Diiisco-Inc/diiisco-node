@@ -11,6 +11,9 @@ import environment from "./environment/runtime";
 import { Environment } from "./environment/environment.types";
 import { OpenAIInferenceModel } from "./utils/models";
 import { ModelAvailability, ModelAvailabilityMonitor } from "./utils/modelAvailability";
+import { Benchmarker, PerformanceStore, WarmthTracker, performanceObserver } from './utils/modelPerformance';
+import { OllamaRuntime } from './utils/ollamaRuntime';
+import { backendOrigin } from './utils/modelCapabilities';
 import quoteEngine from "./utils/quoteEngine";
 import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
@@ -36,11 +39,20 @@ function settlementQueuePath(): string | undefined {
   return dir ? join(resolvePath(dir), 'pending-settlements.json') : undefined;
 }
 
+/** Where per-model performance figures are kept: beside the peer identity. In memory only without one. */
+function performancePath(): string | undefined {
+  const dir = environment.peerIdStorage?.path;
+  return dir ? join(resolvePath(dir), 'model-benchmarks.json') : undefined;
+}
+
 class Application extends EventEmitter {
   private node: any;
   private algo: algorand;
   private model: OpenAIInferenceModel;
   private models: ModelAvailability;
+  // Performance figures and the benchmarks that seed them (plan 018); null when `models.benchmark.enabled` is false.
+  private performance: PerformanceStore | null = null;
+  private benchmarker: Benchmarker | null = null;
   private quoteMgr: quoteEngine;
   private topics: string[] = [];
   private env: Environment;
@@ -92,7 +104,17 @@ class Application extends EventEmitter {
     this.env = environment;
     this.algo = new algorand();
     this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`, this);
-    this.models = new ModelAvailabilityMonitor(this.model);
+    const monitor = new ModelAvailabilityMonitor(this.model);
+    this.models = monitor;
+    if (this.env.models.enabled && this.env.models.benchmark?.enabled !== false) {
+      const ollama = new OllamaRuntime(backendOrigin(this.env.models.baseURL, this.env.models.port));
+      const warmth = new WarmthTracker(ollama);
+      this.performance = new PerformanceStore(performancePath());
+      this.benchmarker = new Benchmarker({ backend: this.model, store: this.performance, warmth, ollama });
+      this.model.observer = performanceObserver(this.performance, warmth);
+      const benchmarker = this.benchmarker;
+      monitor.onModels = guarded('Benchmarking models', (list) => benchmarker.ensure(list));
+    }
     this.quoteMgr = new quoteEngine(this, this.algo);
   }
   
@@ -184,6 +206,7 @@ class Application extends EventEmitter {
     // A backend that isn't up yet is a warning, not a fatal error: this used to
     // be a bare `getModels()` whose rejection took the whole node down, so the
     // node could not be started before Ollama.
+    this.performance?.load();
     await this.models.refresh();
     this.models.start();
 
@@ -479,6 +502,8 @@ class Application extends EventEmitter {
       this.stopSleepDetector?.();
       this.keepAwake.stop();
       this.models.stop();
+      this.benchmarker?.stop();
+      this.performance?.close();
 
       // 3. Unsubscribe from pubsub topics
       for (const topic of this.topics) {
