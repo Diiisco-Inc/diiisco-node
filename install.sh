@@ -525,15 +525,44 @@ if [ "$DESKTOP_INSTALL" = 1 ]; then
 
     DMG_MOUNT="${TMP_DIR}/dmg"
     mkdir -p "$DMG_MOUNT"
+    # The desktop build comes from a separate release pipeline. When it publishes
+    # a checksum beside the .dmg (<name>.dmg.sha256, `sha256sum` format), hold
+    # the download to it: a mismatch is fatal. When it does not, say so and fall
+    # back to the app's code signature, below.
+    # diiis.co answers a URL it does not have with a redirect to a web page, which
+    # `fetch_to` follows into a successful download, so a response only counts as
+    # a checksum if it starts with a 64-digit hex digest.
+    if [ "$NO_VERIFY" != 1 ] && checksum_of "${TMP_DIR}/${DESKTOP_ARTIFACT}" >/dev/null 2>&1; then
+        expected=""
+        if fetch_to "${DESKTOP_URL}.sha256" "${TMP_DIR}/${DESKTOP_ARTIFACT}.sha256" 2>/dev/null; then
+            expected=$(head -c 4096 "${TMP_DIR}/${DESKTOP_ARTIFACT}.sha256" | cut -d' ' -f1 | head -n 1 | tr 'A-F' 'a-f')
+            case "$expected" in
+                *[!0-9a-f]*) expected="" ;;
+            esac
+            [ "${#expected}" = 64 ] || expected=""
+        fi
+        if [ -n "$expected" ]; then
+            actual=$(checksum_of "${TMP_DIR}/${DESKTOP_ARTIFACT}")
+            if [ "$expected" != "$actual" ]; then
+                die "Checksum mismatch for ${DESKTOP_ARTIFACT} — the download is corrupt or has been tampered with." \
+                    "expected ${expected}" \
+                    "got      ${actual}"
+            fi
+            ok "Checksum verified."
+        else
+            warn "No checksum is published for ${DESKTOP_ARTIFACT}; relying on the app's code signature instead."
+        fi
+    fi
+
     hdiutil attach -nobrowse -readonly -mountpoint "$DMG_MOUNT" "${TMP_DIR}/${DESKTOP_ARTIFACT}" >/dev/null || die \
         "Could not mount ${DESKTOP_ARTIFACT}." "It may be corrupt — try re-running the installer."
 
     [ -d "${DMG_MOUNT}/DIIISCO.app" ] || die "${DESKTOP_ARTIFACT} does not contain DIIISCO.app."
 
-    # No SHA256SUMS is published for the desktop .dmg (unlike the CLI binary
-    # above) — the app bundle's own code signature is the equivalent integrity
-    # check here. An unsigned build is a supported fallback elsewhere in this
-    # pipeline, so a failed/missing signature warns rather than blocks install.
+    # The app bundle's own code signature is the second integrity check (and the
+    # only one when no .sha256 is published). An unsigned build is a supported
+    # fallback elsewhere in this pipeline, so a failed/missing signature warns
+    # rather than blocks install.
     if [ "$NO_VERIFY" != 1 ] && have codesign; then
         info "Verifying code signature…"
         if codesign --verify --deep --strict "${DMG_MOUNT}/DIIISCO.app" 2>/dev/null; then

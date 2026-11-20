@@ -19,6 +19,22 @@ export class NoProviderError extends Error {
   }
 }
 
+/**
+ * The request would not fit in the one direct message that carries it to the
+ * provider (`directMessaging.maxMessageSize`). Raised before an auction starts,
+ * so the caller learns it now rather than after a provider silently drops it.
+ */
+export class RequestTooLargeError extends Error {
+  readonly bytes: number;
+  readonly limit: number;
+  constructor(bytes: number, limit: number) {
+    super(`This request is about ${bytes} bytes, but the network carries at most ${limit} bytes per request. Shorten the conversation or the tool definitions.`);
+    this.name = 'RequestTooLargeError';
+    this.bytes = bytes;
+    this.limit = limit;
+  }
+}
+
 /** A quote was accepted but the answer never arrived within the deadline. */
 export class InferenceTimeoutError extends Error {
   readonly model: string;
@@ -53,6 +69,7 @@ export function statusForInferenceError(err: unknown): number {
   // not a decision model): its own 4xx is the honest answer. A 5xx from it is
   // our upstream failing, which is a 502.
   if (err instanceof BackendRejectedError) return err.status >= 400 && err.status < 500 ? err.status : 502;
+  if (err instanceof RequestTooLargeError) return 413;
   if (err instanceof NoProviderError) return 503;
   if (err instanceof ProviderFailedError) return 503;
   if (err instanceof InferenceTimeoutError) return 504;
@@ -61,7 +78,7 @@ export function statusForInferenceError(err: unknown): number {
 
 /** User-facing message for a failure from this module; a generic one otherwise. */
 export function messageForInferenceError(err: unknown): string {
-  if (err instanceof NoProviderError || err instanceof InferenceTimeoutError || err instanceof ProviderFailedError || err instanceof BackendRejectedError) {
+  if (err instanceof RequestTooLargeError || err instanceof NoProviderError || err instanceof InferenceTimeoutError || err instanceof ProviderFailedError || err instanceof BackendRejectedError) {
     return err.message;
   }
   return 'No peers available to handle the request.';

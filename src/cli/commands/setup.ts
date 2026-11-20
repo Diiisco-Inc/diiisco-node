@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import algosdk from 'algosdk';
 import { EnvironmentFile } from '../../environment/environment.types';
-import { environmentWarnings, validateEnvironment } from '../../environment/validate';
+import { environmentWarnings, validateEnvironment, KNOWN_DEFAULT_API_KEYS } from '../../environment/validate';
 import {
   ConfigError,
   configPath,
@@ -175,7 +175,9 @@ async function buildConfig(
     (n) => (Number.isInteger(n) && n > 0 && n <= 65535 ? null : 'Ports run from 1 to 65535.')
   ));
   const bearer = await prompt.confirm('Require an API key from clients?', existing.api?.bearerAuthentication ?? false);
-  const keys = bearer ? (existing.api?.keys?.length ? existing.api.keys : [generateApiKey()]) : (existing.api?.keys ?? ['diiisco']);
+  // Never keep a well-known default as a secret; generate a random key instead.
+  const keptKeys = (existing.api?.keys ?? []).filter((k) => !KNOWN_DEFAULT_API_KEYS.has(String(k).trim().toLowerCase()));
+  const keys = bearer ? (keptKeys.length ? keptKeys : [generateApiKey()]) : keptKeys;
 
   // As with `models`: keep `host`, `corsOrigins`, `profileWaitTime` and the rest.
   config.api = {
@@ -222,7 +224,7 @@ async function buildWallet(
     options.network ?? (await prompt.choose('Network', ['mainnet', 'testnet'] as const, existing.algorand?.network ?? 'mainnet'))
   );
 
-  const mnemonic = await resolveMnemonic(prompt, options, existing, mnemonicFromStdin);
+  const mnemonic = await resolveMnemonic(prompt, existing, mnemonicFromStdin);
 
   const defaultAlgod = network === 'mainnet'
     ? 'https://mainnet-api.algonode.cloud/'
@@ -269,7 +271,6 @@ async function buildWallet(
  */
 async function resolveMnemonic(
   prompt: Prompter,
-  options: SetupOptions,
   existing: EnvironmentFile,
   mnemonicFromStdin: string | null
 ): Promise<string> {

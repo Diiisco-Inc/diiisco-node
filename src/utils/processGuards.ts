@@ -85,6 +85,35 @@ function abortedTeardownName(err: unknown): string | null {
   return name;
 }
 
+/**
+ * Wrap an event listener or timer callback so it can never throw or reject.
+ *
+ * An unhandled rejection exits the process (see `installProcessGuards`), and an
+ * `async` listener passed to an emitter has nobody awaiting it: whatever it
+ * throws is unhandled. A guarded callback logs the failure, tagged with
+ * `label`, and carries on. Use it for anything that runs because of a peer, a
+ * timer or an event rather than because a caller awaits it.
+ */
+export function guarded<A extends unknown[]>(
+  label: string,
+  fn: (...args: A) => unknown,
+): (...args: A) => void {
+  return (...args: A) => {
+    try {
+      const result = fn(...args);
+      if (result && typeof (result as Promise<unknown>).then === 'function') {
+        (result as Promise<unknown>).then(undefined, (err) => logFailure(label, err));
+      }
+    } catch (err) {
+      logFailure(label, err);
+    }
+  };
+}
+
+function logFailure(label: string, err: unknown): void {
+  logger.warn(`⚠️ ${label} failed: ${(err as Error)?.message ?? err}`);
+}
+
 /** Test seam: the number of teardowns swallowed so far. */
 export function abortedTeardownCount(): number {
   return abortedTeardowns;

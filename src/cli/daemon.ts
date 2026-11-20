@@ -429,6 +429,13 @@ export async function stopDaemon(signalGraceMs = SIGNAL_GRACE_MS, pollMs = 200):
         return { outcome: 'stopped', pid: state.pid, controlError: null };
       }
       controlError = `the node acknowledged the shutdown request but had not exited after ${CONTROL_GRACE_MS / 1000}s`;
+    } else if (asked.refused) {
+      // Nothing listens on the control port a live node recorded, so the pid is
+      // not that node any more: it exited without clearing its state and the
+      // number may now belong to an unrelated process. Signalling it could kill
+      // something that is not ours, so just clear the stale record.
+      removeDaemonState();
+      return { outcome: 'stale', pid: state.pid, controlError: asked.error };
     } else {
       controlError = asked.error;
     }

@@ -3,7 +3,8 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveWebAssets, type WebAsset } from './webAssets';
 import { EventEmitter } from 'events';
-import { sha256 } from 'js-sha256';
+import { collect } from './collect';
+import { newRequestId } from '../utils/requestId';
 import { peerIdFromString } from '@libp2p/peer-id';
 import environment from '../environment/runtime';
 import algorand from '../utils/algorand';
@@ -14,6 +15,8 @@ import type { ModelKind } from '../types/models';
 import { NodeProfile, DirectoryEntry, ModelStats } from '../types/profile';
 import { NodeProfileRequest, NetworkNode } from '../types/messages';
 import { logger } from '../utils/logger';
+import { perMinute } from '../utils/rateLimiter';
+import { ExpiringMap } from '../utils/expiringMap';
 
 /**
  * Public, unauthenticated status pages: this node's home page, a directory of
@@ -27,8 +30,10 @@ import { logger } from '../utils/logger';
 const PROFILE_WAIT_DEFAULT = 3000;
 const PROFILE_CACHE_TTL_DEFAULT = 45_000;
 const NEGATIVE_CACHE_TTL = 10_000;
+const MAX_CACHED_PROFILES = 2000;
+const MAX_KNOWN_NODES = 5000;
 const RATE_LIMIT_CAPACITY = 30;          // burst
-const RATE_LIMIT_REFILL_PER_MS = 30 / 60_000; // 30 requests/minute
+const RATE_LIMIT_PER_MINUTE = 30;
 
 interface KnownNodeSighting {
   peerId: string;
@@ -68,6 +73,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   const recordSighting = (s: { peerId: string; displayName?: string; nfd?: string; walletAddr?: string; role?: NodeProfile['role']; network?: NodeProfile['network'] }) => {
     if (!s.peerId || s.peerId === ownPeerId) return;
     const existing = knownNodes.get(s.peerId);
+    knownNodes.delete(s.peerId); // re-insert: Map order is then least recently seen first
     knownNodes.set(s.peerId, {
       peerId: s.peerId,
       displayName: s.displayName ?? existing?.displayName,
@@ -77,13 +83,21 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       network: s.network ?? existing?.network,
       lastSeen: Date.now(),
     });
+    // A stranger can mint peer ids freely, so the registry is bounded too.
+    while (knownNodes.size > MAX_KNOWN_NODES) {
+      const oldest = knownNodes.keys().next();
+      if (oldest.done) break;
+      knownNodes.delete(oldest.value);
+    }
   };
 
   nodeEvents.on('network-node-received', (n: NetworkNode) => recordSighting(n));
 
   // ---- Profile cache + single-flight ----------------------------------------
-  const profileCache = new Map<string, { profile: NodeProfile; expiresAt: number }>();
-  const negativeCache = new Map<string, number>();
+  // Keyed by peer ids an anonymous visitor (or a stranger on the mesh) chooses,
+  // so both are bounded: the oldest entry makes way when full.
+  const profileCache = new ExpiringMap<string, NodeProfile>(30_000, MAX_CACHED_PROFILES);
+  const negativeCache = new ExpiringMap<string, true>(30_000, MAX_CACHED_PROFILES);
   const inflight = new Map<string, Promise<NodeProfile | null>>();
 
   const fetchRemoteProfile = async (peerId: string): Promise<NodeProfile | null> => {
@@ -91,31 +105,30 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       role: 'node-profile',
       to: peerId,
       timestamp: Date.now(),
-      id: sha256(`${Date.now()}-node-profile-${peerId}-${Math.random()}`).slice(0, 56),
+      id: newRequestId(),
       fromWalletAddr: algo.account.addr.toString(),
       payload: { peerId },
     };
-    request.signature = await algo.signObject(request);
+    const eventName = `node-profile-received-${request.id}`;
 
-    return new Promise<NodeProfile | null>((resolve) => {
-      const eventName = `node-profile-received-${request.id}`;
-      const timer = setTimeout(() => {
-        nodeEvents.removeAllListeners(eventName);
-        resolve(null);
-      }, profileWaitTime);
-
-      nodeEvents.once(eventName, (profile: NodeProfile) => {
-        clearTimeout(timer);
-        resolve(profile);
+    try {
+      const { items } = await collect<NodeProfile>({
+        windowMs: profileWaitTime,
+        until: 1, // the first answer is the answer
+        subscribe: (push) => {
+          nodeEvents.on(eventName, push);
+          return () => nodeEvents.off(eventName, push);
+        },
+        send: async () => {
+          request.signature = await algo.signObject(request);
+          await messageRouter.sendMessage(request, peerId);
+        },
       });
-
-      messageRouter.sendMessage(request, peerId).catch((err: Error) => {
-        logger.debug(`Could not send node-profile to ${peerId.slice(0, 16)}...: ${err.message}`);
-        clearTimeout(timer);
-        nodeEvents.removeAllListeners(eventName);
-        resolve(null);
-      });
-    });
+      return items[0] ?? null;
+    } catch (err) {
+      logger.debug(`Could not send node-profile to ${peerId.slice(0, 16)}...: ${(err as Error).message}`);
+      return null;
+    }
   };
 
   /**
@@ -129,9 +142,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     }
 
     const cached = profileCache.get(peerId);
-    if (cached && cached.expiresAt > Date.now()) {
-      return cached.profile;
-    }
+    if (cached) return cached;
 
     const offlineFallback = (): NodeProfile | null => {
       const known = knownNodes.get(peerId);
@@ -148,7 +159,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       };
     };
 
-    if ((negativeCache.get(peerId) ?? 0) > Date.now()) {
+    if (negativeCache.has(peerId)) {
       return offlineFallback();
     }
 
@@ -160,12 +171,12 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
 
     const profile = await pending;
     if (profile) {
-      profileCache.set(peerId, { profile, expiresAt: Date.now() + profileCacheTtl });
+      profileCache.set(peerId, profile, profileCacheTtl);
       recordSighting(profile);
       return profile;
     }
 
-    negativeCache.set(peerId, Date.now() + NEGATIVE_CACHE_TTL);
+    negativeCache.set(peerId, true, NEGATIVE_CACHE_TTL);
     return offlineFallback();
   };
 
@@ -261,29 +272,13 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   };
 
   // ---- Rate limiting ---------------------------------------------------------
-  // Simple per-IP token bucket on the proxy-lookup route so an HTTP crawler
-  // can't turn this node into a mesh-query amplifier.
-  const buckets = new Map<string, { tokens: number; last: number }>();
+  // Per-IP token bucket on the proxy-lookup route so an HTTP crawler can't turn
+  // this node into a mesh-query amplifier.
+  const limiter = perMinute(RATE_LIMIT_PER_MINUTE, RATE_LIMIT_CAPACITY, 1000);
 
   const rateLimit = (req: Request, res: Response, next: NextFunction) => {
-    const ip = req.ip || 'unknown';
-    const now = Date.now();
-    const bucket = buckets.get(ip) ?? { tokens: RATE_LIMIT_CAPACITY, last: now };
-    bucket.tokens = Math.min(RATE_LIMIT_CAPACITY, bucket.tokens + (now - bucket.last) * RATE_LIMIT_REFILL_PER_MS);
-    bucket.last = now;
-
-    if (bucket.tokens < 1) {
-      buckets.set(ip, bucket);
+    if (!limiter.take(req.ip || 'unknown')) {
       return res.status(429).json({ error: 'Too many requests' });
-    }
-    bucket.tokens -= 1;
-    buckets.set(ip, bucket);
-
-    // Opportunistic cleanup of idle buckets
-    if (buckets.size > 1000) {
-      for (const [key, b] of buckets) {
-        if (now - b.last > 120_000) buckets.delete(key);
-      }
     }
     next();
   };

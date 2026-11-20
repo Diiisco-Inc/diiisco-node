@@ -90,20 +90,6 @@ describe('quote and model-list shapes', () => {
     expect((await selected).from).toBe('good-peer');
     expect(Object.keys(q.quoteQueue)).toEqual([]);
   });
-
-  test('a list-models-response that is not a list of models cannot make the compile timer throw', async () => {
-    const { OpenAIInferenceModel } = require('../src/utils/models');
-    const events = new EventEmitter();
-    const model = new OpenAIInferenceModel('http://127.0.0.1:1/v1', events);
-    const compiled = new Promise<any[]>((resolve) => events.once('model-list-compiled', resolve));
-
-    await model.addModel([{ id: 'a' }, null, 5, 'x', { notId: 1 }, { id: 'a' }, { id: 'b' }]);
-    expect((await compiled).map((m: any) => m.id)).toEqual(['a', 'b']);
-
-    const second = new Promise<any[]>((resolve) => events.once('model-list-compiled', resolve));
-    await model.addModel('garbage' as any);
-    expect(await second).toEqual([]);
-  });
 });
 
 describe('ExpiringMap', () => {
@@ -175,5 +161,42 @@ describe('API defaults and warnings', () => {
     expect(errors.some((e) => e.includes('api.host'))).toBe(true);
     expect(errors.some((e) => e.includes('api.corsOrigins'))).toBe(true);
     expect(errors.some((e) => e.includes('api.allowedHosts'))).toBe(true);
+  });
+});
+
+describe('guarded()', () => {
+  const { guarded } = require('../src/utils/processGuards');
+
+  test('a listener that throws synchronously is logged, not thrown', () => {
+    expect(() => guarded('test', () => { throw new Error('sync boom'); })()).not.toThrow();
+  });
+
+  test('an async listener that rejects does not become an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      guarded('test', async () => { throw new Error('async boom'); })();
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
+  test('arguments reach the wrapped function and a normal run is untouched', async () => {
+    const seen: number[] = [];
+    guarded('test', async (a: number, b: number) => { seen.push(a + b); })(2, 3);
+    await new Promise((r) => setTimeout(r, 5));
+    expect(seen).toEqual([5]);
+  });
+
+  test('it works as an EventEmitter listener that can be removed again', () => {
+    const events = new EventEmitter();
+    const fn = guarded('test', () => { throw new Error('boom'); });
+    events.on('x', fn);
+    expect(() => events.emit('x')).not.toThrow();
+    events.off('x', fn);
+    expect(events.listenerCount('x')).toBe(0);
   });
 });

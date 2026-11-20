@@ -648,10 +648,37 @@ function Invoke-DiiiscoInstall {
         }
         Assert-WindowsExecutable -Path $setup -Url $desktopUrl
 
-        # No SHA256SUMS is published for the desktop installer (unlike the CLI
-        # binary above) - its Authenticode signature is the equivalent
-        # integrity check. An unsigned build is a supported fallback elsewhere
-        # in this pipeline, so a bad or missing signature warns, not blocks.
+        # When the desktop pipeline publishes a checksum beside the installer
+        # (DIIISCO-setup.exe.sha256, `sha256sum` format) hold the download to it:
+        # a mismatch is fatal. diiis.co redirects a URL it does not have to a web
+        # page, so a response only counts as a checksum if it starts with a
+        # 64-digit hex digest; otherwise we fall back to the Authenticode
+        # signature below.
+        if (-not $NoVerify) {
+            $sumFile = Join-Path $staging "$desktopArtifact.sha256"
+            $published = $null
+            if (Get-RemoteFile -Url "$desktopUrl.sha256" -Destination $sumFile) {
+                $head = (Get-Content -LiteralPath $sumFile -TotalCount 1 -ErrorAction SilentlyContinue)
+                if ($head -match '^\s*([0-9a-fA-F]{64})(\s|$)') { $published = $Matches[1].ToLowerInvariant() }
+            }
+            if ($published) {
+                $actualHash = Get-Sha256 -Path $setup
+                if ($actualHash -ne $published) {
+                    Stop-Install "Checksum mismatch for $desktopArtifact - the download is corrupt or has been tampered with." @(
+                        "expected $published",
+                        "got      $actualHash"
+                    )
+                }
+                Write-Ok 'Checksum verified.'
+            } else {
+                Write-Warn "No checksum is published for $desktopArtifact; relying on its code signature instead."
+            }
+        }
+
+        # The Authenticode signature is the second integrity check (and the only
+        # one when no .sha256 is published). An unsigned build is a supported
+        # fallback elsewhere in this pipeline, so a bad or missing signature
+        # warns, not blocks.
         if (-not $NoVerify) {
             Write-Info 'Verifying code signature...'
             $signature = Get-AuthenticodeSignature -LiteralPath $setup

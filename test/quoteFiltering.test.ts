@@ -141,8 +141,9 @@ describe('quote filtering by live model availability', () => {
     const models = availability(['gemma3']);
     const { processor } = processorWith(models);
 
+    // Two requests (distinct ids: an identical one would be dropped as a replay).
     await processor.process(quoteRequest('gemma3'), 'peer-requester');
-    await processor.process(quoteRequest('gemma3'), 'peer-requester');
+    await processor.process({ ...quoteRequest('gemma3'), id: 'request-2' }, 'peer-requester');
 
     expect(models.checks).toEqual(['gemma3', 'gemma3']);
   });

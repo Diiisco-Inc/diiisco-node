@@ -16,14 +16,25 @@ import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
 import { MessageRouter } from './messaging/messageRouter';
 import { MessageProcessor } from './messaging/messageProcessor';
+import { ModelListCollector } from './messaging/modelListCollector';
+import { SettlementQueue } from './settlement/settlementQueue';
 import { RequestLedger } from './messaging/requestLedger';
 import { MeshReadinessMonitor } from './libp2p/meshReadinessMonitor';
 import { MeshMessageQueue } from './messaging/meshMessageQueue';
 import { parseWireMessage, addressedTo } from './messaging/wire';
-import { PubSubMessage } from './types/messages';
 import { DEFAULT_DIRECT_MESSAGING_CONFIG } from './utils/defaults';
 import { getMeshTopic } from './utils/topic';
 import type { Server } from 'http';
+import { join } from 'path';
+import { guarded } from './utils/processGuards';
+import { resolvePath } from './utils/paths';
+
+/** Where accepted-but-unsettled payments are kept: beside the peer identity. In-memory only without a wallet. */
+function settlementQueuePath(): string | undefined {
+  if (environment.local?.enabled || !environment.algorand) return undefined;
+  const dir = environment.peerIdStorage?.path;
+  return dir ? join(resolvePath(dir), 'pending-settlements.json') : undefined;
+}
 
 class Application extends EventEmitter {
   private node: any;
@@ -41,6 +52,10 @@ class Application extends EventEmitter {
   // Which provider each of this node's requests went to; shared by the API
   // (which chooses) and the message processor (which must hold replies to it).
   private requests = new RequestLedger();
+  // `list-models` requests of ours still collecting answers (see ModelListCollector).
+  private modelLists = new ModelListCollector();
+  // Payments accepted but not yet settled on-chain; persisted so a restart resumes them.
+  private settlements!: SettlementQueue;
 
   private apiServer: Server | null = null;
   private isShuttingDown = false;
@@ -195,6 +210,10 @@ class Application extends EventEmitter {
     // Initialize message router
     this.messageRouter = new MessageRouter(this.node, this.directHandler);
 
+    // Payments accepted in an earlier run and not yet settled on-chain.
+    this.settlements = new SettlementQueue(settlementQueuePath());
+    this.settlements.load();
+
     // Initialize unified message processor with loaded models
     this.messageProcessor = new MessageProcessor(
       this.algo,
@@ -205,8 +224,11 @@ class Application extends EventEmitter {
       this.messageRouter,
       this.node.peerId.toString(),
       this.node,
-      this.requests
+      this.requests,
+      this.modelLists,
+      this.settlements
     );
+    this.messageProcessor.resumeSettlements();
 
     // Create a Relay PubSub Topic
     const topic = getMeshTopic();
@@ -220,7 +242,7 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests, this.modelLists, () => this.messageProcessor?.pendingSettlements() ?? 0);
       this.apiServer = server;
     }
 
@@ -248,7 +270,7 @@ class Application extends EventEmitter {
     });
 
     // Listen for Peer Discovery Events
-    this.node.addEventListener('peer:discovery', async (e: { detail: { id: any; multiaddrs?: any[] }; }) => {
+    this.node.addEventListener('peer:discovery', guarded('Handling a discovered peer', async (e: { detail: { id: any; multiaddrs?: any[] }; }) => {
       const id = e.detail.id;
       if (isPeerDenied(id.toString())) return; // on another network
       logger.info('👋 Discovered Peer:', id.toString());
@@ -270,7 +292,7 @@ class Application extends EventEmitter {
         logger.warn(`⚠️ Failed to connect to discovered peer ${peerId.slice(0, 16)}...: ${err?.message ?? err}`);
         await scheduleReconnect(peerId, this.createReconnectionDependencies());
       }
-    });
+    }));
 
     // Listen for Connection Events
     this.node.addEventListener('peer:connect', (evt: any) => {
@@ -311,14 +333,14 @@ class Application extends EventEmitter {
     });
 
     // Listen for Disconnection Events with automatic reconnection
-    this.node.addEventListener('peer:disconnect', async (evt: any) => {
+    this.node.addEventListener('peer:disconnect', guarded('Handling a peer disconnect', async (evt: any) => {
       const peerId = evt.detail.toString();
       logger.info(`💔 Disconnected from peer: ${peerId}`);
       if (this.isShuttingDown) return;
       
       // Attempt to reconnect
       await scheduleReconnect(peerId, this.createReconnectionDependencies());
-    });
+    }));
 
     // The bootstrap relay connection is usually established during libp2p
     // startup, before the peer:connect listener above exists — announce any

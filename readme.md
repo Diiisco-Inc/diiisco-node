@@ -335,6 +335,7 @@ On startup, the node automatically opts into the DSCO and USDC assets if not alr
 | `url` | Publicly reachable URL of this node (used in log output) |
 | `port` | TCP port for libp2p peer-to-peer connections (default `4242`) |
 | `displayName` | Human-readable name shown on the `/network` endpoint |
+| `rateLimit` | `{ requestsPerMinute, burst }` — per-peer limit on messages this node processes (default 60 a minute, burst 30). Requests such as `quote-request` use it directly; answers and the payment exchange get four times that. A peer over its limit is ignored until its budget refills. |
 
 ### `local`
 

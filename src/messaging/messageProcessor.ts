@@ -20,7 +20,6 @@ import {
   ListModelsResponse,
   ListNetworkRequest,
   ListNetworkResponse,
-  NetworkNode,
   NodeProfileRequest,
   NodeProfileResponse,
 } from "../types/messages";
@@ -34,12 +33,28 @@ import { RawQuote } from "../types/quotes";
 import { priceFromUsage, planBudget } from "../utils/quoteCreationMethods";
 import { MessageRouter } from './messageRouter';
 import { SpeculativeInferenceCache } from './speculativeInferenceCache';
-import { SettlementRegistry, SettlementProvider, SettlementMethod, PaymentRequest } from '../settlement/settlementProvider';
+import { SettlementRegistry, SettlementProvider, SettlementMethod, PaymentRequest, PaymentEvidence } from '../settlement/settlementProvider';
 import { X402Settlement } from '../settlement/x402Settlement';
+import { SettlementQueue } from '../settlement/settlementQueue';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import { ExpiringMap } from '../utils/expiringMap';
 import { RequestLedger } from './requestLedger';
+import { payloadProblem } from './wire';
+import { ModelListCollector } from './modelListCollector';
+import { perMinute, RateLimiter } from '../utils/rateLimiter';
+
+/** Roles that ask this node to do work for a stranger (a lookup, a model probe, a reply). */
+const REQUEST_ROLES: ReadonlySet<string> = new Set(['quote-request', 'list-models', 'list-network', 'node-profile']);
+const DEFAULT_REQUESTS_PER_MINUTE = 60;
+const DEFAULT_REQUEST_BURST = 30;
+/** Answers and the payment exchange are several messages per request, so they get a larger budget. */
+const RESPONSE_BUDGET_FACTOR = 4;
+
+/** How far a message's timestamp may differ from this node's clock before it is refused. */
+const DEFAULT_CLOCK_SKEW_MS = 5 * 60_000;
+/** Most broadcast message ids remembered for replay detection. */
+const MAX_SEEN_MESSAGES = 20_000;
 
 const QUOTE_TTL_MS = 120_000;      // validity window advertised on quotes (x402 requires one)
 const COMPLETION_TTL_MS = 120_000; // how long a withheld completion is held awaiting payment
@@ -94,6 +109,15 @@ export class MessageProcessor {
   private contracts = new ExpiringMap<string, IssuedContract>();
   // Requester side: who each of our requests was handed to (see `RequestLedger`).
   private requests: RequestLedger;
+  // Broadcast requests already handled, so a replayed copy is dropped (see `process`).
+  private seenRequests: ExpiringMap<string, true>;
+  // Per-peer budgets, spent before any signature check or lookup (see `node.rateLimit`).
+  private requestLimiter: RateLimiter;
+  private otherLimiter: RateLimiter;
+  // Requester side: `list-models` requests of ours still collecting answers.
+  private modelLists: ModelListCollector;
+  // Accepted payments awaiting on-chain settlement (see `settleInBackground`).
+  private settlements: SettlementQueue;
 
   constructor(
     algo: algorand,
@@ -104,7 +128,9 @@ export class MessageProcessor {
     messageRouter: MessageRouter,
     ownPeerId: string,
     node: any,
-    requests: RequestLedger = new RequestLedger()
+    requests: RequestLedger = new RequestLedger(),
+    modelLists: ModelListCollector = new ModelListCollector(),
+    settlements: SettlementQueue = new SettlementQueue()
   ) {
     this.algo = algo;
     this.model = model;
@@ -116,6 +142,14 @@ export class MessageProcessor {
     this.ownPeerId = ownPeerId;
     this.node = node;
     this.requests = requests;
+    this.modelLists = modelLists;
+    this.settlements = settlements;
+    const rate = this.env.node?.rateLimit;
+    const perMin = rate?.requestsPerMinute ?? DEFAULT_REQUESTS_PER_MINUTE;
+    const burst = rate?.burst ?? DEFAULT_REQUEST_BURST;
+    this.seenRequests = new ExpiringMap<string, true>(30_000, MAX_SEEN_MESSAGES);
+    this.requestLimiter = perMinute(perMin, burst);
+    this.otherLimiter = perMinute(perMin * RESPONSE_BUDGET_FACTOR, burst * RESPONSE_BUDGET_FACTOR);
     this.speculativeCache = new SpeculativeInferenceCache(
       this.env.quoteEngine?.maxSpeculativeJobs ?? 2
     );
@@ -182,6 +216,34 @@ export class MessageProcessor {
    * @returns true if message was processed successfully
    */
   async process(msg: PubSubMessage, sourcePeerId: string): Promise<boolean> {
+    // Per-peer budget, spent first: verifying a signature, and the lookups
+    // behind several handlers, are work a peer must not be able to demand
+    // without limit. Our own messages (emitSelf) are exempt.
+    if (sourcePeerId !== this.ownPeerId) {
+      const limiter = REQUEST_ROLES.has(msg.role) ? this.requestLimiter : this.otherLimiter;
+      if (!limiter.take(sourcePeerId)) {
+        logger.debug(`🚫 Rate limit: dropped a ${String(msg.role).slice(0, 32)} from ${sourcePeerId.slice(0, 16)}...`);
+        return false;
+      }
+    }
+
+    // Shape first, before any signature work: every handler below reads fields
+    // of `payload` and assumes their types (see `payloadProblem`).
+    const shapeProblem = payloadProblem(msg);
+    if (shapeProblem) {
+      logger.debug(`🚫 Dropped a ${String(msg.role).slice(0, 32)} from ${sourcePeerId.slice(0, 16)}... — ${shapeProblem}.`);
+      return false;
+    }
+
+    // A signed message stays valid for ever, so one captured today could be
+    // replayed tomorrow. Refuse any whose timestamp is not close to now.
+    // (The timestamp is inside the signature, so it cannot be rewritten.)
+    const skewMs = this.env.node?.clockSkewToleranceMs ?? DEFAULT_CLOCK_SKEW_MS;
+    if (typeof msg.timestamp !== 'number' || !Number.isFinite(msg.timestamp) || Math.abs(Date.now() - msg.timestamp) > skewMs) {
+      logger.debug(`🚫 Dropped a ${String(msg.role).slice(0, 32)} from ${sourcePeerId.slice(0, 16)}... — its timestamp is not within ${Math.round(skewMs / 1000)}s of now.`);
+      return false;
+    }
+
     // Verify the sender's address and signature. The message is a stranger's
     // bytes: a malformed address or signature makes these throw, and a throw
     // here would be an unhandled rejection, which exits the process. Treat
@@ -209,6 +271,17 @@ export class MessageProcessor {
     } catch (err: any) {
       logger.warn(`❌ Message (${String((msg as any)?.role).slice(0, 32)}) rejected: could not be verified (${err?.message ?? err}).`);
       return false;
+    }
+
+    // A broadcast request is answered once. Recorded only now, after the
+    // signature checked out: otherwise a forged copy could use up a real id.
+    if (REQUEST_ROLES.has(msg.role) && sourcePeerId !== this.ownPeerId) {
+      const key = `${msg.role}|${msg.fromWalletAddr}|${(msg as any).id}`;
+      if (this.seenRequests.has(key)) {
+        logger.debug(`🚫 Dropped a replayed ${msg.role} (${String((msg as any).id).slice(0, 16)}) from ${sourcePeerId.slice(0, 16)}...`);
+        return false;
+      }
+      this.seenRequests.set(key, true, 2 * skewMs);
     }
 
     // Learn how to reach the sender directly. The signed message carries the
@@ -291,6 +364,17 @@ export class MessageProcessor {
     }
   }
 
+  /**
+   * Sign a message and hand it to the router: the tail of every reply this node
+   * sends. `directTo` is the peer a direct-delivery role goes to (see
+   * `PRIVATE_ROLES`); a discovery broadcast leaves it out. The signing and the
+   * routing choice live here and nowhere else.
+   */
+  private async deliver(message: PubSubMessage, directTo?: string): Promise<void> {
+    message.signature = await this.algo.signObject(message);
+    await this.messageRouter.sendMessage(message, directTo);
+  }
+
   private async handleListModels(msg: ListModelsRequest, sourcePeerId: string) {
     if (!this.env.models.enabled) {
       return;
@@ -310,17 +394,19 @@ export class MessageProcessor {
         models: models_list,
       }
     };
-    response.signature = await this.algo.signObject(response);
 
     // Send via router (will use GossipSub for discovery messages)
-    await this.messageRouter.sendMessage(response);
+    await this.deliver(response);
     logger.info(`📤 Sent list-models-response to ${sourcePeerId}`);
   }
 
   private async handleListModelsResponse(msg: ListModelsResponse, sourcePeerId: string) {
-    // Note: msg.to check removed because we need the peer ID from the node, not from this class
-    // This will be handled by checking if the message is addressed to us in the main handler
-    this.model.addModel(msg.payload.models);
+    // Request ids are visible on the broadcast, so any peer can address a list
+    // to us. Only a request this node has open may receive one, and only the
+    // first answer from each peer is kept (see `ModelListCollector`).
+    if (!this.modelLists.add(msg.id, sourcePeerId, msg.payload?.models)) {
+      logger.debug(`🚫 Dropped a list-models-response for ${msg.id} from ${sourcePeerId.slice(0, 16)}... — no open request, a repeat, or not a list.`);
+    }
   }
 
   private async handleListNetwork(msg: ListNetworkRequest, sourcePeerId: string) {
@@ -339,13 +425,19 @@ export class MessageProcessor {
         }
       }
     };
-    response.signature = await this.algo.signObject(response);
-    await this.messageRouter.sendMessage(response);
+    await this.deliver(response);
     logger.info(`📤 Sent list-network-response to ${sourcePeerId}`);
   }
 
   private async handleListNetworkResponse(msg: ListNetworkResponse, _sourcePeerId: string) {
-    const node = msg.payload.node;
+    const node = msg.payload?.node;
+    // A peer lists only itself. Without this a node could announce another
+    // peer's id under its own wallet, cluttering the directory and costing us
+    // two NFD lookups for each.
+    if (!node || node.peerId !== _sourcePeerId) {
+      logger.warn(`❌ Dropping list-network-response: it describes ${String(node?.peerId).slice(0, 16)}... but came from ${_sourcePeerId.slice(0, 16)}...`);
+      return;
+    }
     let verifiedNfd: string | undefined = undefined;
     if (node.nfd) {
       const isValid = await verifyNFD(node.peerId, node.walletAddr, node.nfd).catch(() => false);
@@ -370,8 +462,7 @@ export class MessageProcessor {
         profile: buildOwnProfile(this.node, this.algo, this.models.list(), (id) => this.models.kindOf(id)),
       }
     };
-    response.signature = await this.algo.signObject(response);
-    await this.messageRouter.sendMessage(response, sourcePeerId);
+    await this.deliver(response, sourcePeerId);
     logger.info(`📤 Sent node-profile-response to ${sourcePeerId}`);
   }
 
@@ -419,6 +510,8 @@ export class MessageProcessor {
       return;
     }
 
+    let usdc: { optedIn: boolean; balance: bigint } | undefined;
+
     // On the public network a node must have a settlement method to sell.
     // (Local mode bypasses settlement entirely.)
     if (!this.env.local?.enabled) {
@@ -426,9 +519,18 @@ export class MessageProcessor {
         logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - no settlement provider registered.`);
         return;
       }
-      const x = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoAssets.asset);
-      if (!x.optedIn) {
-        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - not opted in or zero balance.`);
+      // A requester that cannot pay would win the auction, have us run
+      // inference for it, and then never settle. Payment is in USDC, so it is
+      // the requester's USDC position that matters: opted in, and holding
+      // enough for at least the input it is asking us to read.
+      const maxSpend = msg.payload.maxSpend;
+      if (typeof maxSpend !== 'number' || !(maxSpend > 0)) {
+        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - it states no maxSpend budget.`);
+        return;
+      }
+      usdc = await this.algo.checkIfOptedInToAsset(msg.fromWalletAddr, diiiscoAssets.usdc, { cache: true });
+      if (!usdc.optedIn) {
+        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - not opted in to USDC.`);
         return;
       }
     }
@@ -438,6 +540,18 @@ export class MessageProcessor {
     if (rawQuote === null) {
       logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - no quote creation function returned a quote.`);
       return;
+    }
+
+    // Funds check, now the price is known: the requester must hold at least the
+    // cost of the input it is sending (and never less than the 1 µUSDC minimum
+    // transfer), or whatever it is promised could not be paid.
+    if (usdc) {
+      const inputCost = (rawQuote.inputTokens * rawQuote.pricePerInputToken1M) / 1_000_000;
+      const needed = BigInt(Math.ceil(Math.max(inputCost, MIN_CHARGE) * 1_000_000));
+      if (usdc.balance < needed) {
+        logger.warn(`❌ Quote request from ${msg.fromWalletAddr} cannot be fulfilled - USDC balance ${usdc.balance} is below the ${needed} µUSDC its input costs.`);
+        return;
+      }
     }
 
     // Remember what was promised: the accept is checked against this, not
@@ -478,10 +592,9 @@ export class MessageProcessor {
       }
     };
 
-    response.signature = await this.algo.signObject(response);
 
     // Send via router (will use GossipSub for discovery messages)
-    await this.messageRouter.sendMessage(response);
+    await this.deliver(response);
     logger.info(`📤 Sent quote-response to ${sourcePeerId}`);
   }
 
@@ -599,9 +712,8 @@ export class MessageProcessor {
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: { ...msg.payload, paymentRequirements },
     };
-    response.signature = await this.algo.signObject(response);
 
-    await this.messageRouter.sendMessage(response, sourcePeerId);
+    await this.deliver(response, sourcePeerId);
     logger.info(`📤 Sent contract-created (payment challenge) to ${sourcePeerId}`);
   }
 
@@ -676,9 +788,8 @@ export class MessageProcessor {
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: { ...msg.payload, paymentPayload },
     };
-    response.signature = await this.algo.signObject(response);
 
-    await this.messageRouter.sendMessage(response, sourcePeerId);
+    await this.deliver(response, sourcePeerId);
     logger.info(`📤 Sent contract-signed (proof-of-payment) to ${sourcePeerId}`);
   }
 
@@ -785,8 +896,7 @@ export class MessageProcessor {
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: { ...msg.payload, completion },
     };
-    response.signature = await this.algo.signObject(response);
-    await this.messageRouter.sendMessage(response, sourcePeerId);
+    await this.deliver(response, sourcePeerId);
     logger.info(`📤 Sent inference-response to ${sourcePeerId}`);
   }
 
@@ -831,8 +941,7 @@ export class MessageProcessor {
       payload: { model: msg.payload?.model, reason },
     };
     try {
-      response.signature = await this.algo.signObject(response);
-      await this.messageRouter.sendMessage(response, sourcePeerId);
+      await this.deliver(response, sourcePeerId);
       logger.info(`📤 Sent inference-failed (${reason}) to ${sourcePeerId}`);
     } catch (err) {
       // Best-effort: the requester's deadline is the backstop.
@@ -868,22 +977,64 @@ export class MessageProcessor {
     });
   }
 
+  /** Delays between settlement attempts within one run; a payment still unsettled after them is retried on the next start. */
+  private settleDelaysMs = [1000, 2000, 4000, 8000];
+  private settling = new Set<string>();
+
+  /**
+   * Record a payment that has unlocked an answer, then settle it off the
+   * critical path. The record is written first and removed only on success, so
+   * a failure, or a restart mid-settlement, leaves it to be retried.
+   */
   private settleInBackground(settlement: SettlementProvider, quoteId: string, expected: PaymentRequest, evidence: any): void {
-    const DELAYS_MS = [1000, 2000, 4000, 8000];
+    this.settlements.add({ quoteId, method: settlement.method, expected, evidence, createdAt: Date.now(), attempts: 0 });
+    void this.runSettlement(quoteId);
+  }
 
-    const attempt = (i: number): void => {
-      settlement.settle({ quoteId, expected, evidence }).then((result) => {
-        logger.info(`✅ Quote ${quoteId} settled (attempt ${i + 1})${result.txid ? ` — txid ${result.txid}` : ''}`);
-      }).catch((err: Error) => {
-        if (i < DELAYS_MS.length - 1) {
-          logger.warn(`⚠️ Settlement attempt ${i + 1} failed for ${quoteId}, retrying in ${DELAYS_MS[i]}ms: ${err.message}`);
-          setTimeout(() => attempt(i + 1), DELAYS_MS[i]);
-        } else {
-          logger.error(`💀 Settlement permanently failed for quote ${quoteId}: ${err.message}`, { quoteId });
+  /** Pick up payments left unsettled by a previous run. Call once after start. */
+  resumeSettlements(): void {
+    const pending = this.settlements.list();
+    if (pending.length === 0) return;
+    logger.info(`♻️ Resuming ${pending.length} unsettled payment(s) from a previous run.`);
+    for (const entry of pending) void this.runSettlement(entry.quoteId);
+  }
+
+  /** Number of payments accepted but not yet settled. */
+  pendingSettlements(): number {
+    return this.settlements.size;
+  }
+
+  /** Never rejects: a failure is logged, and the entry stays queued for the next start. */
+  private async runSettlement(quoteId: string): Promise<void> {
+    if (this.settling.has(quoteId)) return;
+    this.settling.add(quoteId);
+    try {
+      for (let i = 0; i < this.settleDelaysMs.length; i++) {
+        const entry = this.settlements.get(quoteId);
+        if (!entry) return; // settled elsewhere, or past the point it could be submitted
+        try {
+          const provider = this.settlement.get(entry.method as SettlementMethod);
+          const result = await provider.settle({ quoteId, expected: entry.expected as PaymentRequest, evidence: entry.evidence as PaymentEvidence });
+          this.settlements.remove(quoteId);
+          logger.info(`✅ Quote ${quoteId} settled (attempt ${i + 1})${result.txid ? ` — txid ${result.txid}` : ''}`);
+          return;
+        } catch (err) {
+          this.settlements.recordAttempt(quoteId);
+          if (i < this.settleDelaysMs.length - 1) {
+            logger.warn(`⚠️ Settlement attempt ${i + 1} failed for ${quoteId}, retrying in ${this.settleDelaysMs[i]}ms: ${(err as Error).message}`);
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, this.settleDelaysMs[i]);
+              (timer as any).unref?.();
+            });
+          } else {
+            logger.error(`💀 Settlement of quote ${quoteId} failed ${i + 1} times: ${(err as Error).message}. It stays queued and is retried on the next start while its payment is still valid.`, { quoteId });
+          }
         }
-      });
-    };
-
-    attempt(0);
+      }
+    } catch (err) {
+      logger.error(`❌ Unexpected error settling ${quoteId}: ${(err as Error).message}`);
+    } finally {
+      this.settling.delete(quoteId);
+    }
   }
 }

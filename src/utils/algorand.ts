@@ -7,21 +7,21 @@ import { PubSubMessage } from '../types/messages';
 import { canonicalize } from 'json-canonicalize';
 import { getLocalMultiaddrs } from '../libp2p/localAddresses';
 import { diiiscoAssets } from './diiiscoAssets';
-
-function makeSigner(acct: algosdk.Account): algosdk.TransactionSigner {
-  return algosdk.makeBasicAccountTransactionSigner(acct);
-}
+import { ExpiringMap } from './expiringMap';
 
 const SUGGESTED_PARAMS_TTL_MS = 4500;
+const ASSET_LOOKUP_TTL_MS = 60_000;
+const MAX_CONCURRENT_LOOKUPS = 8;
+const MAX_CACHED_LOOKUPS = 2000;
 
 export default class algorand {
-  mnemonic: string;
   account: algosdk.Account;
   nfdAddr: string | null;
   nfdVerified: boolean = false;
   private env: Environment;
   private algod: algosdk.Algodv2;
-  private signer: algosdk.TransactionSigner;
+  private assetLookups = new ExpiringMap<string, { optedIn: boolean; balance: bigint }>(30_000, MAX_CACHED_LOOKUPS);
+  private assetLookupsInFlight = new Map<string, Promise<{ optedIn: boolean; balance: bigint }>>();
   private suggestedParamsCache: { params: algosdk.SuggestedParams; fetchedAt: number } | null = null;
 
   constructor() {
@@ -30,18 +30,15 @@ export default class algorand {
     if (this.env.local?.enabled) {
       // Generate an ephemeral keypair used only for P2P message signing — no blockchain interaction.
       this.account = algosdk.generateAccount();
-      this.mnemonic = algosdk.secretKeyToMnemonic(this.account.sk);
       this.nfdAddr = null;
-      this.signer = makeSigner(this.account);
       // algod client is not used in local mode; assign a placeholder to satisfy TS.
       this.algod = null as unknown as algosdk.Algodv2;
       return;
     }
 
-    this.mnemonic = this.env.algorand!.mnemonic;
     this.nfdAddr = this.env.algorand!.nfd || null;
-    this.account = algosdk.mnemonicToSecretKey(this.mnemonic);
-    this.signer = makeSigner(this.account);
+    // The secret key is derived once; the mnemonic is not kept on this object.
+    this.account = algosdk.mnemonicToSecretKey(this.env.algorand!.mnemonic);
 
     this.algod = new algosdk.Algodv2(this.env.algorand!.client.token, this.env.algorand!.client.address, this.env.algorand!.client.port);
   }
@@ -112,7 +109,7 @@ export default class algorand {
 
     // Sign the Payload
     const bytes = new TextEncoder().encode(canonicalize(obj));
-    const signedBytes = algosdk.signBytes(bytes, algosdk.mnemonicToSecretKey(this.mnemonic).sk);
+    const signedBytes = algosdk.signBytes(bytes, this.account.sk);
     const signatureB64 = Buffer.from(signedBytes).toString('base64');
     return signatureB64;
   }
@@ -135,7 +132,36 @@ export default class algorand {
     return verified;
   }
 
-  async checkIfOptedInToAsset(address: string, assetId: number): Promise<{ optedIn: boolean; balance: BigInt }> {
+  /**
+   * Opt-in and balance of `address` for an asset. `cache: true` is for lookups a
+   * stranger can provoke (a quote request names any wallet it likes): the answer
+   * is reused for a minute, concurrent identical lookups share one algod call,
+   * and no more than `MAX_CONCURRENT_LOOKUPS` run at once, so a flood cannot
+   * turn this node into an algod-rate-limit exhauster. Errors are never cached.
+   */
+  async checkIfOptedInToAsset(address: string, assetId: number, options: { cache?: boolean } = {}): Promise<{ optedIn: boolean; balance: bigint }> {
+    if (!options.cache) return this.lookupAsset(address, assetId);
+
+    const key = `${address}:${assetId}`;
+    const hit = this.assetLookups.get(key);
+    if (hit) return hit;
+    const pending = this.assetLookupsInFlight.get(key);
+    if (pending) return pending;
+    if (this.assetLookupsInFlight.size >= MAX_CONCURRENT_LOOKUPS) {
+      throw new Error('too many concurrent account lookups');
+    }
+
+    const lookup = this.lookupAsset(address, assetId)
+      .then((result) => {
+        this.assetLookups.set(key, result, ASSET_LOOKUP_TTL_MS);
+        return result;
+      })
+      .finally(() => this.assetLookupsInFlight.delete(key));
+    this.assetLookupsInFlight.set(key, lookup);
+    return lookup;
+  }
+
+  private async lookupAsset(address: string, assetId: number): Promise<{ optedIn: boolean; balance: bigint }> {
     try {
       // Fetch full account info
       const accountInfo = await this.algod.accountInformation(address).do();
@@ -145,7 +171,7 @@ export default class algorand {
 
       if (!asset) {
         // Not opted-in
-        return { optedIn: false, balance: BigInt(0) };
+        return { optedIn: false, balance: 0n };
       }
 
       // Opted in; amount is in base units (respect asset decimals)
@@ -153,7 +179,7 @@ export default class algorand {
     } catch (err: any) { // TODO: Refine error type
       if (err.response?.body?.message?.includes("account does not exist")) {
         // The address has never been funded
-        return { optedIn: false, balance: BigInt(0) };
+        return { optedIn: false, balance: 0n };
       }
       console.error("Error checking if opted in:", err);
       throw err;
@@ -161,7 +187,7 @@ export default class algorand {
   }
 
   async optInToAsset(address: string, assetId: number) {
-    const sk = algosdk.mnemonicToSecretKey(this.mnemonic).sk;
+    const sk = this.account.sk;
 
     const sp = await this.getSuggestedParams();
     const txn = algosdk.makeAssetTransferTxnWithSuggestedParamsFromObject({
@@ -236,7 +262,7 @@ export default class algorand {
 
 export async function nfdToNodeAddress(addr: string): Promise<string | null> {
   const nfd = new NfdClient();
-  const nfdData = await nfd.resolve(addr, { view: 'full'}).catch((err) => null);
+  const nfdData = await nfd.resolve(addr, { view: 'full'}).catch(() => null);
   const diiiscohost: string | null = nfdData?.properties?.userDefined?.diiiscohost ?? null;
   const libp2pAddressRegex = /^\/(dns4|ip4)\/[a-zA-Z0-9.-]+\/tcp\/\d+\/p2p\/[a-zA-Z0-9]+$/;
   if (diiiscohost && libp2pAddressRegex.test(diiiscohost)) {
@@ -249,7 +275,7 @@ export async function nfdToNodeAddress(addr: string): Promise<string | null> {
 
 export async function nfdToWalletAddress(nfdAddr: string): Promise<string | null> {
   const nfd = new NfdClient();
-  const nfdData = await nfd.resolve(nfdAddr, { view: 'full'}).catch((err) => null);
+  const nfdData = await nfd.resolve(nfdAddr, { view: 'full'}).catch(() => null);
   const walletAddr: string | null = nfdData?.owner ?? null;
   if (walletAddr && algosdk.isValidAddress(walletAddr)) {
     return walletAddr;

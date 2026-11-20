@@ -25,6 +25,16 @@ const isStreamClosedError = (err: any): boolean =>
   ['StreamStateError', 'StreamResetError', 'StreamAbortedError'].includes(err?.name) ||
   /stream that is (closed|closing)|stream (was )?reset/i.test(String(err?.message ?? ''));
 
+/** The most bytes one direct message may carry (`directMessaging.maxMessageSize`). */
+export const maxDirectMessageBytes = (): number => directMessagingConfig.maxMessageSize;
+
+/**
+ * Bytes left over for what wraps a request on the wire (the signature, the quote
+ * it was accepted against, the multiaddrs). A request whose own body is within
+ * this of the limit may not fit once wrapped.
+ */
+export const DIRECT_MESSAGE_ENVELOPE_BYTES = 16 * 1024;
+
 export class DirectMessagingHandler {
   private node: any;
   private protocol: string;
@@ -100,13 +110,16 @@ export class DirectMessagingHandler {
         logger.debug(`📨 Incoming direct message from ${peerId}`);
 
         // Use lpStream to read length-prefixed message
-        const lp = lpStream(stream);
+        // The cap goes on the reader: it is checked against the announced length
+        // *before* any of the message is buffered, so a peer cannot make us hold
+        // an arbitrarily large message just by claiming one.
+        const lp = lpStream(stream, { maxDataLength: directMessagingConfig.maxMessageSize });
         const data = await lp.read();
 
         // Convert Uint8ArrayList to Uint8Array if needed
         const messageData = data.subarray();
 
-        // Check message size
+        // Defence in depth: the reader already enforces this.
         if (messageData.length > directMessagingConfig.maxMessageSize) {
           throw new Error(`Message exceeds max size: ${directMessagingConfig.maxMessageSize} bytes`);
         }
@@ -202,6 +215,10 @@ export class DirectMessagingHandler {
 
       // Encode message
       const encoded = encode(message);
+      if (encoded.length > directMessagingConfig.maxMessageSize) {
+        // The receiver would refuse it. Say so here, where the sender can act on it.
+        throw new Error(`Message is ${encoded.length} bytes; the direct message limit is ${directMessagingConfig.maxMessageSize}`);
+      }
 
       // Use lpStream to write length-prefixed message
       const lp = lpStream(stream!);

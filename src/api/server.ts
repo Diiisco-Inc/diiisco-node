@@ -2,14 +2,14 @@ import express from 'express';
 import cors from "cors";
 import { requireBearer } from "../utils/endpoint";
 import environment from "../environment/runtime";
-import { sha256 } from "js-sha256";
+import { collect, abortOnClose } from './collect';
+import { newRequestId } from '../utils/requestId';
+import { guarded } from '../utils/processGuards';
 import { EventEmitter } from 'events';
-import { encode } from "msgpackr";
-import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsResponse, ListModelsRequest, ListNetworkRequest, NetworkNode } from "../types/messages";
+import { QuoteRequest, QuoteAccepted, InferenceResponse, QuoteResponse, ListModelsRequest, ListNetworkRequest, NetworkNode } from "../types/messages";
 import { logger } from '../utils/logger';
-import { Libp2p } from '@libp2p/interface';
+import { Libp2p, Connection } from '@libp2p/interface';
 import { MeshMessageQueue } from '../messaging/meshMessageQueue';
-import { Connection } from 'libp2p-tcp';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
@@ -30,17 +30,20 @@ import { getMeshTopic } from '../utils/topic';
 import { registerStatusPages } from './statusPages';
 import { nodeStats } from '../utils/nodeStats';
 import { RequestLedger } from '../messaging/requestLedger';
+import { ModelListCollector } from '../messaging/modelListCollector';
+import { DIRECT_MESSAGE_ENVELOPE_BYTES, maxDirectMessageBytes } from '../messaging/directMessaging';
 import { isLoopbackHost, hostnameOfHostHeader, hostnameOfUrl } from '../utils/hosts';
 import { environmentWarnings } from '../environment/validate';
 import {
   NoProviderError,
   InferenceTimeoutError,
+  RequestTooLargeError,
   ProviderFailedError,
   statusForInferenceError,
   messageForInferenceError,
 } from './inferenceErrors';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger()) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector(), pendingSettlements: () => number = () => 0) => {
   const app = express();
   const port = environment.api.port || 8080;
   // Loopback unless the operator opts in: a request to this API spends the wallet.
@@ -92,13 +95,13 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     registerStatusPages({ app, node, nodeEvents, algo, messageRouter, models });
   }
 
-  app.get('/health', (req, res) => {
+  app.get('/health', (_req, res) => {
     res.status(200).send('API is healthy');
   });
 
-  app.get('/health/algorand', async (req, res) => {
+  app.get('/health/algorand', async (_req, res) => {
     try {
-      const diagnostics = await algo.getDiagnostics();
+      const diagnostics = { ...(await algo.getDiagnostics()), unsettledPayments: pendingSettlements() };
       // Healthy on the public network when algod is reachable and the wallet is
       // opted into USDC (required to settle x402 payments).
       const ok = diagnostics.localMode
@@ -109,7 +112,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     }
   });
 
-  app.get('/peers', async (req, res) => {
+  app.get('/peers', async (_req, res) => {
     try {
       const peers = node.getConnections().map((conn: Connection) => {
         return {
@@ -126,40 +129,31 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
   app.get('/network', async (req, res) => {
     try {
-      const nodes: NetworkNode[] = [];
-      const waitTime = environment.api?.networkWaitTime || 5000;
-
-      const onNodeReceived = (node: NetworkNode) => {
-        nodes.push(node);
-      };
-      nodeEvents.on('network-node-received', onNodeReceived);
-
       const networkListMessage: ListNetworkRequest = {
         role: "list-network",
         timestamp: Date.now(),
-        id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
+        id: newRequestId(),
         fromWalletAddr: algo.account.addr.toString(),
       };
-      networkListMessage.signature = await algo.signObject(networkListMessage);
 
-      meshQueue.enqueue(networkListMessage).then(() => {
-        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${networkListMessage.id}`);
-
-        setTimeout(() => {
-          nodeEvents.off('network-node-received', onNodeReceived);
-          res.status(200).send({
-            "object": "list",
-            "data": nodes,
-          });
-        }, waitTime);
-      }).catch((err: Error) => {
-        nodeEvents.off('network-node-received', onNodeReceived);
-        logger.error(`❌ Error dispatching network list message: ${err}`);
-        return res.status(500).send({ error: "No peers available to handle the request." });
+      const { items, aborted } = await collect<NetworkNode>({
+        windowMs: environment.api?.networkWaitTime || 5000,
+        signal: abortOnClose(req, res),
+        subscribe: (push) => {
+          nodeEvents.on('network-node-received', push);
+          return () => nodeEvents.off('network-node-received', push);
+        },
+        send: async () => {
+          networkListMessage.signature = await algo.signObject(networkListMessage);
+          await meshQueue.enqueue(networkListMessage);
+          logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${networkListMessage.id}`);
+        },
       });
+      if (aborted) return;
+      res.status(200).send({ "object": "list", "data": items });
     } catch (error) {
       logger.error("Error fetching network:", error);
-      res.status(500).send({ error: "Error fetching network" });
+      res.status(500).send({ error: "No peers available to handle the request." });
     }
   });
 
@@ -173,56 +167,38 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
     }
 
     try {
-      // `model-list-compiled` only ever fires once some peer replies, so an
-      // unanswered broadcast used to hang this route too. Fall back to what
-      // this node itself serves once the collection window has passed.
-      const listWaitTime = environment.api?.networkWaitTime || 10000;
-      let answered = false;
-      let fallbackTimer: ReturnType<typeof setTimeout>;
-
-      const onCompiled = (response: ListModelsResponse) => {
-        if (answered) return;
-        answered = true;
-        clearTimeout(fallbackTimer);
-        res.status(200).send({
-            "object": "list",
-            "data": filterModelsByKind(response as unknown as any[], kindFilter),
-        });
-      };
-      nodeEvents.once('model-list-compiled', onCompiled);
-
-      fallbackTimer = setTimeout(() => {
-        if (answered) return;
-        answered = true;
-        nodeEvents.off('model-list-compiled', onCompiled);
-        res.status(200).send({
-          "object": "list",
-          "data": filterModelsByKind(models?.models() ?? [], kindFilter),
-        });
-      }, listWaitTime);
-
+      // Collect the answers to our own broadcast for one window, then reply.
+      // Only responses to *this* request are kept (see `ModelListCollector`);
+      // if nobody answers, fall back to what this node itself serves.
       const modelListMessage: ListModelsRequest = {
-       role: "list-models",
+        role: "list-models",
         timestamp: Date.now(),
-        id: sha256(Date.now().toString() + JSON.stringify(req.body)).slice(0, 56),
+        id: newRequestId(),
         fromWalletAddr: algo.account.addr.toString(),
       };
+      const listId = modelListMessage.id;
+      const windowMs = environment.quoteEngine?.waitTime || 5000;
 
-      modelListMessage.signature = await algo.signObject(modelListMessage);
-
-      meshQueue.enqueue(modelListMessage).then(() => {
-        logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${modelListMessage.id}`);
-      }).catch((err: Error) => {
-        logger.error(`❌ Error dispatching model list message: ${err}`);
-        if (answered) return;
-        answered = true;
-        clearTimeout(fallbackTimer);
-        nodeEvents.off('model-list-compiled', onCompiled);
-        return res.status(500).send({ error: "No peers available to handle the request." });
+      const { items, aborted } = await collect<any>({
+        windowMs,
+        signal: abortOnClose(req, res),
+        subscribe: () => {
+          modelLists.open(listId, windowMs + 5000);
+          return () => { modelLists.close(listId); };
+        },
+        read: () => modelLists.close(listId),
+        send: async () => {
+          modelListMessage.signature = await algo.signObject(modelListMessage);
+          await meshQueue.enqueue(modelListMessage);
+          logger.info(`📤 Published message to '${getMeshTopic()}'. ID: ${listId}`);
+        },
       });
+      if (aborted) return;
+      const data = items.length > 0 ? items : (models?.models() ?? []);
+      res.status(200).send({ "object": "list", "data": filterModelsByKind(data as any[], kindFilter) });
     } catch (error) {
       logger.error("Error fetching models:", error);
-      res.status(500).send({ error: "Error fetching models" });
+      res.status(500).send({ error: "No peers available to handle the request." });
     }
   })
 
@@ -251,7 +227,6 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
    */
   const runAuction = async (
     body: any,
-    attempt: number,
     excluded: Set<string>
   ): Promise<any> => {
     // A System One request is auctioned like a chat one, but only decision
@@ -262,9 +237,9 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       from: node.peerId.toString(),
       fromWalletAddr: algo.account.addr.toString(),
       timestamp: Date.now(),
-      // The attempt number keeps a retry's id distinct from the attempt it
-      // replaces, so their events and listeners can't collide.
-      id: sha256(`${Date.now()}:${attempt}:${JSON.stringify(body)}`).slice(0, 56),
+      // A fresh random id per attempt, so a retry's events and listeners can't
+      // collide with the attempt it replaces.
+      id: newRequestId(),
       // Broadcast to every provider — so it carries only what's needed to quote:
       // the model, our own input-token count, budget, and output cap. The prompt
       // content stays local and goes only to the winning provider (quote-accepted),
@@ -301,10 +276,14 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       // the message processor can hold `contract-created` to it too.
       let selectedPeerId: string | undefined;
 
+      // Nobody awaits an event listener, so whatever `onSelected` throws would be
+      // an unhandled rejection. Guarded, the overall deadline reports it instead.
+      const onSelectedGuarded = guarded('Accepting the selected quote', (quote: { msg: QuoteResponse, from: string }) => onSelected(quote));
+
       const cleanup = () => {
         nodeEvents.off(`inference-response-${id}`, onResponse);
         nodeEvents.off(`inference-failed-${id}`, onFailed);
-        nodeEvents.off(`quote-selected-${id}`, onSelected);
+        nodeEvents.off(`quote-selected-${id}`, onSelectedGuarded);
         requests.release(id);
         clearTimeout(auctionTimer);
         clearTimeout(overallTimer);
@@ -393,13 +372,17 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
           await messageRouter.sendMessage(acceptance, quote.from.toString());
           logger.info(`📤 Sent quote-accepted to ${quote.from.toString()}`);
         } catch (err) {
-          settle(() => reject(err as Error));
+          // The prompt could not be delivered to this provider directly (and is
+          // never broadcast instead), so treat it as having bowed out: the
+          // request is re-auctioned to another provider.
+          const reason = (err as Error)?.message ?? 'could not deliver the request';
+          settle(() => reject(new ProviderFailedError(body.model, selectedPeerId!, reason)));
         }
       }
 
       nodeEvents.on(`inference-response-${id}`, onResponse);
       nodeEvents.on(`inference-failed-${id}`, onFailed);
-      nodeEvents.once(`quote-selected-${id}`, onSelected);
+      nodeEvents.once(`quote-selected-${id}`, onSelectedGuarded);
 
       const overallMs = inferenceTimeoutMs();
       overallTimer = setTimeout(
@@ -446,6 +429,13 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       return runLocally(model);
     }
 
+    // The prompt travels to the provider in one direct message, which has a size
+    // limit. Refuse now, with a 413, rather than let a provider drop it unread.
+    const wireBytes = Buffer.byteLength(JSON.stringify(body)) + DIRECT_MESSAGE_ENVELOPE_BYTES;
+    if (wireBytes > maxDirectMessageBytes()) {
+      throw new RequestTooLargeError(wireBytes, maxDirectMessageBytes());
+    }
+
     // A provider that reports `inference-failed` is excluded and the request is
     // re-auctioned: the usual cause is a backend stopped between quote and
     // inference, and the rest of the network can still serve it.
@@ -454,7 +444,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
     for (let attempt = 1; ; attempt++) {
       try {
-        return await runAuction(body, attempt, excluded);
+        return await runAuction(body, excluded);
       } catch (err) {
         if (!(err instanceof ProviderFailedError) || attempt > maxRetries) throw err;
         excluded.add(err.providerPeerId);
@@ -485,6 +475,18 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
       logger.warn("Missing model or messages in request body.");
       return res.status(400).send({ error: "Missing model or messages in request body." });
     };
+
+    // What goes into the broadcast quote-request must be the shape every peer
+    // expects (see `payloadProblem`): a client that sends `"max_tokens": "100"`
+    // or a model that is not a string would otherwise be dropped by the whole
+    // network and surface as a baffling 503.
+    if (typeof req.body.model !== 'string') {
+      return res.status(400).send({ error: "`model` must be a string." });
+    }
+    if (req.body.max_tokens === null) delete req.body.max_tokens;
+    if (req.body.max_tokens !== undefined && !(typeof req.body.max_tokens === 'number' && Number.isFinite(req.body.max_tokens) && req.body.max_tokens > 0)) {
+      return res.status(400).send({ error: "`max_tokens` must be a positive number." });
+    }
 
     if (req.body.messages) {
       req.body.inputs = req.body.messages;

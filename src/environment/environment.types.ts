@@ -1,4 +1,3 @@
-import PeerId from 'peer-id';
 import { QuoteCreationFunction, QuoteSelectionFunction } from '../types/quotes';
 import type { ModelKind } from '../types/models';
 
@@ -125,11 +124,17 @@ export interface PeerIdStorageConfig {
   path: string;
 }
 
-export interface PeerIdConfig extends PeerId.JSONPeerId {}
+/** The JSON form of a peer identity: its id and, optionally, its base64 keys. */
+export interface PeerIdConfig {
+  id: string;
+  privKey?: string;
+  pubKey?: string;
+}
 
 export interface DirectMessagingConfig {
   enabled: boolean;
   timeout: number;
+  /** Fall back to GossipSub when a direct send fails. Applies only to non-private roles (profiles); prompts, payments and completions never fall back. */
   fallbackToGossipsub: boolean;
   protocol: string;
   maxMessageSize: number;
@@ -201,6 +206,22 @@ export interface Environment {
      * and 100 MB. Only relevant when `node.url` is set.
      */
     relay?: { connectionMinutes?: number; connectionMegabytes?: number };
+    /**
+     * Per-peer limit on messages this node will process. Every message costs
+     * a signature check and some cost an on-chain or HTTP lookup, so one peer
+     * cannot be allowed to send an unbounded number. `requestsPerMinute` bounds
+     * broadcast requests (quote-request, list-models, list-network, node-profile)
+     * with bursts up to `burst`; all other messages (answers and the payment
+     * exchange) get four times that. Defaults: 60 a minute, burst 30.
+     */
+    rateLimit?: { requestsPerMinute?: number; burst?: number };
+    /**
+     * How far a message's timestamp may be from this node's clock before it is
+     * dropped, in milliseconds (default 300000: five minutes). Bounds how long a
+     * captured signed message could be replayed; a node whose clock is further
+     * out than this will be ignored by its peers.
+     */
+    clockSkewToleranceMs?: number;
   };
   directMessaging?: DirectMessagingConfig;  // Optional: uses defaults if not provided
   power?: PowerConfig;                      // Optional: `preventSleep` defaults to true

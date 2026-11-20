@@ -69,7 +69,7 @@ function harness(ledger = new RequestLedger()) {
     isValidAddress: () => true,
     verifySignature: async () => true,
     nfdVerified: false,
-    checkIfOptedInToAsset: async () => ({ optedIn: true, balance: 1n }),
+    checkIfOptedInToAsset: async () => ({ optedIn: true, balance: 10_000_000_000n }),
   };
   const backend = { getModels: async () => [], getResponse: async () => COMPLETION };
   const models: any = {

@@ -8,7 +8,6 @@ import {
 } from "openai/resources/chat/completions";
 import { logger } from './logger';
 import { Environment } from "../environment/environment.types";
-import { Model } from "openai/resources/index";
 import EventEmitter from "events";
 import { BackendRejectedError, type SystemOneRequest } from "./systemOne";
 
@@ -104,7 +103,6 @@ export class OpenAIInferenceModel {
   private baseURL: string;
   private env: Environment;
   nodeEventEmitter: EventEmitter;
-  availableModels: Model[] = [];
 
   constructor(baseURL: string, nodeEvents: EventEmitter) {
     this.env = environment;
@@ -188,38 +186,7 @@ export class OpenAIInferenceModel {
     return resp.data;
   }
 
-  async countEmbeddings(model: string, inputs: any[], tools?: any[]) {
+  async countEmbeddings(_model: string, inputs: any[], tools?: any[]) {
     return countInputTokens(inputs, tools);
-  }
-
-  async addModel(models: Model[]) {
-    // A peer's `list-models-response`: untrusted. Keep only entries that look
-    // like models, so the compile step below cannot be made to throw (it runs
-    // in a timer, where a throw would be an unhandled rejection and exit the node).
-    const valid = Array.isArray(models)
-      ? models.filter((m) => typeof m === 'object' && m !== null && typeof (m as Model).id === 'string')
-      : [];
-    if (!Array.isArray(models)) {
-      logger.warn('❌ Dropped a list-models-response whose models were not a list.');
-    }
-
-    if (this.availableModels.length === 0) {
-      this.availableModels = valid;
-      setTimeout(() => {
-        try {
-          const uniqueModels = this.availableModels.filter((model, index, self) =>
-            index === self.findIndex((m) => m.id === model.id)
-          );
-          this.nodeEventEmitter.emit(`model-list-compiled`, uniqueModels);
-          logger.info(`✅ Model list compiled and event emitted: ${JSON.stringify(uniqueModels)}`);
-        } catch (err) {
-          logger.error(`❌ Could not compile the network model list: ${(err as Error).message}`);
-        } finally {
-          this.availableModels = [];
-        }
-      }, environment.quoteEngine.waitTime || 5000);
-    } else {
-      this.availableModels = [...this.availableModels, ...valid];
-    }
   }
 }
