@@ -11,7 +11,7 @@ import { readFileSync } from 'fs';
  */
 
 /** Kept in step with package.json's `version` field. */
-export const FALLBACK_VERSION = '1.0.13';
+export const FALLBACK_VERSION = '1.0.14';
 
 let cachedPackageVersion: string | null | undefined;
 
