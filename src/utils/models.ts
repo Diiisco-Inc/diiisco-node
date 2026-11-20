@@ -98,11 +98,71 @@ export function countInputTokens(inputs: any[], tools?: any[]): number {
   return total;
 }
 
+/** When the parts of one streamed completion arrived (`performance.now()` clock). */
+export interface StreamTiming {
+  tSent: number;
+  /** First chunk carrying output (text, reasoning or a tool call); null if none did. */
+  tFirst: number | null;
+  tLast: number | null;
+  outputChunks: number;
+}
+
+/** One live inference, reduced to the numbers performance tracking needs. Never any content. */
+export interface InferenceSample {
+  ttftMs: number;
+  /** From first to last output chunk. */
+  decodeMs: number;
+  promptTokens?: number;
+  completionTokens: number;
+}
+
+/** Whether the model was already loaded when a request was sent. */
+export type Warmth = 'cold' | 'hot' | 'unknown';
+
+/**
+ * Watches live chat inference for performance tracking. `begin` runs just
+ * before the request and must be quick; it is never allowed to fail a request.
+ */
+export interface InferenceObserver {
+  begin(model: string): Promise<Warmth>;
+  record(model: string, warmth: Warmth, sample: InferenceSample): void;
+}
+
+/** A 4xx from the backend: what a runtime that cannot stream (or take `stream_options`) answers. */
+function isClientRejection(error: unknown): boolean {
+  const status = (error as { status?: unknown })?.status;
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 401 && status !== 403 && status !== 429;
+}
+
+/** Reduce a timed completion to a sample; `null` when it produced no output to time. */
+export function toSample(
+  timing: StreamTiming,
+  completion: OpenAI.Chat.Completions.ChatCompletion,
+  messages: ChatCompletionMessageParam[],
+  params?: GenerationParams,
+): InferenceSample | null {
+  if (timing.tFirst === null || timing.tLast === null) return null;
+  const message: any = completion.choices?.[0]?.message ?? {};
+  const completionTokens = completion.usage?.completion_tokens ?? countInputTokens([
+    { content: `${message.content ?? ''}${message.reasoning_content ?? message.reasoning ?? ''}`, tool_calls: message.tool_calls },
+  ]);
+  return {
+    ttftMs: timing.tFirst - timing.tSent,
+    decodeMs: timing.tLast - timing.tFirst,
+    promptTokens: completion.usage?.prompt_tokens ?? countInputTokens(messages as any[], params?.tools),
+    completionTokens,
+  };
+}
+
 export class OpenAIInferenceModel {
   openai: OpenAI;
   private baseURL: string;
   private env: Environment;
   nodeEventEmitter: EventEmitter;
+  /** Set by the application when performance tracking is on (plan 018). */
+  observer?: InferenceObserver;
+  /** Models this backend refused to stream; asked plainly from then on. */
+  private readonly noStream = new Set<string>();
 
   constructor(baseURL: string, nodeEvents: EventEmitter) {
     this.env = environment;
@@ -116,18 +176,155 @@ export class OpenAIInferenceModel {
     this.nodeEventEmitter = nodeEvents;
   }
 
+  /**
+   * Run a chat completion on the backend and resolve to one whole
+   * `ChatCompletion`, exactly as a non-streamed call would.
+   *
+   * The backend is asked to *stream* only so the node can time it (time to
+   * first token, decode rate; plan 018): the chunks are rebuilt here into the
+   * completion callers have always received, so billing (backend `usage`) and
+   * the API's own output are unchanged. A backend that will not stream is asked
+   * again without streaming, and once that works it is not asked to stream that
+   * model again.
+   */
   async getResponse(model: string, messages: ChatCompletionMessageParam[], params?: GenerationParams): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    const warmth = await this.observer?.begin(model).catch(() => 'unknown' as const);
     try {
-      const resp = await this.openai.chat.completions.create({
-        model: model,
-        messages: messages,
-        ...(params || {}),
-      });
-      return resp;
+      const { completion, timing } = await this.chatTimed(model, messages, params);
+      if (timing && this.observer) {
+        const sample = toSample(timing, completion, messages, params);
+        if (sample) this.observer.record(model, warmth ?? 'unknown', sample);
+      }
+      return completion;
     } catch (error) {
       logger.error("Error getting response from OpenAI model:", error);
       throw error;
     }
+  }
+
+  /**
+   * One chat completion plus its timings (`null` when the backend had to be
+   * asked without streaming). Used by `getResponse` and, directly, by the
+   * benchmarker, whose runs are not live traffic and so skip the observer.
+   */
+  async chatTimed(
+    model: string,
+    messages: ChatCompletionMessageParam[],
+    params?: GenerationParams,
+    signal?: AbortSignal,
+  ): Promise<{ completion: OpenAI.Chat.Completions.ChatCompletion; timing: StreamTiming | null }> {
+    const request = { model, messages, ...(params || {}) };
+    if (this.noStream.has(model)) {
+      return { completion: await this.openai.chat.completions.create(request, { signal }), timing: null };
+    }
+
+    let produced = false;
+    try {
+      return await this.streamed(request, signal, () => { produced = true; });
+    } catch (error) {
+      // Only a refusal before anything arrived can mean "I don't stream"; an
+      // error mid-stream is a real failure, as it would have been unstreamed.
+      if (produced || signal?.aborted || !isClientRejection(error)) throw error;
+      const completion = await this.openai.chat.completions.create(request, { signal });
+      this.noStream.add(model);
+      logger.info(`ℹ️ The model backend would not stream ${model}; using plain requests for it (no live performance figures).`);
+      return { completion, timing: null };
+    }
+  }
+
+  private async streamed(
+    request: { model: string; messages: ChatCompletionMessageParam[] } & GenerationParams,
+    signal: AbortSignal | undefined,
+    onChunk: () => void,
+  ): Promise<{ completion: OpenAI.Chat.Completions.ChatCompletion; timing: StreamTiming }> {
+    const tSent = performance.now();
+    const stream = await this.openai.chat.completions.create(
+      { ...request, stream: true, stream_options: { include_usage: true } },
+      { signal },
+    );
+
+    let id: string | undefined;
+    let created: number | undefined;
+    let modelName: string | undefined;
+    let systemFingerprint: string | undefined;
+    let content = '';
+    let reasoning = '';
+    let reasoningKey: 'reasoning_content' | 'reasoning' | null = null;
+    const toolCalls: { id: string; type: 'function'; function: { name: string; arguments: string } }[] = [];
+    let finishReason: OpenAI.Chat.Completions.ChatCompletion.Choice['finish_reason'] | null = null;
+    let usage: OpenAI.Completions.CompletionUsage | undefined;
+    let tFirst: number | null = null;
+    let tLast: number | null = null;
+    let outputChunks = 0;
+
+    for await (const chunk of stream) {
+      onChunk();
+      const now = performance.now();
+      id ??= chunk.id;
+      created ??= chunk.created;
+      modelName ??= chunk.model;
+      systemFingerprint ??= chunk.system_fingerprint ?? undefined;
+      if (chunk.usage) usage = chunk.usage;
+
+      const choice = chunk.choices?.[0];
+      if (!choice) continue;
+      const delta: any = choice.delta ?? {};
+      let output = false;
+
+      if (typeof delta.content === 'string' && delta.content.length > 0) {
+        content += delta.content;
+        output = true;
+      }
+      // Runtimes disagree on the field name; keep whichever this one uses.
+      for (const key of ['reasoning_content', 'reasoning'] as const) {
+        if (typeof delta[key] === 'string' && delta[key].length > 0) {
+          reasoning += delta[key];
+          reasoningKey ??= key;
+          output = true;
+        }
+      }
+      if (Array.isArray(delta.tool_calls)) {
+        for (const call of delta.tool_calls) {
+          const index = typeof call?.index === 'number' ? call.index : toolCalls.length;
+          const slot = (toolCalls[index] ??= { id: '', type: 'function', function: { name: '', arguments: '' } });
+          if (call.id) slot.id = call.id;
+          // The name arrives once; the arguments arrive in pieces.
+          if (call.function?.name && !slot.function.name) slot.function.name = call.function.name;
+          if (typeof call.function?.arguments === 'string') slot.function.arguments += call.function.arguments;
+          output = true;
+        }
+      }
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+
+      if (output) {
+        tFirst ??= now;
+        tLast = now;
+        outputChunks++;
+      }
+    }
+
+    // A dropped connection ends the iteration quietly rather than throwing, and
+    // every runtime sends a finish_reason on a completed answer: without one,
+    // this is a truncated answer, which must fail rather than be billed whole.
+    if (finishReason === null) {
+      throw new Error('the model backend stopped streaming before the answer was complete');
+    }
+
+    const calls = toolCalls.filter(Boolean);
+    const message: any = { role: 'assistant', content, refusal: null };
+    if (reasoningKey) message[reasoningKey] = reasoning;
+    if (calls.length > 0) message.tool_calls = calls;
+
+    const completion: OpenAI.Chat.Completions.ChatCompletion = {
+      id: id ?? `chatcmpl-${Date.now().toString(36)}`,
+      object: 'chat.completion',
+      created: created ?? Math.floor(Date.now() / 1000),
+      model: modelName ?? request.model,
+      choices: [{ index: 0, message, finish_reason: finishReason, logprobs: null }],
+      ...(systemFingerprint ? { system_fingerprint: systemFingerprint } : {}),
+      ...(usage ? { usage } : {}),
+    };
+    return { completion, timing: { tSent, tFirst, tLast, outputChunks } };
   }
 
   /**

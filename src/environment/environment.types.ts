@@ -52,6 +52,13 @@ export interface ModelsConfig {
    * `chat` are kept out of chat tools' model lists.
    */
   kinds?: Record<string, ModelKind>;
+  /**
+   * Performance measurement (plan 018). On by default: each served chat model
+   * is benchmarked once (time to first token cold and hot, tokens/s) and live
+   * inference keeps the figures current; they go out in quotes and on the
+   * status pages. `false` stops all of it.
+   */
+  benchmark?: { enabled?: boolean };
 }
 
 /**

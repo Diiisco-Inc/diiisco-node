@@ -145,6 +145,10 @@ export function validateEnvironment(env: Environment): string[] {
     }
   }
 
+  if (env.models?.benchmark?.enabled !== undefined && typeof env.models.benchmark.enabled !== 'boolean') {
+    errors.push(`\`models.benchmark.enabled\` must be true or false (got ${JSON.stringify(env.models.benchmark.enabled)}).`);
+  }
+
   if (env.node?.tags !== undefined) {
     const problem = tagsProblem(env.node.tags);
     if (problem) errors.push(problem);

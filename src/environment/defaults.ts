@@ -53,6 +53,7 @@ export function createDefaultEnvironment(): Environment {
       chargePer1MTokens: {
         default: 0.01,
       },
+      benchmark: { enabled: true },
     },
     api: {
       enabled: true,
