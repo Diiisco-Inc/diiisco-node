@@ -18,6 +18,7 @@ import { runLogs } from './cli/commands/logs';
 import { runRestart, runStart, runStatus, runStop } from './cli/commands/lifecycle';
 import { runServe } from './cli/commands/serve';
 import { runPeers } from './cli/commands/peers';
+import { runBenchmark } from './cli/commands/benchmark';
 import { runConfig } from './cli/commands/config';
 import { runSetup, SetupMode } from './cli/commands/setup';
 
@@ -95,6 +96,12 @@ async function main(argv: string[]): Promise<void> {
       const parsed = parseArgs(rest, { valueFlags: ['config'] });
       applyConfigOverride(parsed);
       return runPeers({ json: flagBoolean(parsed, 'json'), reconnect: flagBoolean(parsed, 'reconnect') });
+    }
+
+    case 'benchmark': {
+      const parsed = parseArgs(rest, { valueFlags: ['config'] });
+      applyConfigOverride(parsed);
+      return runBenchmark({ models: parsed.positionals, list: flagBoolean(parsed, 'list'), json: flagBoolean(parsed, 'json') });
     }
 
     case 'setup':

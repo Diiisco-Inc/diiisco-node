@@ -7,7 +7,9 @@
  * prompts, no completions, only numbers and model ids.
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import environment from '../environment/runtime';
+import { resolvePath } from './paths';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import type { ModelInfo } from '../types/models';
 import type { ColdStartMethod, ModelPerformance, PerformanceFigure } from '../types/performance';
@@ -404,4 +406,50 @@ export function describePerformance(p: ModelPerformance | undefined): string {
     `${p.tokensPerSecond ? p.tokensPerSecond.value : '—'} tok/s`,
   ];
   return `${parts.join(', ')}${p.coldStart ? ` (${p.coldStart} cold)` : ''}`;
+}
+
+/** Where the figures are kept: beside the peer identity. In memory only without one. */
+export function performancePath(): string | undefined {
+  const dir = environment.peerIdStorage?.path;
+  return dir ? join(resolvePath(dir), 'model-benchmarks.json') : undefined;
+}
+
+/** Most model names one `diiisco benchmark` may name; the control channel caps request size. */
+export const MAX_BENCHMARK_MODELS = 16;
+
+/**
+ * What `diiisco benchmark` does, shared by the daemon (over the control
+ * channel) and the CLI's own run when no daemon is up. With `list`, report the
+ * figures held; otherwise re-measure the named models, or every served chat
+ * model when none are named. A named model that is not a served chat model
+ * comes back as a failed result rather than an error, so the rest still run.
+ */
+export async function benchmarkRequest(options: {
+  /** Not needed to `list`. */
+  benchmarker?: Benchmarker;
+  store: PerformanceStore;
+  served: ModelInfo[];
+  requested: string[];
+  list: boolean;
+}): Promise<BenchmarkResult[]> {
+  const { benchmarker, store, served, requested, list } = options;
+  const chat = served.filter((m) => (m.kind ?? 'chat') === 'chat').map((m) => m.id);
+
+  if (list) {
+    const ids = requested.length > 0 ? requested : [...new Set([...chat, ...store.models()])].sort();
+    return ids.map((model) => ({ model, ok: true, performance: store.performanceFor(model) }));
+  }
+
+  if (!benchmarker) throw new Error('nothing here can run a benchmark');
+  const targets = requested.length > 0 ? requested : chat;
+  const results = new Map<string, BenchmarkResult>();
+  const runnable: string[] = [];
+  for (const model of targets) {
+    const entry = served.find((m) => m.id === model);
+    if (!entry) results.set(model, { model, ok: false, error: 'not served by this node right now' });
+    else if ((entry.kind ?? 'chat') !== 'chat') results.set(model, { model, ok: false, error: `it is a ${entry.kind} model; only chat models are measured` });
+    else runnable.push(model);
+  }
+  for (const result of await benchmarker.run(runnable)) results.set(result.model, result);
+  return targets.map((model) => results.get(model)!);
 }

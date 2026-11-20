@@ -1,4 +1,4 @@
-enum LogLevel {
+export enum LogLevel {
   DEBUG = 0,
   INFO = 1,
   WARN = 2,
@@ -34,6 +34,11 @@ class Logger {
           console.log(`[${timestamp}] [${levelStr}] ${message}`, ...args);
       }
     }
+  }
+
+  /** Raise or lower what is printed; the CLI quietens the node's own logging for commands that print their own output. */
+  setLevel(level: LogLevel) {
+    this.level = level;
   }
 
   debug(message: string, ...args: any[]) {

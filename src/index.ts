@@ -11,7 +11,7 @@ import environment from "./environment/runtime";
 import { Environment } from "./environment/environment.types";
 import { OpenAIInferenceModel } from "./utils/models";
 import { ModelAvailability, ModelAvailabilityMonitor } from "./utils/modelAvailability";
-import { Benchmarker, PerformanceStore, WarmthTracker, performanceObserver } from './utils/modelPerformance';
+import { Benchmarker, PerformanceStore, WarmthTracker, benchmarkRequest, performanceObserver, performancePath, type BenchmarkResult } from './utils/modelPerformance';
 import { OllamaRuntime } from './utils/ollamaRuntime';
 import { backendOrigin } from './utils/modelCapabilities';
 import quoteEngine from "./utils/quoteEngine";
@@ -37,12 +37,6 @@ function settlementQueuePath(): string | undefined {
   if (environment.local?.enabled || !environment.algorand) return undefined;
   const dir = environment.peerIdStorage?.path;
   return dir ? join(resolvePath(dir), 'pending-settlements.json') : undefined;
-}
-
-/** Where per-model performance figures are kept: beside the peer identity. In memory only without one. */
-function performancePath(): string | undefined {
-  const dir = environment.peerIdStorage?.path;
-  return dir ? join(resolvePath(dir), 'model-benchmarks.json') : undefined;
 }
 
 class Application extends EventEmitter {
@@ -177,6 +171,20 @@ class Application extends EventEmitter {
       })
       .finally(() => { this.reconnecting = null; });
     return this.reconnecting;
+  }
+
+  /**
+   * `diiisco benchmark` on the running node: report or re-measure performance
+   * figures through the node's own benchmarker, so the run never races its
+   * live samples or file writes. Rejects with a message safe to show the user.
+   */
+  async benchmark(requested: string[], list: boolean): Promise<BenchmarkResult[]> {
+    if (!this.benchmarker || !this.performance) {
+      throw new Error('performance measurement is off on this node (models.benchmark.enabled is false)');
+    }
+    if (this.isShuttingDown) throw new Error('the node is shutting down');
+    await this.models.refresh();
+    return benchmarkRequest({ benchmarker: this.benchmarker, store: this.performance, served: this.models.models(), requested, list });
   }
 
   async start() {

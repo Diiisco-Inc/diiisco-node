@@ -146,6 +146,7 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
         state: controlState,
         onPeers: () => app.getPeerReport(),
         onReconnect: () => app.reconnectNow(),
+        onBenchmark: (models, list) => app.benchmark(models, list),
       });
       const recorded = await recordControlChannel({ port: control.port, token: control.token });
       if (!recorded) {
