@@ -1,3 +1,4 @@
+import type { ModelPerformance } from './performance';
 import { ModelInfo } from "./models";
 import { NodeProfile } from "./profile";
 
@@ -38,6 +39,11 @@ export interface QuoteResponsePayload {
   requestTimestamp?: number;       // echo of the quote-request timestamp, for measuring response latency
   nfd?: string;                    // provider's NFD name, so the requester can verify it
   providerPeerId?: string;         // provider's own peer id (NFD verification needs it; GossipSub `from` may be a relay)
+  // The provider's own claims about itself (plan 018), shape-checked by
+  // `isValidQuoteResponse` but not verifiable: `node.tags`, and its measured
+  // performance for this model.
+  tags?: string[];
+  performance?: ModelPerformance;
 }
 
 export interface QuoteResponse {
@@ -247,5 +253,7 @@ export interface QuoteCandidate {
   dscoBalance: bigint;           // DSCO held by the provider wallet (0 if none / local mode)
   nfdAuthenticated: boolean;     // provider wallet has a verified NFD
   responseLatencyMs: number;     // how quickly the quote arrived after the request was issued
+  tags: string[];                // provider's self-declared tags; [] when it sent none
+  performance?: ModelPerformance; // provider's self-reported figures for this model, when it sent any
   msg: QuoteResponse;            // raw response (needed to build quote-accepted)
 }

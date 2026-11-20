@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
+import type { PerformanceStore } from '../utils/modelPerformance';
 import environment from "../environment/runtime";
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
 import { ModelAvailability } from "../utils/modelAvailability";
@@ -118,6 +119,8 @@ export class MessageProcessor {
   private modelLists: ModelListCollector;
   // Accepted payments awaiting on-chain settlement (see `settleInBackground`).
   private settlements: SettlementQueue;
+  /** Measured figures per model (plan 018); null when measuring is off. */
+  private performance: Pick<PerformanceStore, 'performanceFor'> | null;
 
   constructor(
     algo: algorand,
@@ -130,8 +133,10 @@ export class MessageProcessor {
     node: any,
     requests: RequestLedger = new RequestLedger(),
     modelLists: ModelListCollector = new ModelListCollector(),
-    settlements: SettlementQueue = new SettlementQueue()
+    settlements: SettlementQueue = new SettlementQueue(),
+    performance: Pick<PerformanceStore, 'performanceFor'> | null = null
   ) {
+    this.performance = performance;
     this.algo = algo;
     this.model = model;
     this.quoteMgr = quoteMgr;
@@ -563,6 +568,10 @@ export class MessageProcessor {
       maxSpend: msg.payload.maxSpend,
     }, QUOTE_TTL_MS);
 
+    const tags = this.env.node?.tags;
+    // Only chat models are measured, and only a chat request is answered by one.
+    const performance = wanted === 'chat' ? this.performance?.performanceFor(msg.payload.model) : undefined;
+
     // Create Quote Response
     let response: QuoteResponse = {
       role: 'quote-response',
@@ -588,6 +597,11 @@ export class MessageProcessor {
           // Advertised NFD name + our peer id so the requester can verify the NFD.
           nfd: this.env.algorand?.nfd,
           providerPeerId: this.ownPeerId,
+          // What this node says about itself (plan 018). Sent whatever
+          // `publicStats` says: the requester needs it to choose, and a quote
+          // goes only to that requester.
+          ...(tags && tags.length > 0 ? { tags } : {}),
+          ...(performance ? { performance } : {}),
         },
       }
     };
