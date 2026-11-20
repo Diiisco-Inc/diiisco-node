@@ -339,7 +339,12 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
           return;
         }
 
-        logger.info(`✅ Quote selected for request ID ${id}. Served by ${quote.from.toString()}. Sending quote-accepted message.`);
+        const claimed = quote.msg.payload?.quote;
+        const about = [
+          ...(claimed?.tags?.length ? [`tags ${claimed.tags.join(', ')}`] : []),
+          ...(claimed?.performance?.tokensPerSecond ? [`${claimed.performance.tokensPerSecond.value} tok/s`] : []),
+        ];
+        logger.info(`✅ Quote selected for request ID ${id}. Served by ${quote.from.toString()}${about.length ? ` (${about.join('; ')})` : ''}. Sending quote-accepted message.`);
 
         // Record who we are about to hand the prompt to and who they will be
         // paid as: the wallet that signed the quote. From here on, a payment

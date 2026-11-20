@@ -257,7 +257,8 @@ class Application extends EventEmitter {
       this.node,
       this.requests,
       this.modelLists,
-      this.settlements
+      this.settlements,
+      this.performance
     );
     this.messageProcessor.resumeSettlements();
 
