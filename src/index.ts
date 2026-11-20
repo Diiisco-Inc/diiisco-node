@@ -274,7 +274,7 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests, this.modelLists, () => this.messageProcessor?.pendingSettlements() ?? 0);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests, this.modelLists, () => this.messageProcessor?.pendingSettlements() ?? 0, (id) => this.performance?.performanceFor(id));
       this.apiServer = server;
     }
 

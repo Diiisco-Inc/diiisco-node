@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
-import type { NodeProfile } from '../types';
-import { formatDateTime, formatUptime, shortPeerId } from '../format';
+import type { ModelPerformance, NodeProfile, PerformanceFigure } from '../types';
+import { formatDateTime, formatFigure, formatUptime, shortPeerId } from '../format';
 
 function Badge({ kind, children }: { kind: string; children: ReactNode }) {
   return <span className={`badge badge-${kind}`}>{children}</span>;
@@ -22,10 +22,22 @@ function KindChip({ kind }: { kind?: string }) {
   );
 }
 
+/** One figure with its sample count on hover; "—" when the node has not measured it. */
+function Figure({ figure, unit, note }: { figure?: PerformanceFigure; unit: 'ms' | 'tok/s'; note?: string }) {
+  if (!figure) return <span className="muted">—</span>;
+  const title = `Median of ${figure.samples} sample${figure.samples === 1 ? '' : 's'}${note ? ` (${note})` : ''}. Reported by the node itself.`;
+  return <span title={title}>{formatFigure(figure.value, unit)}</span>;
+}
+
+const coldNote = (p?: ModelPerformance) =>
+  p?.coldStart === 'forced' ? 'the node unloaded the model to time this' : p?.coldStart === 'observed' ? 'seen on a real request' : undefined;
+
 export function ProfileCard({ profile }: { profile: NodeProfile }) {
   const title = profile.displayName || shortPeerId(profile.peerId);
   // A local network has no cost, so there is no price to show.
   const showPrices = profile.network !== 'local';
+  // Only shown once some model has figures, so a node without them (or an older one) looks as it did.
+  const showPerformance = (profile.stats?.models ?? []).some((m) => m.performance);
 
   return (
     <div className="card">
@@ -38,6 +50,14 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
           {profile.nfdVerified && profile.nfd ? <Badge kind="nfd">✓ {profile.nfd}</Badge> : null}
         </div>
       </div>
+
+      {profile.tags && profile.tags.length > 0 ? (
+        <div className="tags" aria-label="Tags">
+          {profile.tags.map((tag) => (
+            <span key={tag} className="badge badge-tag" title="Set by the node's operator">{tag}</span>
+          ))}
+        </div>
+      ) : null}
 
       <dl className="fields">
         <dt>Peer ID</dt>
@@ -94,6 +114,13 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
                   <tr>
                     <th>Model</th>
                     {showPrices ? <th>Price / 1M tokens</th> : null}
+                    {showPerformance ? (
+                      <>
+                        <th title="Time to first token with the model already loaded">First token</th>
+                        <th title="Time to first token when the model had to be loaded first">Cold start</th>
+                        <th title="Output tokens per second">Speed</th>
+                      </>
+                    ) : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -104,6 +131,13 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
                         <KindChip kind={m.kind} />
                       </td>
                       {showPrices ? <td>{m.pricePer1MTokens != null ? `$${m.pricePer1MTokens}` : '—'}</td> : null}
+                      {showPerformance ? (
+                        <>
+                          <td><Figure figure={m.performance?.ttftHotMs} unit="ms" /></td>
+                          <td><Figure figure={m.performance?.ttftColdMs} unit="ms" note={coldNote(m.performance)} /></td>
+                          <td><Figure figure={m.performance?.tokensPerSecond} unit="tok/s" /></td>
+                        </>
+                      ) : null}
                     </tr>
                   ))}
                 </tbody>

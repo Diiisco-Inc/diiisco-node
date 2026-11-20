@@ -28,6 +28,7 @@ import {
 } from './anthropicAdapter';
 import { getMeshTopic } from '../utils/topic';
 import { registerStatusPages } from './statusPages';
+import type { ModelPerformance } from '../types/performance';
 import { nodeStats } from '../utils/nodeStats';
 import { RequestLedger } from '../messaging/requestLedger';
 import { ModelListCollector } from '../messaging/modelListCollector';
@@ -43,7 +44,7 @@ import {
   messageForInferenceError,
 } from './inferenceErrors';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector(), pendingSettlements: () => number = () => 0) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector(), pendingSettlements: () => number = () => 0, performanceFor?: (id: string) => ModelPerformance | undefined) => {
   const app = express();
   const port = environment.api.port || 8080;
   // Loopback unless the operator opts in: a request to this API spends the wallet.
@@ -92,7 +93,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
   // Public status pages (unauthenticated by design — see src/api/statusPages.ts)
   if (environment.node?.statusPages !== false) {
-    registerStatusPages({ app, node, nodeEvents, algo, messageRouter, models });
+    registerStatusPages({ app, node, nodeEvents, algo, messageRouter, models, performanceFor });
   }
 
   app.get('/health', (_req, res) => {

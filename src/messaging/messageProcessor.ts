@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
 import type { PerformanceStore } from '../utils/modelPerformance';
+import { parsePerformance, parseTags } from '../utils/nodeInfo';
 import environment from "../environment/runtime";
 import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
 import { ModelAvailability } from "../utils/modelAvailability";
@@ -464,7 +465,7 @@ export class MessageProcessor {
       to: sourcePeerId,
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: {
-        profile: buildOwnProfile(this.node, this.algo, this.models.list(), (id) => this.models.kindOf(id)),
+        profile: buildOwnProfile(this.node, this.algo, this.models.list(), (id) => this.models.kindOf(id), (id) => this.performance?.performanceFor(id)),
       }
     };
     await this.deliver(response, sourcePeerId);
@@ -493,6 +494,16 @@ export class MessageProcessor {
       ...profile,
       nfd: nfdVerified ? profile.nfd : undefined,
       nfdVerified: nfdVerified || undefined,
+      // Self-declared and shown on a public page: keep only what has the right
+      // shape. A bad field is dropped; the rest of the profile still shows.
+      tags: parseTags(profile.tags),
+      ...(profile.stats && Array.isArray(profile.stats.models) ? {
+        stats: {
+          ...profile.stats,
+          models: profile.stats.models.map((m: any) =>
+            m && typeof m === 'object' ? { ...m, performance: parsePerformance(m.performance) } : m),
+        },
+      } : {}),
     });
   }
 

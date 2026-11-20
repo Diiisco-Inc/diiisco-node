@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getDirectory, getModelStats } from '../api';
 import type { DirectoryEntry, ModelStats } from '../types';
-import { formatLastSeen, shortPeerId } from '../format';
+import { formatLastSeen, shortPeerId, formatFigure, rangeTitle } from '../format';
 import { Link } from '../router';
 
 const formatPrice = (price: number | null) =>
@@ -33,6 +33,7 @@ export function Directory() {
 
   // A local network has no cost, so the node publishes no prices and the price
   // columns would be a wall of dashes.
+  const showPerformance = (models ?? []).some((m) => m.tokensPerSecond || m.ttftHotMs);
   const showPrices = (models ?? []).some(
     (m) => m.minPrice != null || m.meanPrice != null || m.maxPrice != null,
   );
@@ -105,6 +106,12 @@ export function Directory() {
                     <th>Max price / 1M</th>
                   </>
                 ) : null}
+                {showPerformance ? (
+                  <>
+                    <th title="Median across nodes of each node's own time to first token (model loaded)">First token</th>
+                    <th title="Median across nodes of each node's own output tokens per second">Speed</th>
+                  </>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -117,6 +124,12 @@ export function Directory() {
                       <td data-label="Min price / 1M">{formatPrice(m.minPrice)}</td>
                       <td data-label="Mean price / 1M">{formatPrice(m.meanPrice)}</td>
                       <td data-label="Max price / 1M">{formatPrice(m.maxPrice)}</td>
+                    </>
+                  ) : null}
+                  {showPerformance ? (
+                    <>
+                      <td data-label="First token" title={rangeTitle(m.ttftHotMs, 'ms')}>{formatFigure(m.ttftHotMs?.median, 'ms')}</td>
+                      <td data-label="Speed" title={rangeTitle(m.tokensPerSecond, 'tok/s')}>{formatFigure(m.tokensPerSecond?.median, 'tok/s')}</td>
                     </>
                   ) : null}
                 </tr>

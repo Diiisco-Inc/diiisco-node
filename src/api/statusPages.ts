@@ -12,7 +12,9 @@ import { MessageRouter } from '../messaging/messageRouter';
 import { buildOwnProfile } from '../utils/nodeProfile';
 import { ModelAvailability } from '../utils/modelAvailability';
 import type { ModelKind } from '../types/models';
-import { NodeProfile, DirectoryEntry, ModelStats } from '../types/profile';
+import { NodeProfile, DirectoryEntry, ModelStats, FigureRange } from '../types/profile';
+import type { ModelPerformance } from '../types/performance';
+import { parsePerformance } from '../utils/nodeInfo';
 import { NodeProfileRequest, NetworkNode } from '../types/messages';
 import { logger } from '../utils/logger';
 import { perMinute } from '../utils/rateLimiter';
@@ -45,6 +47,15 @@ interface KnownNodeSighting {
   lastSeen: number;
 }
 
+/** min / median / max of one figure across nodes, or null when no node published it. */
+function figureRange(values: number[]): FigureRange | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return { min: sorted[0], median: Math.round(median * 10) / 10, max: sorted[sorted.length - 1], nodes: sorted.length };
+}
+
 interface StatusPagesDeps {
   app: Express;
   node: any;
@@ -52,9 +63,10 @@ interface StatusPagesDeps {
   algo: algorand;
   messageRouter: MessageRouter;
   models?: ModelAvailability;
+  performanceFor?: (id: string) => ModelPerformance | undefined;
 }
 
-export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter, models }: StatusPagesDeps) => {
+export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter, models, performanceFor }: StatusPagesDeps) => {
   const ownPeerId = node.peerId.toString();
   // Read live on every call, so a stopped backend empties the advertised model
   // list without a restart.
@@ -138,7 +150,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
    */
   const getProfile = async (peerId: string): Promise<NodeProfile | null> => {
     if (peerId === ownPeerId) {
-      return buildOwnProfile(node, algo, servedModels(), kindOf);
+      return buildOwnProfile(node, algo, servedModels(), kindOf, performanceFor);
     }
 
     const cached = profileCache.get(peerId);
@@ -209,7 +221,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     const sorted = [...entries.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || b.lastSeen - a.lastSeen);
 
     // The serving node itself, pinned to the top.
-    const own = buildOwnProfile(node, algo, servedModels(), kindOf);
+    const own = buildOwnProfile(node, algo, servedModels(), kindOf, performanceFor);
     sorted.unshift({
       peerId: ownPeerId,
       displayName: own.displayName,
@@ -240,7 +252,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
       [...peerIds].map((peerId) => getProfile(peerId).catch(() => null))
     );
     const profiles: NodeProfile[] = [
-      buildOwnProfile(node, algo, servedModels(), kindOf),
+      buildOwnProfile(node, algo, servedModels(), kindOf, performanceFor),
       ...remote.filter((p): p is NodeProfile => p !== null),
     ];
 
@@ -248,25 +260,36 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
     // if an older peer still publishes one.
     const isLocal = environment.local?.enabled === true;
 
-    const byModel = new Map<string, { nodes: number; prices: number[]; kind?: ModelStats['kind'] }>();
+    type Figures = { tokensPerSecond: number[]; ttftHotMs: number[]; ttftColdMs: number[] };
+    const byModel = new Map<string, { nodes: number; prices: number[]; kind?: ModelStats['kind']; figures: Figures }>();
     for (const profile of profiles) {
       for (const m of profile.stats?.models ?? []) {
-        const entry = byModel.get(m.id) ?? { nodes: 0, prices: [] };
+        const entry = byModel.get(m.id) ?? { nodes: 0, prices: [], figures: { tokensPerSecond: [], ttftHotMs: [], ttftColdMs: [] } };
         entry.nodes += 1;
         entry.kind ??= m.kind;
         if (!isLocal && typeof m.pricePer1MTokens === 'number') entry.prices.push(m.pricePer1MTokens);
+        // Re-checked here as well as on arrival: the own profile and a cached
+        // remote one both pass through, and a bad figure must not skew the spread.
+        const performance = parsePerformance(m.performance);
+        for (const key of ['tokensPerSecond', 'ttftHotMs', 'ttftColdMs'] as const) {
+          const value = performance?.[key]?.value;
+          if (value !== undefined) entry.figures[key].push(value);
+        }
         byModel.set(m.id, entry);
       }
     }
 
     return [...byModel.entries()]
-      .map(([model, { nodes, prices, kind }]) => ({
+      .map(([model, { nodes, prices, kind, figures }]) => ({
         model,
         ...(kind ? { kind } : {}),
         nodes,
         minPrice: prices.length ? Math.min(...prices) : null,
         maxPrice: prices.length ? Math.max(...prices) : null,
         meanPrice: prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null,
+        tokensPerSecond: figureRange(figures.tokensPerSecond),
+        ttftHotMs: figureRange(figures.ttftHotMs),
+        ttftColdMs: figureRange(figures.ttftColdMs),
       }))
       .sort((a, b) => b.nodes - a.nodes || a.model.localeCompare(b.model));
   };
@@ -379,7 +402,7 @@ export const registerStatusPages = ({ app, node, nodeEvents, algo, messageRouter
   app.get('/', (req, res) => sendShell(res, req));
 
   app.get('/node.json', (_req, res) => {
-    sendJson(res, buildOwnProfile(node, algo, servedModels(), kindOf));
+    sendJson(res, buildOwnProfile(node, algo, servedModels(), kindOf, performanceFor));
   });
 
   app.get('/nodes.json', (_req, res) => {

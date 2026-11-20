@@ -41,3 +41,17 @@ export function formatDateTime(input: string | number | Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${formatDate(d)}, ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+
+/** A performance figure, e.g. "85 ms" or "54.2 tok/s", or "—" when absent. */
+export function formatFigure(value: number | undefined | null, unit: 'ms' | 'tok/s'): string {
+  if (value == null) return '—';
+  return unit === 'ms'
+    ? `${Math.round(value).toLocaleString('en-GB')} ms`
+    : `${value.toLocaleString('en-GB', { maximumFractionDigits: 1 })} tok/s`;
+}
+
+/** Hover text for a cross-node figure: its spread and how many nodes reported it. */
+export function rangeTitle(range: { min: number; max: number; nodes: number } | null | undefined, unit: 'ms' | 'tok/s'): string | undefined {
+  if (!range) return undefined;
+  return `${formatFigure(range.min, unit)} – ${formatFigure(range.max, unit)} across ${range.nodes} node${range.nodes === 1 ? '' : 's'} (self-reported)`;
+}
