@@ -109,6 +109,7 @@ diiisco <command> [flags]
   restart                Restart the daemon
   status [--json]        pid, uptime, /health and an Algorand summary
   logs [-f] [-n N]       Show (or follow) the daemon log
+  benchmark [model ...]  Re-measure time to first token and tokens/s (--list shows the current figures)
   serve                  Run the node in the foreground (Ctrl-C to stop)
   launch <app> [flags]   Point an agent tool at a node, starting one if needed
   config show|path|edit  Inspect or edit the config file (`path --key` for the wallet key)
@@ -211,7 +212,8 @@ The comments below are for reading only. `diiisco.config.json` is parsed as stri
   "node": {
     "url": "http://mynode.example.com",
     "port": 4242,
-    "displayName": "My DIIISCO Node"
+    "displayName": "My DIIISCO Node",
+    "tags": ["apple-silicon", "apple-silicon-m4-pro"]  // Optional; see Tags below
   }
 }
 ```
@@ -270,6 +272,7 @@ absolute path is unambiguous.
 | `availability.checkIntervalMs` | `30000` | How often (ms) to re-check which models the backend is actually serving. `0` disables the background poll. |
 | `availability.freshForMs` | `10000` | Maximum age (ms) of that check when answering a quote request. Older than this and the node re-probes before quoting. |
 | `availability.timeoutMs` | `2000` | How long (ms) to wait for the backend to answer a check before treating it as down. |
+| `benchmark.enabled` | `true` | Measure each chat model's time to first token and tokens/s, and send the figures in quotes and on the status pages. See [Model performance](#-model-performance). `false` turns it all off. |
 | `kinds` | _none_ | Tell the node what a model is when your runtime doesn't say: an object of model id (or `*` glob) to `chat`, `embedding` or `decision`, e.g. `{ "tev1:*": "decision", "*embed*": "embedding" }`. Ollama and LM Studio are detected automatically. Models that aren't `chat` are left out of `GET /v1/models` by default (`?type=all` returns everything). |
 
 Your node re-checks its backend rather than trusting the list it built at startup. Stop Ollama and the node stops quoting within `checkIntervalMs` — it will not win auctions it can't honour — and starts again on its own when the backend comes back. No restart, and no need to start the backend before the node.
@@ -335,6 +338,7 @@ On startup, the node automatically opts into the DSCO and USDC assets if not alr
 | `url` | Publicly reachable URL of this node (used in log output) |
 | `port` | TCP port for libp2p peer-to-peer connections (default `4242`) |
 | `displayName` | Human-readable name shown on the `/network` endpoint |
+| `tags` | Labels for your hardware or capabilities, sent in every quote and shown on your status page. See [Tags](#-tags). |
 | `rateLimit` | `{ requestsPerMinute, burst }` — per-peer limit on messages this node processes (default 60 a minute, burst 30). Requests such as `quote-request` use it directly; answers and the payment exchange get four times that. A peer over its limit is ignored until its budget refills. |
 
 ### `local`
@@ -366,6 +370,62 @@ Optional. Read by the `diiisco` binary, and by DIIISCO Desktop's Launch view, wh
 ```json
 { "cli": { "apps": { "aider": { "bin": "aider", "wire": "openai" } } } }
 ```
+
+### 🏷 Tags
+
+Tags tell requesters what your node runs on. Add them by hand under `node`:
+
+```json
+{ "node": { "tags": ["cuda", "nvidia-dgx-spark"] } }
+```
+
+Common ones are `cuda`, `apple-silicon`, `apple-silicon-m4-pro` and `nvidia-dgx-spark`, but any tag is allowed if it follows these rules:
+
+- lowercase letters, digits and hyphens only
+- starts with a letter or digit
+- at most 48 characters
+- up to 16 tags, with no duplicates
+
+A tag that breaks a rule stops the node from starting and names the bad tag. The node does not quietly drop it.
+
+Your tags go out in every quote and appear on your status page even with `publicStats: false`, because they describe the node rather than its activity. Other nodes cannot check them: a tag is your own claim.
+
+### 📏 Model performance
+
+For each chat model it serves, the node publishes three figures:
+
+| Figure | What it is |
+|---|---|
+| **First token (hot)** | Time from sending a request to the first token, with the model already loaded |
+| **First token (cold)** | The same when the model has to be loaded first |
+| **Speed** | Output tokens per second after the first token |
+
+**How the figures are kept up to date**
+
+- **Benchmark.** When the node sees a chat model it has no figures for, it benchmarks it in the background: one cold run, then three hot runs, each with a short fixed prompt. This happens at startup or whenever a new model appears. Benchmarks run one at a time and never hold up startup or quoting. Until a model has figures, its quotes simply leave them out.
+- **Live updates.** Every chat request the node serves then updates the figures. Each figure is the median of its last 20 samples, so one slow request does not swing it.
+  - Time to first token only counts requests with prompts of 1,024 tokens or fewer. It grows with prompt length, and agent tools send very long prompts.
+  - Speed counts any reply of 16 tokens or more.
+
+**Cold starts.** On **Ollama**, the node unloads the model before the cold run, so the cold figure is a real load, and it checks before each live request whether the model is loaded. Other runtimes give no way to tell, so they get hot figures and speed, but no cold figure.
+
+**Where they go.** The figures are sent in every quote and shown on your status page, along with the spread across nodes on `/models.json`. With `publicStats: false` they still go out in quotes, which only the requester sees, but not on the status page. Like tags, they are your node's own claims.
+
+**Where they're stored.** The figures are saved in `model-benchmarks.json`, beside the peer identity. The file holds only numbers and model names, never prompts or answers. On Ollama, a model you re-pull is benchmarked again.
+
+**Re-measuring.** Run `diiisco benchmark` after changing hardware or settings:
+
+```
+diiisco benchmark                # re-measure every served chat model
+diiisco benchmark gemma3:12b     # just one
+diiisco benchmark --list         # show the current figures and sample counts, measuring nothing
+diiisco benchmark --json         # machine-readable
+```
+
+- **If the node is running**, the command asks the node to do the measuring. If you press Ctrl-C, the node still finishes the run and saves the result.
+- **If it isn't running**, the command measures against the configured backend itself.
+
+To turn all of this off, set `models.benchmark.enabled` to `false`.
 
 ### 🪪 Verified identity with NFD
 
