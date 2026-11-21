@@ -3,7 +3,7 @@ import algorand from "../utils/algorand";
 import type { PerformanceStore } from '../utils/modelPerformance';
 import { parsePerformance, parseTags } from '../utils/nodeInfo';
 import environment from "../environment/runtime";
-import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
+import { type InferenceService, pickGenerationParams, countInputTokens } from "../utils/models";
 import { ModelAvailability } from "../utils/modelAvailability";
 import type { ModelKind } from "../types/models";
 import { countSystemOneInputTokens, normalizeUsage, validateSystemOneRequest } from "../utils/systemOne";
@@ -94,7 +94,7 @@ const requestKey = (peerId: string, id: string) => `${peerId}|${id}`;
 
 export class MessageProcessor {
   private algo: algorand;
-  private model: OpenAIInferenceModel;
+  private model: InferenceService;
   private quoteMgr: quoteEngine;
   private models: ModelAvailability;
   private nodeEvents: EventEmitter;
@@ -125,7 +125,7 @@ export class MessageProcessor {
 
   constructor(
     algo: algorand,
-    model: OpenAIInferenceModel,
+    model: InferenceService,
     quoteMgr: quoteEngine,
     models: ModelAvailability,
     nodeEvents: EventEmitter,

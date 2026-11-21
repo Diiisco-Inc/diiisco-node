@@ -26,13 +26,17 @@ export interface StubBehaviour {
   ollama?: boolean;
   /** Never answer chat requests (a hung backend). */
   hang?: boolean;
+  /** Model ids `/v1/models` lists (default `stub-model`). */
+  models?: string[];
+  /** Answer `/v1/models` with a 503 (a backend that is down but listening). */
+  down?: boolean;
 }
 
 export interface StubBackend {
   url: string;          // e.g. http://127.0.0.1:1234
   port: number;
   behaviour: StubBehaviour;
-  requests: { stream: boolean; body: any }[];
+  requests: { stream: boolean; body: any; authorization: string | null }[];
   loaded: Set<string>;
   digests: Map<string, string>;
   unloads: string[];
@@ -95,12 +99,14 @@ export function startStubBackend(behaviour: StubBehaviour = {}): StubBackend {
       }
 
       if (url.pathname === '/v1/models') {
-        return Response.json({ object: 'list', data: [{ id: 'stub-model', object: 'model', created: 0, owned_by: 'stub' }] });
+        if (b.down) return Response.json({ error: { message: 'down' } }, { status: 503 });
+        const ids = b.models ?? ['stub-model'];
+        return Response.json({ object: 'list', data: ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'stub' })) });
       }
 
       if (url.pathname === '/v1/systemone') {
         const body = await req.json();
-        state.requests.push({ stream: false, body });
+        state.requests.push({ stream: false, body, authorization: req.headers.get('authorization') });
         if (b.hang) {
           await new Promise((resolve) => req.signal.addEventListener('abort', resolve));
           return new Response('aborted', { status: 499 });
@@ -115,7 +121,7 @@ export function startStubBackend(behaviour: StubBehaviour = {}): StubBackend {
 
       const body = await req.json();
       const stream = body.stream === true;
-      state.requests.push({ stream, body });
+      state.requests.push({ stream, body, authorization: req.headers.get('authorization') });
       if (b.hang) {
         await new Promise((resolve) => req.signal.addEventListener('abort', resolve));
         return new Response('aborted', { status: 499 });

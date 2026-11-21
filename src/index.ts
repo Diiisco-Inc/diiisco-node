@@ -9,11 +9,9 @@ import { EventEmitter } from 'events';
 import algorand from "./utils/algorand";
 import environment from "./environment/runtime";
 import { Environment } from "./environment/environment.types";
-import { OpenAIInferenceModel } from "./utils/models";
+import { InferenceBackends, resolveBackends } from "./utils/backendPool";
 import { ModelAvailability, ModelAvailabilityMonitor } from "./utils/modelAvailability";
 import { Benchmarker, PerformanceStore, WarmthTracker, benchmarkRequest, performanceObserver, performancePath, type BenchmarkResult } from './utils/modelPerformance';
-import { OllamaRuntime } from './utils/ollamaRuntime';
-import { backendOrigin } from './utils/modelCapabilities';
 import quoteEngine from "./utils/quoteEngine";
 import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
@@ -42,7 +40,7 @@ function settlementQueuePath(): string | undefined {
 class Application extends EventEmitter {
   private node: any;
   private algo: algorand;
-  private model: OpenAIInferenceModel;
+  private model: InferenceBackends;
   private models: ModelAvailability;
   // Performance figures and the benchmarks that seed them (plan 018); null when `models.benchmark.enabled` is false.
   private performance: PerformanceStore | null = null;
@@ -97,14 +95,14 @@ class Application extends EventEmitter {
     super();
     this.env = environment;
     this.algo = new algorand();
-    this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`, this);
+    this.model = new InferenceBackends(resolveBackends(this.env.models), this, { kinds: this.env.models.kinds });
     const monitor = new ModelAvailabilityMonitor(this.model);
     this.models = monitor;
     if (this.env.models.enabled && this.env.models.benchmark?.enabled !== false) {
-      const ollama = new OllamaRuntime(backendOrigin(this.env.models.baseURL, this.env.models.port));
-      const warmth = new WarmthTracker(ollama);
+      // The pool answers runtime questions (loaded? Ollama? digest?) for whichever backend serves the model.
+      const warmth = new WarmthTracker(this.model);
       this.performance = new PerformanceStore(performancePath());
-      this.benchmarker = new Benchmarker({ backend: this.model, store: this.performance, warmth, ollama });
+      this.benchmarker = new Benchmarker({ backend: this.model, store: this.performance, warmth, ollama: this.model });
       this.model.observer = performanceObserver(this.performance, warmth);
       const benchmarker = this.benchmarker;
       monitor.onModels = guarded('Benchmarking models', (list) => benchmarker.ensure(list));

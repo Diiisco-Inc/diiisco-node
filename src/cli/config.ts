@@ -256,7 +256,26 @@ export function mergeConfig(file: EnvironmentFile | null): Environment {
     }
   }
 
+  // `backends` replaces the single-backend fields (plan 019). Both in one file
+  // is ambiguous about which runtime the operator meant, so it is refused.
+  const fileModels = file?.models as Record<string, unknown> | undefined;
+  if (fileModels?.backends !== undefined) {
+    const single = ['baseURL', 'port', 'apiKey'].filter((key) => fileModels[key] !== undefined);
+    if (single.length > 0) {
+      throw new ConfigError(`\`models.backends\` and \`models.${single.join('`/`models.')}\` are both set.`, [
+        'Use one or the other: move this address into `models.backends`, or remove `models.backends`.',
+      ]);
+    }
+  }
+
   const env = withDefaults(overrides);
+  if (env.models?.backends !== undefined) {
+    // The defaults' single backend must not show up beside the list: what
+    // `config show` prints has to load again as it is.
+    delete env.models.baseURL;
+    delete env.models.port;
+    delete env.models.apiKey;
+  }
 
   // Keep everything inside one directory: unless the user pinned an explicit
   // `peerIdStorage.path`, the peer identity lives alongside the config and the

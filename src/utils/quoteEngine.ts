@@ -3,7 +3,7 @@ import { EventEmitter } from 'events'
 import { QuoteEvent, QuoteQueueEntry, QuoteRequest, QuoteResponse, QuoteCandidate } from '../types/messages';
 import { Environment } from '../environment/environment.types';
 import { selectHighestStakeQuote } from './quoteSelectionMethods';
-import { OpenAIInferenceModel } from './models';
+import type { InferenceService } from './models';
 import { createStandardQuote } from './quoteCreationMethods';
 import { RawQuote } from '../types/quotes';
 import algorand, { verifyNFD } from './algorand';
@@ -153,7 +153,7 @@ export default class quoteEngine {
     return verified;
   }
 
-  async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
+  async createQuote(quoteRequestMsg: QuoteRequest, model: InferenceService): Promise<RawQuote | null> {
     // The quote carries per-token rates only; there is no price ceiling to clamp
     // (§4.2). A null result means the request can't be served within the
     // requester's budget, so the provider doesn't quote.

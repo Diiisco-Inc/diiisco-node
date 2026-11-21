@@ -50,6 +50,37 @@ describe('diiisco setup keeps what it does not ask about', () => {
     expect(config.api.profileCacheTtl).toBe(888);
     expect(config.local.privateTopic).toBe('merge-test/models/1.0.0');
   });
+
+  // Plan 019: setup writes one backend, but must not destroy a hand-written list.
+  const backends = [
+    { name: 'mac', baseURL: 'http://127.0.0.1', port: 9 },
+    { name: 'spark', baseURL: 'http://127.0.0.2', port: 9, apiKey: 'k' },
+  ];
+  const runSetup = (extra: string[]) => {
+    writeFileSync(join(home, 'diiisco.config.json'), JSON.stringify({
+      models: { enabled: true, backends, kinds: { 'tev-*': 'decision' } },
+      local: { enabled: true, privateTopic: 'merge-test/models/1.0.0' },
+    }), { mode: 0o600 });
+    const result = spawnSync('bun', ['src/cli.ts', 'setup', '--local', '--yes', '--print', ...extra], {
+      cwd: repoRoot, encoding: 'utf8', env: { ...process.env, DIIISCO_HOME: home, NO_COLOR: '1' },
+    });
+    expect(result.status).toBe(0);
+    return JSON.parse(result.stdout);
+  };
+
+  test('a models.backends list survives a re-run, without single-backend fields beside it', () => {
+    const config = runSetup([]);
+    expect(config.models.backends).toEqual(backends);
+    expect(config.models.baseURL).toBeUndefined();
+    expect(config.models.kinds).toEqual({ 'tev-*': 'decision' });
+  });
+
+  test('--models-url replaces the list with the one backend given', () => {
+    const config = runSetup(['--models-url', 'http://localhost:11434']);
+    expect(config.models.backends).toBeUndefined();
+    expect(config.models.baseURL).toBe('http://localhost');
+    expect(config.models.port).toBe(11434);
+  });
 });
 
 describe('peer identity file', () => {

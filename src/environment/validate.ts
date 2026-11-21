@@ -2,6 +2,7 @@ import { Environment } from './environment.types';
 import { MODEL_KINDS, type ModelKind } from '../types/models';
 import { isLoopbackHost } from '../utils/hosts';
 import { tagsProblem } from '../utils/nodeInfo';
+import { backendsProblems } from '../utils/backendPool';
 
 /** Keys that shipped as defaults, or are what a client presents when it has none: never valid as a secret. */
 export const KNOWN_DEFAULT_API_KEYS: ReadonlySet<string> = new Set(['diiisco']);
@@ -68,11 +69,16 @@ export function validateEnvironment(env: Environment): string[] {
   }
 
   if (env.models.enabled) {
-    if (!env.models.baseURL) {
-      errors.push('`models.baseURL` is empty. Point it at your inference server, e.g. "http://localhost" with `models.port` 11434 for Ollama.');
-    }
-    if (!Number.isInteger(env.models.port) || env.models.port <= 0 || env.models.port > 65535) {
-      errors.push(`\`models.port\` must be a port number between 1 and 65535 (got ${env.models.port}).`);
+    if (env.models.backends !== undefined) {
+      errors.push(...backendsProblems(env.models.backends));
+    } else {
+      const port = env.models.port;
+      if (!env.models.baseURL) {
+        errors.push('`models.baseURL` is empty. Point it at your inference server, e.g. "http://localhost" with `models.port` 11434 for Ollama.');
+      }
+      if (!Number.isInteger(port) || port! <= 0 || port! > 65535) {
+        errors.push(`\`models.port\` must be a port number between 1 and 65535 (got ${port}).`);
+      }
     }
 
     const kinds = env.models.kinds;

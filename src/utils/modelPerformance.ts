@@ -19,7 +19,6 @@ import type { ModelInfo, ModelKind } from '../types/models';
 import { isMeasured, type ColdStartMethod, type ModelPerformance, type PerformanceFigure } from '../types/performance';
 import { logger } from './logger';
 import { systemOneSample, toSample, type InferenceObserver, type InferenceSample, type OpenAIInferenceModel, type Warmth } from './models';
-import type { OllamaRuntime } from './ollamaRuntime';
 import { version } from './version';
 
 /** Samples kept per figure; the published value is their median. */
@@ -244,6 +243,18 @@ export class PerformanceStore {
 }
 
 /**
+ * What performance tracking asks of the runtime serving a model. `OllamaRuntime`
+ * answers for its one backend; `InferenceBackends` routes each question to the
+ * backend serving the model (plan 019). Never throws.
+ */
+export interface RuntimeProbe {
+  isOllama(model: string): Promise<boolean>;
+  loaded(model: string): Promise<boolean | undefined>;
+  digest(model: string): Promise<string | undefined>;
+  unload(model: string, signal?: AbortSignal): Promise<boolean>;
+}
+
+/**
  * Says whether a model was loaded when a request went out. Ollama is asked
  * (`/api/ps`); for other runtimes all that is known is whether this node used
  * the model recently, which can say "hot" but never "cold".
@@ -251,7 +262,7 @@ export class PerformanceStore {
 export class WarmthTracker {
   private readonly lastUse = new Map<string, number>();
 
-  constructor(private readonly ollama: Pick<OllamaRuntime, 'loaded'>, private readonly now: () => number = Date.now) {}
+  constructor(private readonly ollama: Pick<RuntimeProbe, 'loaded'>, private readonly now: () => number = Date.now) {}
 
   async before(model: string): Promise<Warmth> {
     const last = this.lastUse.get(model);
@@ -312,7 +323,7 @@ export interface BenchmarkerDeps {
   backend: Pick<OpenAIInferenceModel, 'chatTimed' | 'systemOneTimed'>;
   store: PerformanceStore;
   warmth: WarmthTracker;
-  ollama: Pick<OllamaRuntime, 'isOllama' | 'digest' | 'unload'>;
+  ollama: Pick<RuntimeProbe, 'isOllama' | 'digest' | 'unload'>;
   timeouts?: { coldMs?: number; hotMs?: number };
 }
 
@@ -390,7 +401,7 @@ export class Benchmarker {
 
     // A cold start is only timed when one can be made to happen: Ollama unloads
     // on request. Elsewhere the first run's warmth is whatever is known about it.
-    const forced = (await this.deps.ollama.isOllama()) && (await this.deps.ollama.unload(model, this.abort.signal));
+    const forced = (await this.deps.ollama.isOllama(model)) && (await this.deps.ollama.unload(model, this.abort.signal));
     const firstWarmth: Warmth = forced ? 'cold' : await this.deps.warmth.before(model);
     const first = await this.once(model, kind, forced ? this.coldMs : this.hotMs);
     if (first) samples.push({ warmth: firstWarmth, sample: first, coldStart: forced ? 'forced' : undefined });

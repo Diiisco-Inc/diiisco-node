@@ -149,24 +149,19 @@ async function buildConfig(
   const currentMode: SetupMode = existing.local?.enabled === true ? 'local' : existing.algorand ? 'public' : 'local';
   const mode = options.mode ?? (await prompt.choose('Mode — local is payment-free, public settles in USDC', ['local', 'public'] as const, currentMode));
 
-  // 2. Inference backend.
-  const currentModelsUrl = existing.models?.baseURL
-    ? `${existing.models.baseURL}${existing.models.port ? `:${existing.models.port}` : ''}`
-    : DEFAULT_MODELS_URL;
-  const modelsUrl = options.modelsUrl ?? (await prompt.ask('Inference backend URL', currentModelsUrl));
-  const { baseURL, port: modelsPort } = splitModelsUrl(modelsUrl);
-  await reportBackend(prompt, options, baseURL, modelsPort);
-
-  // Spread what is already there first: `models.kinds` (the only way to mark a
-  // decision model), `availability`, `chargePer1KTokens` and the rate tables are
-  // hand-edited and must survive a re-run. Only what setup asks about is replaced.
-  config.models = {
-    ...existing.models,
-    enabled: true,
-    baseURL,
-    port: modelsPort,
-    apiKey: existing.models?.apiKey ?? '',
-  };
+  // 2. Inference backend. A hand-written `models.backends` list (plan 019) is
+  // kept as it is unless a URL is passed on the command line; setup only
+  // checks each one. Setup itself only ever writes the one-backend form.
+  if (existing.models?.backends && existing.models.backends.length > 0 && options.modelsUrl === undefined) {
+    const backends = existing.models.backends;
+    const message = `Keeping the ${backends.length} model backend(s) in your config; change them with \`diiisco config edit\`.`;
+    if (options.print) prompt.write(message);
+    else info(message);
+    for (const b of backends) await reportBackend(prompt, options, b.baseURL, b.port);
+    config.models = { ...existing.models, enabled: true };
+  } else {
+    await askSingleBackend(prompt, options, existing, config);
+  }
 
   // 3. API.
   const apiPort = options.apiPort ?? (await prompt.askNumber(
@@ -335,6 +330,28 @@ function normaliseNetwork(value: string): 'mainnet' | 'testnet' {
     die(`Unknown network "${value}".`, 'Use mainnet or testnet.');
   }
   return network;
+}
+
+/** Ask for the one backend and write it in the single-backend form, replacing any `backends` list. */
+async function askSingleBackend(prompt: Prompter, options: SetupOptions, existing: EnvironmentFile, config: EnvironmentFile): Promise<void> {
+  const currentModelsUrl = existing.models?.baseURL
+    ? `${existing.models.baseURL}${existing.models.port ? `:${existing.models.port}` : ''}`
+    : DEFAULT_MODELS_URL;
+  const modelsUrl = options.modelsUrl ?? (await prompt.ask('Inference backend URL', currentModelsUrl));
+  const { baseURL, port: modelsPort } = splitModelsUrl(modelsUrl);
+  await reportBackend(prompt, options, baseURL, modelsPort);
+
+  // Spread what is already there first: `models.kinds` (the only way to mark a
+  // decision model), `availability`, `chargePer1KTokens` and the rate tables are
+  // hand-edited and must survive a re-run. Only what setup asks about is replaced.
+  const { backends: _replaced, ...kept } = existing.models ?? {};
+  config.models = {
+    ...kept,
+    enabled: true,
+    baseURL,
+    port: modelsPort,
+    apiKey: existing.models?.apiKey ?? '',
+  };
 }
 
 /** Split `http://localhost:11434` into the `baseURL` + `port` the config wants. */

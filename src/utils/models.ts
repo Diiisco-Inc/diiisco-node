@@ -7,7 +7,6 @@ import {
   ChatCompletionToolChoiceOption,
 } from "openai/resources/chat/completions";
 import { logger } from './logger';
-import { Environment } from "../environment/environment.types";
 import EventEmitter from "events";
 import { BackendRejectedError, countSystemOneInputTokens, type SystemOneRequest } from "./systemOne";
 
@@ -169,24 +168,28 @@ export function toSample(
   };
 }
 
+/** What request handling needs from inference: the node's backend or backends (plan 019). */
+export type InferenceService = Pick<OpenAIInferenceModel, 'getResponse' | 'systemOne' | 'countEmbeddings'>;
+
 export class OpenAIInferenceModel {
   openai: OpenAI;
   private baseURL: string;
-  private env: Environment;
+  private readonly apiKey: string;
   nodeEventEmitter: EventEmitter;
   /** Set by the application when performance tracking is on (plan 018). */
   observer?: InferenceObserver;
   /** Models this backend refused to stream; asked plainly from then on. */
   private readonly noStream = new Set<string>();
 
-  constructor(baseURL: string, nodeEvents: EventEmitter) {
-    this.env = environment;
+  /** `apiKey` is this backend's own (plan 019); it defaults to the single-backend `models.apiKey`. */
+  constructor(baseURL: string, nodeEvents: EventEmitter, apiKey: string = environment.models?.apiKey ?? '') {
+    this.apiKey = apiKey;
     this.baseURL = baseURL.replace(/\/+$/, '');
     this.openai = new OpenAI({
       baseURL: baseURL,
       // Local backends (Ollama, LM Studio) don't require a key, but the OpenAI
       // SDK rejects a missing/empty one at construction time.
-      apiKey: this.env.models.apiKey || 'not-needed'
+      apiKey: this.apiKey || 'not-needed'
     });
     this.nodeEventEmitter = nodeEvents;
   }
@@ -373,7 +376,7 @@ export class OpenAIInferenceModel {
         signal,
         headers: {
           'content-type': 'application/json',
-          ...(this.env.models.apiKey ? { authorization: `Bearer ${this.env.models.apiKey}` } : {}),
+          ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}),
         },
         body: JSON.stringify({ state: request.state, model: request.model, questions: request.questions }),
       });

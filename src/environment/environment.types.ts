@@ -31,11 +31,30 @@ export type AlgorandFileConfig = Omit<AlgorandConfig, 'mnemonic'> & { mnemonic?:
  */
 export type TokenRate = number | { input: number; output: number };
 
-export interface ModelsConfig {
-  enabled: boolean;
+/**
+ * One inference runtime in `models.backends` (plan 019). Its own address and
+ * key; everything else (pricing, kinds, availability) is shared and keyed by
+ * model id.
+ */
+export interface BackendConfig {
+  /** Shown in logs only; defaults to `host:port`. Never sent to peers. */
+  name?: string;
   baseURL: string;
   port: number;
-  apiKey: string;
+  apiKey?: string;
+}
+
+export interface ModelsConfig {
+  enabled: boolean;
+  /** The single-backend form. Not allowed beside `backends` in a config file. */
+  baseURL?: string;
+  port?: number;
+  apiKey?: string;
+  /**
+   * Several runtimes at once (plan 019). A model served by more than one goes to
+   * the first listed that is up. Replaces `baseURL`/`port`/`apiKey`.
+   */
+  backends?: BackendConfig[];
   chargePer1MTokens?: {
     default: TokenRate;
     [key: string]: TokenRate;
