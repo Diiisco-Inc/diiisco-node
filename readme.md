@@ -268,6 +268,7 @@ absolute path is unambiguous.
 | `baseURL` | `http://localhost` | Base URL of your LLM backend |
 | `port` | `11434` | Port of your LLM backend (Ollama default) |
 | `apiKey` | `""` | API key for the LLM backend, if required |
+| `backends` | _none_ | Several LLM backends instead of `baseURL`/`port`/`apiKey`: a list of `{ "name", "baseURL", "port", "apiKey" }`. See [Several backends](#-several-backends). |
 | `chargePer1MTokens` | (none) | USDC price per 1M tokens. A bare number sets equal input/output rates; use `{ input, output }` to price them separately. `default` applies to all models; add per-model keys to override. |
 | `availability.checkIntervalMs` | `30000` | How often (ms) to re-check which models the backend is actually serving. `0` disables the background poll. |
 | `availability.freshForMs` | `10000` | Maximum age (ms) of that check when answering a quote request. Older than this and the node re-probes before quoting. |
@@ -370,6 +371,29 @@ Optional. Read by the `diiisco` binary, and by DIIISCO Desktop's Launch view, wh
 ```json
 { "cli": { "apps": { "aider": { "bin": "aider", "wire": "openai" } } } }
 ```
+
+### 🔀 Several backends
+
+One node can front several inference runtimes, say Ollama on your Mac and vLLM on a DGX Spark. List them under `models.backends` in place of `baseURL`, `port` and `apiKey`:
+
+```json
+"models": {
+  "enabled": true,
+  "backends": [
+    { "name": "ollama", "baseURL": "http://localhost", "port": 11434 },
+    { "name": "spark", "baseURL": "http://192.168.1.40", "port": 8000, "apiKey": "…" }
+  ],
+  "chargePer1MTokens": { "default": 0.01703 }
+}
+```
+
+- **Every backend's models are offered**, and each request goes to the backend serving its model.
+- **A model on more than one backend** goes to the first one listed. If that one goes down, the next one listed that has it takes over.
+- **One backend going down** removes only its models; the node keeps quoting for the rest. It stops quoting only when every backend is down.
+- **Pricing, `kinds`, `availability` and `benchmark` stay shared**, keyed by model name. Performance figures describe whichever backend serves the model.
+- `name` is optional (it defaults to `host:port`) and only appears in your own logs. Backend names and addresses are never sent to other nodes.
+- Setting `baseURL`, `port` or `apiKey` beside `backends` is an error, so it is always clear which backend you meant.
+- `diiisco setup` still asks for one backend. Re-running it keeps a `backends` list you wrote, unless you pass `--models-url`, which replaces the list with that one backend.
 
 ### 🏷 Tags
 

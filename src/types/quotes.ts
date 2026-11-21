@@ -1,4 +1,4 @@
-import { OpenAIInferenceModel } from "../utils/models";
+import type { InferenceService } from "../utils/models";
 import { QuoteRequest, QuoteCandidate } from "./messages";
 
 /**
@@ -23,7 +23,7 @@ export interface BudgetPlan {
   outputCap: number;   // affordable output tokens (o), already min'd with any requester max_tokens
 }
 
-export type QuoteCreationFunction = (quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel) => Promise<RawQuote | null>;
+export type QuoteCreationFunction = (quoteRequestMsg: QuoteRequest, model: InferenceService) => Promise<RawQuote | null>;
 
 /**
  * Picks one quote from the enriched candidates. Runs after the engine has

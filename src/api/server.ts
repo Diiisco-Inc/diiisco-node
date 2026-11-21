@@ -12,7 +12,7 @@ import { Libp2p, Connection } from '@libp2p/interface';
 import { MeshMessageQueue } from '../messaging/meshMessageQueue';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
-import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
+import { type InferenceService, pickGenerationParams, countInputTokens } from '../utils/models';
 import { ModelAvailability } from '../utils/modelAvailability';
 import { filterModelsByKind, parseKindFilter } from '../utils/modelCapabilities';
 import { countSystemOneInputTokens, validateSystemOneRequest } from '../utils/systemOne';
@@ -44,7 +44,7 @@ import {
   messageForInferenceError,
 } from './inferenceErrors';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector(), pendingSettlements: () => number = () => 0, performanceFor?: (id: string) => ModelPerformance | undefined) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: InferenceService, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector(), pendingSettlements: () => number = () => 0, performanceFor?: (id: string) => ModelPerformance | undefined) => {
   const app = express();
   const port = environment.api.port || 8080;
   // Loopback unless the operator opts in: a request to this API spends the wallet.
@@ -423,7 +423,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
    * kind for the request. `ensureAvailable` goes first because it refreshes the
    * kinds the second check reads.
    */
-  const dispatch = async (body: any, runLocally: (backend: OpenAIInferenceModel) => Promise<any>): Promise<any> => {
+  const dispatch = async (body: any, runLocally: (backend: InferenceService) => Promise<any>): Promise<any> => {
     nodeStats.inferencesRequested++;
 
     const preferSelf = environment.quoteEngine.preferSelf !== false;

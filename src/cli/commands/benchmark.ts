@@ -14,13 +14,11 @@ import { liveDaemon } from '../daemon';
 import { requestBenchmark } from '../control';
 import { colour, die, info, json, setQuiet, warn } from '../output';
 import { logger, LogLevel } from '../../utils/logger';
-import { OpenAIInferenceModel } from '../../utils/models';
+import { InferenceBackends, resolveBackends } from '../../utils/backendPool';
 import { ModelAvailabilityMonitor } from '../../utils/modelAvailability';
-import { backendOrigin } from '../../utils/modelCapabilities';
 import {
   Benchmarker, MAX_BENCHMARK_MODELS, PerformanceStore, WarmthTracker, benchmarkRequest, performancePath, type BenchmarkResult,
 } from '../../utils/modelPerformance';
-import { OllamaRuntime } from '../../utils/ollamaRuntime';
 import { EventEmitter } from 'node:events';
 import type { PerformanceFigure } from '../../types/performance';
 
@@ -67,17 +65,16 @@ async function runStandalone(models: string[], list: boolean): Promise<Benchmark
   // This command prints its own output; the node's log lines would only interleave with it.
   logger.setLevel(LogLevel.ERROR);
 
-  const backend = new OpenAIInferenceModel(`${env.models.baseURL}:${env.models.port}/v1`, new EventEmitter());
+  const backends = new InferenceBackends(resolveBackends(env.models), new EventEmitter(), { kinds: env.models.kinds });
   const store = new PerformanceStore(performancePath());
   store.load();
   if (list) return benchmarkRequest({ store, served: [], requested: models, list: true });
 
-  const monitor = new ModelAvailabilityMonitor(backend, { enabled: true, checkIntervalMs: 0 });
+  const monitor = new ModelAvailabilityMonitor(backends, { enabled: true, checkIntervalMs: 0 });
   await monitor.refresh();
-  if (!monitor.isHealthy()) throw new Error(`the inference backend at ${env.models.baseURL}:${env.models.port} is not answering`);
+  if (!monitor.isHealthy()) throw new Error(`no inference backend is answering (${backends.describe()})`);
 
-  const ollama = new OllamaRuntime(backendOrigin(env.models.baseURL, env.models.port));
-  const benchmarker = new Benchmarker({ backend, store, warmth: new WarmthTracker(ollama), ollama });
+  const benchmarker = new Benchmarker({ backend: backends, store, warmth: new WarmthTracker(backends), ollama: backends });
   try {
     return await benchmarkRequest({ benchmarker, store, served: monitor.models(), requested: models, list: false });
   } finally {
