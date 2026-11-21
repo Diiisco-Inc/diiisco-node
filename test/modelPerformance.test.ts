@@ -2,16 +2,18 @@
  * Per-model performance figures (plan 018): what a sample may move, medians
  * over a bounded window, persistence that survives a corrupt file, and
  * benchmarks that run once per model, one at a time, never crash the node and
- * time a real cold start on Ollama.
+ * time a real cold start on Ollama. Decision models get response times (hot
+ * and cold) and no tokens/s.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModelInfo } from '../src/types/models';
-import { OpenAIInferenceModel, type InferenceSample } from '../src/utils/models';
+import { OpenAIInferenceModel, type InferenceSample, type Warmth } from '../src/utils/models';
 import {
   Benchmarker, MAX_TTFT_PROMPT_TOKENS, MIN_DECODE_TOKENS, PerformanceStore, WINDOW, WarmthTracker,
+  benchmarkRequest, performanceObserver,
 } from '../src/utils/modelPerformance';
 import { OllamaRuntime } from '../src/utils/ollamaRuntime';
 import { makeHome, removeHome } from './helpers';
@@ -138,18 +140,32 @@ describe('Benchmarker', () => {
     expect(p.ttftHotMs?.samples).toBe(3);
   });
 
-  test('ensure measures chat models with no record, once, and skips other kinds', async () => {
+  test('ensure measures chat and decision models with no record, once, and skips embeddings', async () => {
     const { store, benchmarker } = setup({ chunks: words(20) });
     const list = [chat('a'), chat('e', 'embedding'), chat('d', 'decision')];
     benchmarker.ensure(list);
     benchmarker.ensure(list); // a second probe while the first is running
-    await benchmarker.run([]); // let the queue drain
-    await Bun.sleep(50);
-    while (stub.requests.length < 4) await Bun.sleep(20);
-    await Bun.sleep(50);
-    expect(store.models()).toEqual(['a']);
-    expect(stub.requests.every((r) => r.body.model === 'a')).toBe(true);
+    while (stub.requests.length < 8) await Bun.sleep(20);
+    await Bun.sleep(100);
+    expect(store.models().sort()).toEqual(['a', 'd']);
+    expect(stub.requests.some((r) => r.body.model === 'e')).toBe(false);
+    expect(stub.requests.length).toBe(8);
+  });
+
+  test('a decision model is timed end to end through System One, hot and forced cold, with no tok/s', async () => {
+    const { store, benchmarker } = setup({ ollama: true, firstTokenDelayMs: 40 });
+    stub.loaded.add('tev:latest');
+    const [result] = await benchmarker.run([{ id: 'tev:latest', kind: 'decision' }]);
+    expect(result.ok).toBe(true);
+    expect(stub.unloads).toEqual(['tev:latest']);
     expect(stub.requests.length).toBe(4);
+    expect(stub.requests.every((r) => r.body.questions && !r.body.messages)).toBe(true);
+    const p = store.performanceFor('tev:latest')!;
+    expect(p.ttftColdMs?.samples).toBe(1);
+    expect(p.ttftHotMs?.samples).toBe(3);
+    expect(p.ttftHotMs!.value).toBeGreaterThanOrEqual(35);
+    expect(p.tokensPerSecond).toBeUndefined();
+    expect(p.coldStart).toBe('forced');
   });
 
   test('a model that already has a record is not re-measured on start', async () => {
@@ -210,5 +226,49 @@ describe('Benchmarker', () => {
     const [result] = await pending;
     expect(result.ok).toBe(false);
     expect(result.error).toContain('shutting down');
+  });
+});
+
+describe('decision models', () => {
+  let stub: StubBackend;
+  afterEach(() => stub?.stop());
+
+  const model = (id: string, kind?: ModelInfo['kind']): ModelInfo => ({ id, object: 'model', created: 0, owned_by: 'x', ...(kind ? { kind } : {}) });
+
+  test('a live System One call updates the response time, and the answer is untouched', async () => {
+    stub = startStubBackend({ ollama: true, firstTokenDelayMs: 20 });
+    const backend = new OpenAIInferenceModel(`${stub.url}/v1`, new EventEmitter());
+    const store = new PerformanceStore(undefined);
+    const seen: Warmth[] = [];
+    const observer = performanceObserver(store, new WarmthTracker(new OllamaRuntime(stub.url)));
+    backend.observer = { begin: observer.begin, record: (m, w, s) => { seen.push(w); observer.record(m, w, s); } };
+
+    const request = { model: 'tev:latest', state: { x: 1 }, questions: { q: { type: 'choice', instructions: 'Pick', criteria: { a: 'A' } } } };
+    const first = await backend.systemOne(request);
+    await backend.systemOne(request);
+    expect(first.answers.q.choice).toBe('negative');
+    expect(seen).toEqual(['cold', 'hot']);
+    const p = store.performanceFor('tev:latest')!;
+    expect(p.ttftColdMs?.samples).toBe(1);
+    expect(p.ttftHotMs?.samples).toBe(1);
+    expect(p.tokensPerSecond).toBeUndefined();
+  });
+
+  test('diiisco benchmark measures decision models and refuses embeddings', async () => {
+    stub = startStubBackend({ chunks: words(20) });
+    const backend = new OpenAIInferenceModel(`${stub.url}/v1`, new EventEmitter());
+    const ollama = new OllamaRuntime(stub.url);
+    const store = new PerformanceStore(undefined);
+    const benchmarker = new Benchmarker({ backend, store, warmth: new WarmthTracker(ollama), ollama });
+    const served = [model('chat'), model('tev', 'decision'), model('vec', 'embedding')];
+
+    const results = await benchmarkRequest({ benchmarker, store, served, requested: ['tev', 'vec'], list: false });
+    expect(results[0]).toMatchObject({ model: 'tev', ok: true });
+    expect(results[0].performance?.ttftHotMs?.samples).toBe(3);
+    expect(results[1]).toMatchObject({ model: 'vec', ok: false });
+    expect(results[1].error).toContain('only chat and decision models');
+
+    const listed = await benchmarkRequest({ store, served, requested: [], list: true });
+    expect(listed.map((r) => r.model)).toEqual(['chat', 'tev']);
   });
 });

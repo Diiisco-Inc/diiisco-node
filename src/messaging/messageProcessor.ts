@@ -580,8 +580,8 @@ export class MessageProcessor {
     }, QUOTE_TTL_MS);
 
     const tags = this.env.node?.tags;
-    // Only chat models are measured, and only a chat request is answered by one.
-    const performance = wanted === 'chat' ? this.performance?.performanceFor(msg.payload.model) : undefined;
+    // Only chat and decision models are ever wanted here, and both are measured.
+    const performance = this.performance?.performanceFor(msg.payload.model);
 
     // Create Quote Response
     let response: QuoteResponse = {

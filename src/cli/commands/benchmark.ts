@@ -1,6 +1,7 @@
 /**
  * `diiisco benchmark [model ...] [--list] [--json]` — re-measure (or, with
- * `--list`, show) each chat model's time to first token and tokens/s (plan 018).
+ * `--list`, show) each chat model's time to first token and tokens/s, and each
+ * decision model's response time (plan 018).
  *
  * With a node running, the node does the work over its control channel, so the
  * run never races its live samples or its writes to `model-benchmarks.json`.
@@ -33,7 +34,7 @@ const fmt = (f: PerformanceFigure | undefined, unit: string) => (f ? `${f.value}
 
 function printResults(results: BenchmarkResult[], list: boolean): void {
   if (results.length === 0) {
-    info(list ? 'No figures yet, and no chat models are being served.' : 'No chat models are being served, so there is nothing to measure.');
+    info(list ? 'No figures yet, and no chat or decision models are being served.' : 'No chat or decision models are being served, so there is nothing to measure.');
     return;
   }
   const width = Math.max(5, ...results.map((r) => r.model.length));

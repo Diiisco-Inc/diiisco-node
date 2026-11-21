@@ -9,7 +9,7 @@ import {
 import { logger } from './logger';
 import { Environment } from "../environment/environment.types";
 import EventEmitter from "events";
-import { BackendRejectedError, type SystemOneRequest } from "./systemOne";
+import { BackendRejectedError, countSystemOneInputTokens, type SystemOneRequest } from "./systemOne";
 
 /**
  * Optional generation params forwarded to the backend chat/completions call.
@@ -120,7 +120,22 @@ export interface InferenceSample {
 export type Warmth = 'cold' | 'hot' | 'unknown';
 
 /**
- * Watches live chat inference for performance tracking. `begin` runs just
+ * One System One answer as a performance sample (plan 018). A decision model
+ * answers in one piece, so its "first token" is the whole response time and
+ * there is no decode rate to measure.
+ */
+export function systemOneSample(elapsedMs: number, request: SystemOneRequest, body: any): InferenceSample {
+  const reported = body?.usage?.input_tokens;
+  return {
+    ttftMs: elapsedMs,
+    decodeMs: 0,
+    promptTokens: typeof reported === 'number' ? reported : countSystemOneInputTokens(request.state, request.questions),
+    completionTokens: 0,
+  };
+}
+
+/**
+ * Watches live chat and System One inference for performance tracking. `begin` runs just
  * before the request and must be quick; it is never allowed to fail a request.
  */
 export interface InferenceObserver {
@@ -335,8 +350,22 @@ export class OpenAIInferenceModel {
    * The backend's JSON comes back untouched. A non-2xx answer (a model that is
    * not a decision model, a runtime without the endpoint) throws
    * `BackendRejectedError` carrying the backend's status and message.
+   *
+   * The whole call is timed for the model's performance figures (plan 018).
    */
   async systemOne(request: SystemOneRequest, signal?: AbortSignal): Promise<any> {
+    const warmth = await this.observer?.begin(request.model).catch(() => 'unknown' as const);
+    const { body, elapsedMs } = await this.systemOneTimed(request, signal);
+    this.observer?.record(request.model, warmth ?? 'unknown', systemOneSample(elapsedMs, request, body));
+    return body;
+  }
+
+  /**
+   * One System One call plus how long it took, end to end. Used by
+   * `systemOne` and, directly, by the benchmarker, which skips the observer.
+   */
+  async systemOneTimed(request: SystemOneRequest, signal?: AbortSignal): Promise<{ body: any; elapsedMs: number }> {
+    const tSent = performance.now();
     let response: Response;
     try {
       response = await fetch(`${this.baseURL}/systemone`, {
@@ -368,7 +397,7 @@ export class OpenAIInferenceModel {
     if (body === undefined) {
       throw new BackendRejectedError(502, 'The model backend returned a System One response that was not JSON.');
     }
-    return body;
+    return { body, elapsedMs: performance.now() - tSent };
   }
 
   /**
