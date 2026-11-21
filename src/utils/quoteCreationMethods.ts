@@ -2,7 +2,7 @@ import environment from "../environment/runtime";
 import { QuoteRequest } from "../types/messages";
 import { RawQuote, BudgetPlan } from "../types/quotes";
 import { TokenRate } from "../environment/environment.types";
-import { OpenAIInferenceModel } from "./models";
+import type { InferenceService } from "./models";
 
 export interface TokenRates {
   input: number;
@@ -90,7 +90,7 @@ export function priceFromUsage(
  * Providers can supply their own `quoteEngine.quoteCreationFunction` with this
  * same signature to price dynamically (e.g. surge pricing by load).
  */
-export async function createStandardQuote(quoteRequestMsg: QuoteRequest, _model: OpenAIInferenceModel): Promise<RawQuote | null> {
+export async function createStandardQuote(quoteRequestMsg: QuoteRequest, _model: InferenceService): Promise<RawQuote | null> {
   // The requester supplies its own input-token count so the prompt content isn't
   // broadcast; the provider re-counts from the real content at accept time.
   const inputTokens: number = quoteRequestMsg.payload.inputTokenCount ?? 0;

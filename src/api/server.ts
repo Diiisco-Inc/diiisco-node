@@ -12,7 +12,7 @@ import { Libp2p, Connection } from '@libp2p/interface';
 import { MeshMessageQueue } from '../messaging/meshMessageQueue';
 import algorand from '../utils/algorand';
 import { MessageRouter } from '../messaging/messageRouter';
-import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from '../utils/models';
+import { type InferenceService, pickGenerationParams, countInputTokens } from '../utils/models';
 import { ModelAvailability } from '../utils/modelAvailability';
 import { filterModelsByKind, parseKindFilter } from '../utils/modelCapabilities';
 import { countSystemOneInputTokens, validateSystemOneRequest } from '../utils/systemOne';
@@ -28,6 +28,7 @@ import {
 } from './anthropicAdapter';
 import { getMeshTopic } from '../utils/topic';
 import { registerStatusPages } from './statusPages';
+import type { ModelPerformance } from '../types/performance';
 import { nodeStats } from '../utils/nodeStats';
 import { RequestLedger } from '../messaging/requestLedger';
 import { ModelListCollector } from '../messaging/modelListCollector';
@@ -43,7 +44,7 @@ import {
   messageForInferenceError,
 } from './inferenceErrors';
 
-export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: OpenAIInferenceModel, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector(), pendingSettlements: () => number = () => 0) => {
+export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: algorand, messageRouter: MessageRouter, meshQueue: MeshMessageQueue, model?: InferenceService, models?: ModelAvailability, requests: RequestLedger = new RequestLedger(), modelLists: ModelListCollector = new ModelListCollector(), pendingSettlements: () => number = () => 0, performanceFor?: (id: string) => ModelPerformance | undefined) => {
   const app = express();
   const port = environment.api.port || 8080;
   // Loopback unless the operator opts in: a request to this API spends the wallet.
@@ -92,7 +93,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
 
   // Public status pages (unauthenticated by design — see src/api/statusPages.ts)
   if (environment.node?.statusPages !== false) {
-    registerStatusPages({ app, node, nodeEvents, algo, messageRouter, models });
+    registerStatusPages({ app, node, nodeEvents, algo, messageRouter, models, performanceFor });
   }
 
   app.get('/health', (_req, res) => {
@@ -339,7 +340,12 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
           return;
         }
 
-        logger.info(`✅ Quote selected for request ID ${id}. Served by ${quote.from.toString()}. Sending quote-accepted message.`);
+        const claimed = quote.msg.payload?.quote;
+        const about = [
+          ...(claimed?.tags?.length ? [`tags ${claimed.tags.join(', ')}`] : []),
+          ...(claimed?.performance?.tokensPerSecond ? [`${claimed.performance.tokensPerSecond.value} tok/s`] : []),
+        ];
+        logger.info(`✅ Quote selected for request ID ${id}. Served by ${quote.from.toString()}${about.length ? ` (${about.join('; ')})` : ''}. Sending quote-accepted message.`);
 
         // Record who we are about to hand the prompt to and who they will be
         // paid as: the wallet that signed the quote. From here on, a payment
@@ -417,7 +423,7 @@ export const createApiServer = (node: Libp2p, nodeEvents: EventEmitter, algo: al
    * kind for the request. `ensureAvailable` goes first because it refreshes the
    * kinds the second check reads.
    */
-  const dispatch = async (body: any, runLocally: (backend: OpenAIInferenceModel) => Promise<any>): Promise<any> => {
+  const dispatch = async (body: any, runLocally: (backend: InferenceService) => Promise<any>): Promise<any> => {
     nodeStats.inferencesRequested++;
 
     const preferSelf = environment.quoteEngine.preferSelf !== false;

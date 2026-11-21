@@ -50,15 +50,19 @@ import { createServer, createConnection, type Server, type Socket } from 'node:n
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { version } from './version';
 import type { PeerReport, ReconnectReport } from '../libp2p/peerReport';
+import { MAX_BENCHMARK_MODELS, type BenchmarkResult } from '../utils/modelPerformance';
 
 /** Longest request we will read before hanging up. A shutdown line is ~90 bytes. */
-const MAX_REQUEST_BYTES = 1024;
+const MAX_REQUEST_BYTES = 8192;
 
 /** Idle timeout on a control connection. */
 const SOCKET_TIMEOUT_MS = 5_000;
 
 /** A `reconnect` runs dials that time out at 10 s and a DHT walk, so it may be quiet for longer. */
 export const RECONNECT_TIMEOUT_MS = 60_000;
+
+/** A benchmark is a cold load plus a few generations per model; give a whole run plenty of room. */
+export const BENCHMARK_TIMEOUT_MS = 30 * 60_000;
 
 /** Addresses that count as loopback for a server bound to 127.0.0.1. */
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -115,8 +119,10 @@ export function startControlServer(options: {
   onPeers?: () => unknown | null;
   /** Redial now, for `reconnect`. Rejects with a message safe to show the user. */
   onReconnect?: () => Promise<unknown>;
+  /** Report or re-measure model performance, for `benchmark`. Rejects with a message safe to show the user. */
+  onBenchmark?: (models: string[], list: boolean) => Promise<unknown>;
 }): Promise<ControlServer> {
-  const { token, onShutdown, onPeers, onReconnect } = options;
+  const { token, onShutdown, onPeers, onReconnect, onBenchmark } = options;
   const state: ControlState = options.state ?? { ready: false, apiEnabled: true };
 
   return new Promise((resolve, reject) => {
@@ -179,6 +185,24 @@ export function startControlServer(options: {
           socket.setTimeout(RECONNECT_TIMEOUT_MS, () => socket.destroy());
           onReconnect().then(
             (result) => socket.end(`${JSON.stringify({ ok: true, result })}\n`),
+            (err: unknown) => socket.end(`${JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) })}\n`),
+          );
+          return;
+        }
+
+        if (request?.action === 'benchmark') {
+          const models = request.models ?? [];
+          if (!Array.isArray(models) || models.length > MAX_BENCHMARK_MODELS || models.some((m: unknown) => typeof m !== 'string' || m.length === 0 || m.length > 256)) {
+            socket.end(`${JSON.stringify({ ok: false, error: `name at most ${MAX_BENCHMARK_MODELS} models` })}\n`);
+            return;
+          }
+          if (!onBenchmark) {
+            socket.end(`${JSON.stringify({ ok: false, error: 'this node does not support benchmark' })}\n`);
+            return;
+          }
+          socket.setTimeout(BENCHMARK_TIMEOUT_MS, () => socket.destroy());
+          onBenchmark(models, request.list === true).then(
+            (results) => socket.end(`${JSON.stringify({ ok: true, results })}\n`),
             (err: unknown) => socket.end(`${JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) })}\n`),
           );
           return;
@@ -360,7 +384,14 @@ export interface ControlQueryResult<T> {
 }
 
 /** One request/response on the control channel. Never throws. */
-function controlQuery<T>(port: number, token: string, action: string, pick: (response: any) => T, timeoutMs: number): Promise<ControlQueryResult<T>> {
+function controlQuery<T>(
+  port: number,
+  token: string,
+  action: string,
+  pick: (response: any) => T,
+  timeoutMs: number,
+  params: Record<string, unknown> = {},
+): Promise<ControlQueryResult<T>> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (result: ControlQueryResult<T>) => {
@@ -377,7 +408,7 @@ function controlQuery<T>(port: number, token: string, action: string, pick: (res
     let buffer = '';
     socket.setEncoding('utf8');
     socket.on('connect', () => {
-      socket.write(`${JSON.stringify({ action, token })}\n`);
+      socket.write(`${JSON.stringify({ ...params, action, token })}\n`);
     });
     socket.on('data', (chunk: string) => {
       buffer += chunk;
@@ -412,4 +443,15 @@ export function requestPeers(port: number, token: string, timeoutMs = 3_000): Pr
 /** Ask the daemon to redial its peers now, and wait for the pass to finish. */
 export function requestReconnect(port: number, token: string, timeoutMs = RECONNECT_TIMEOUT_MS): Promise<ControlQueryResult<ReconnectReport>> {
   return controlQuery<ReconnectReport>(port, token, 'reconnect', (r) => r.result as ReconnectReport, timeoutMs);
+}
+
+/** Ask the daemon to report (`list`) or re-measure model performance, and wait for the results. */
+export function requestBenchmark(
+  port: number,
+  token: string,
+  models: string[],
+  list: boolean,
+  timeoutMs = BENCHMARK_TIMEOUT_MS,
+): Promise<ControlQueryResult<BenchmarkResult[]>> {
+  return controlQuery<BenchmarkResult[]>(port, token, 'benchmark', (r) => r.results as BenchmarkResult[], timeoutMs, { models, list });
 }

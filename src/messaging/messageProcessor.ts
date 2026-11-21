@@ -1,7 +1,9 @@
 import { EventEmitter } from 'events';
 import algorand from "../utils/algorand";
+import type { PerformanceStore } from '../utils/modelPerformance';
+import { parsePerformance, parseTags } from '../utils/nodeInfo';
 import environment from "../environment/runtime";
-import { OpenAIInferenceModel, pickGenerationParams, countInputTokens } from "../utils/models";
+import { type InferenceService, pickGenerationParams, countInputTokens } from "../utils/models";
 import { ModelAvailability } from "../utils/modelAvailability";
 import type { ModelKind } from "../types/models";
 import { countSystemOneInputTokens, normalizeUsage, validateSystemOneRequest } from "../utils/systemOne";
@@ -92,7 +94,7 @@ const requestKey = (peerId: string, id: string) => `${peerId}|${id}`;
 
 export class MessageProcessor {
   private algo: algorand;
-  private model: OpenAIInferenceModel;
+  private model: InferenceService;
   private quoteMgr: quoteEngine;
   private models: ModelAvailability;
   private nodeEvents: EventEmitter;
@@ -118,10 +120,12 @@ export class MessageProcessor {
   private modelLists: ModelListCollector;
   // Accepted payments awaiting on-chain settlement (see `settleInBackground`).
   private settlements: SettlementQueue;
+  /** Measured figures per model (plan 018); null when measuring is off. */
+  private performance: Pick<PerformanceStore, 'performanceFor'> | null;
 
   constructor(
     algo: algorand,
-    model: OpenAIInferenceModel,
+    model: InferenceService,
     quoteMgr: quoteEngine,
     models: ModelAvailability,
     nodeEvents: EventEmitter,
@@ -130,8 +134,10 @@ export class MessageProcessor {
     node: any,
     requests: RequestLedger = new RequestLedger(),
     modelLists: ModelListCollector = new ModelListCollector(),
-    settlements: SettlementQueue = new SettlementQueue()
+    settlements: SettlementQueue = new SettlementQueue(),
+    performance: Pick<PerformanceStore, 'performanceFor'> | null = null
   ) {
+    this.performance = performance;
     this.algo = algo;
     this.model = model;
     this.quoteMgr = quoteMgr;
@@ -459,7 +465,7 @@ export class MessageProcessor {
       to: sourcePeerId,
       fromWalletAddr: this.algo.account.addr.toString(),
       payload: {
-        profile: buildOwnProfile(this.node, this.algo, this.models.list(), (id) => this.models.kindOf(id)),
+        profile: buildOwnProfile(this.node, this.algo, this.models.list(), (id) => this.models.kindOf(id), (id) => this.performance?.performanceFor(id)),
       }
     };
     await this.deliver(response, sourcePeerId);
@@ -488,6 +494,16 @@ export class MessageProcessor {
       ...profile,
       nfd: nfdVerified ? profile.nfd : undefined,
       nfdVerified: nfdVerified || undefined,
+      // Self-declared and shown on a public page: keep only what has the right
+      // shape. A bad field is dropped; the rest of the profile still shows.
+      tags: parseTags(profile.tags),
+      ...(profile.stats && Array.isArray(profile.stats.models) ? {
+        stats: {
+          ...profile.stats,
+          models: profile.stats.models.map((m: any) =>
+            m && typeof m === 'object' ? { ...m, performance: parsePerformance(m.performance) } : m),
+        },
+      } : {}),
     });
   }
 
@@ -563,6 +579,10 @@ export class MessageProcessor {
       maxSpend: msg.payload.maxSpend,
     }, QUOTE_TTL_MS);
 
+    const tags = this.env.node?.tags;
+    // Only chat and decision models are ever wanted here, and both are measured.
+    const performance = this.performance?.performanceFor(msg.payload.model);
+
     // Create Quote Response
     let response: QuoteResponse = {
       role: 'quote-response',
@@ -588,6 +608,11 @@ export class MessageProcessor {
           // Advertised NFD name + our peer id so the requester can verify the NFD.
           nfd: this.env.algorand?.nfd,
           providerPeerId: this.ownPeerId,
+          // What this node says about itself (plan 018). Sent whatever
+          // `publicStats` says: the requester needs it to choose, and a quote
+          // goes only to that requester.
+          ...(tags && tags.length > 0 ? { tags } : {}),
+          ...(performance ? { performance } : {}),
         },
       }
     };

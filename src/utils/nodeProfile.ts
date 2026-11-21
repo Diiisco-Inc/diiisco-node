@@ -7,6 +7,8 @@ import environment from '../environment/runtime';
 import algorand from './algorand';
 import { getRatesPer1M } from './quoteCreationMethods';
 import { version } from './version';
+import { parseTags } from './nodeInfo';
+import { isMeasured, type ModelPerformance } from '../types/performance';
 
 /**
  * Build this node's own public profile. Identity fields are always included;
@@ -18,7 +20,8 @@ export const buildOwnProfile = (
   node: any,
   algo: algorand,
   availableModels: string[],
-  kindOf: (id: string) => ModelKind = () => 'chat'
+  kindOf: (id: string) => ModelKind = () => 'chat',
+  performanceFor: (id: string) => ModelPerformance | undefined = () => undefined
 ): NodeProfile => {
   const localMode = environment.local?.enabled === true;
 
@@ -42,12 +45,15 @@ export const buildOwnProfile = (
     observedAt: new Date().toISOString(),
     version: version(),
   };
+  const tags = parseTags(environment.node?.tags);
+  if (tags && tags.length > 0) profile.tags = tags;
 
   if (environment.node?.publicStats !== false) {
     profile.stats = {
       models: availableModels.map((id) => {
         const { input, output } = getRatesPer1M(id);
         const kind = kindOf(id);
+        const performance = isMeasured(kind) ? performanceFor(id) : undefined;
         return {
           id,
           // Only the notable kinds are published: a chat model is the default,
@@ -59,6 +65,7 @@ export const buildOwnProfile = (
             pricePerInputToken1M: input,
             pricePerOutputToken1M: output,
           }),
+          ...(performance ? { performance } : {}),
         };
       }),
       connectedPeers: node.getConnections().length,

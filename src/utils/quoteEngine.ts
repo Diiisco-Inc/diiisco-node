@@ -3,11 +3,12 @@ import { EventEmitter } from 'events'
 import { QuoteEvent, QuoteQueueEntry, QuoteRequest, QuoteResponse, QuoteCandidate } from '../types/messages';
 import { Environment } from '../environment/environment.types';
 import { selectHighestStakeQuote } from './quoteSelectionMethods';
-import { OpenAIInferenceModel } from './models';
+import type { InferenceService } from './models';
 import { createStandardQuote } from './quoteCreationMethods';
 import { RawQuote } from '../types/quotes';
 import algorand, { verifyNFD } from './algorand';
 import diiiscoAssets from './diiiscoAssets';
+import { parsePerformance, parseTags } from './nodeInfo';
 import { logger } from './logger';
 
 const NFD_CACHE_TTL_MS = 5 * 60_000;
@@ -109,6 +110,8 @@ export default class quoteEngine {
           dscoBalance,
           nfdAuthenticated,
           responseLatencyMs,
+          tags: parseTags(quote.tags) ?? [],
+          performance: parsePerformance(quote.performance),
           msg: e.msg,
         };
       } catch (err) {
@@ -150,7 +153,7 @@ export default class quoteEngine {
     return verified;
   }
 
-  async createQuote(quoteRequestMsg: QuoteRequest, model: OpenAIInferenceModel): Promise<RawQuote | null> {
+  async createQuote(quoteRequestMsg: QuoteRequest, model: InferenceService): Promise<RawQuote | null> {
     // The quote carries per-token rates only; there is no price ceiling to clamp
     // (§4.2). A null result means the request can't be served within the
     // requester's budget, so the provider doesn't quote.
@@ -186,6 +189,10 @@ export function isValidQuoteResponse(msg: unknown): msg is QuoteResponse {
     isOptional(q.requestTimestamp, isFiniteNumber) &&
     isOptional(q.settlementMethods, Array.isArray) &&
     isOptional(q.providerPeerId, (v) => typeof v === 'string') &&
-    isOptional(q.nfd, (v) => typeof v === 'string')
+    isOptional(q.nfd, (v) => typeof v === 'string') &&
+    // Self-reported (plan 018): only the shape and bounds can be checked, and a
+    // malformed claim sinks the quote like any other malformed field.
+    isOptional(q.tags, (v) => parseTags(v) !== undefined) &&
+    isOptional(q.performance, (v) => parsePerformance(v) !== undefined)
   );
 }

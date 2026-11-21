@@ -1,10 +1,18 @@
 import type { Model } from "openai/resources/index";
 import environment from "../environment/runtime";
-import { OpenAIInferenceModel } from "./models";
 import { logger } from "./logger";
 import { guarded } from "./processGuards";
 import type { ModelInfo, ModelKind } from "../types/models";
-import { ModelKindDetector } from "./modelCapabilities";
+import type { ModelKindDetector } from "./modelCapabilities";
+
+/**
+ * Where the served models come from: the node's backends (`InferenceBackends`,
+ * which classifies each model with its own runtime's detector) or, in tests,
+ * a single backend. `timeoutMs` bounds kind detection within the probe.
+ */
+export interface ModelSource {
+  getModels(signal?: AbortSignal, timeoutMs?: number): Promise<Model[] | ModelInfo[]>;
+}
 
 const DEFAULT_CHECK_INTERVAL_MS = 30_000;
 const DEFAULT_FRESH_FOR_MS = 10_000;
@@ -47,12 +55,15 @@ export interface ModelAvailabilityOptions {
   checkIntervalMs?: number;
   freshForMs?: number;
   timeoutMs?: number;
-  /** Replace how model kinds are worked out. Tests; the default reads `models.kinds`. */
+  /**
+   * Classify the models here rather than trusting the source's `kind`. Tests;
+   * in the node the backends classify each model against its own runtime.
+   */
   kindDetector?: Pick<ModelKindDetector, 'classify'>;
 }
 
 /**
- * Keeps the served-model set honest by re-probing the backend's `/v1/models`.
+ * Keeps the served-model set honest by re-probing the backends' `/v1/models`.
  *
  * Two mechanisms, deliberately both:
  *
@@ -65,16 +76,17 @@ export interface ModelAvailabilityOptions {
  * Probes are single-flight, so a burst of quote-requests costs one backend
  * call, and they fail **closed**: one failed probe empties the set and the node
  * stops quoting. Losing an auction for one poll interval is cheap; winning one
- * with a dead backend is the bug this exists to fix.
+ * with a dead backend is the bug this exists to fix. With several backends
+ * (plan 019) the source drops a dead one's models and fails only when all are down.
  */
 export class ModelAvailabilityMonitor implements ModelAvailability {
-  private readonly backend: OpenAIInferenceModel;
+  private readonly backend: ModelSource;
   private readonly enabled: boolean;
   private readonly checkIntervalMs: number;
   private readonly freshForMs: number;
   private readonly timeoutMs: number;
 
-  private readonly kindDetector: Pick<ModelKindDetector, 'classify'>;
+  private readonly kindDetector: Pick<ModelKindDetector, 'classify'> | undefined;
 
   private current: ModelInfo[] = [];
   private ids: Set<string> = new Set();
@@ -84,19 +96,21 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
   private checkedAt = 0;
   private inFlight: Promise<string[]> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Called with the served models after every successful probe (performance
+   * benchmarking hangs off this). Must be cheap and must not throw; a throw is
+   * caught and logged so it can never fail the probe.
+   */
+  onModels?: (models: ModelInfo[]) => void;
 
-  constructor(backend: OpenAIInferenceModel, options: ModelAvailabilityOptions = {}) {
+  constructor(backend: ModelSource, options: ModelAvailabilityOptions = {}) {
     const configured = environment.models?.availability ?? {};
     this.backend = backend;
     this.enabled = options.enabled ?? environment.models?.enabled ?? false;
     this.checkIntervalMs = options.checkIntervalMs ?? configured.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS;
     this.freshForMs = options.freshForMs ?? configured.freshForMs ?? DEFAULT_FRESH_FOR_MS;
     this.timeoutMs = options.timeoutMs ?? configured.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.kindDetector = options.kindDetector ?? new ModelKindDetector({
-      baseURL: environment.models?.baseURL ?? 'http://localhost',
-      port: environment.models?.port ?? 11434,
-      overrides: environment.models?.kinds,
-    });
+    this.kindDetector = options.kindDetector;
   }
 
   list(): string[] {
@@ -159,7 +173,7 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const models = await this.backend.getModels(controller.signal);
+      const models = await this.backend.getModels(controller.signal, this.timeoutMs);
       this.applySuccess(await this.withKinds(models.filter((m) => m.object === 'model')));
       return [...this.ids];
     } catch (err) {
@@ -174,7 +188,8 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
    * Tag each model with its kind. Detection has its own budget and can never
    * fail the probe: whatever goes wrong, the models are still served, as chat.
    */
-  private async withKinds(models: Model[]): Promise<ModelInfo[]> {
+  private async withKinds(models: ModelInfo[]): Promise<ModelInfo[]> {
+    if (!this.kindDetector) return models;
     try {
       return await this.kindDetector.classify(models, this.timeoutMs);
     } catch (err) {
@@ -193,6 +208,12 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     this.kinds = new Map(models.map((m) => [m.id, m.kind ?? 'chat']));
     this.healthy = true;
     this.checkedAt = Date.now();
+
+    try {
+      this.onModels?.(models);
+    } catch (err) {
+      logger.debug(`A model-list listener failed: ${(err as Error).message}`);
+    }
 
     // Say what is *not* a chat model, once per change — it explains why a model
     // does not appear in a tool's picker.
@@ -228,8 +249,7 @@ export class ModelAvailabilityMonitor implements ModelAvailability {
     this.checkedAt = Date.now();
 
     if (wasHealthy) {
-      const endpoint = `${environment.models?.baseURL}:${environment.models?.port}`;
-      logger.warn(`⚠️ Inference backend at ${endpoint} is unreachable — this node has stopped quoting${err ? ` (${err.message})` : ''}`);
+      logger.warn(`⚠️ Inference backend unreachable — this node has stopped quoting${err ? ` (${err.message})` : ''}`);
     }
   }
 

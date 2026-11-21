@@ -9,8 +9,9 @@ import { EventEmitter } from 'events';
 import algorand from "./utils/algorand";
 import environment from "./environment/runtime";
 import { Environment } from "./environment/environment.types";
-import { OpenAIInferenceModel } from "./utils/models";
+import { InferenceBackends, resolveBackends } from "./utils/backendPool";
 import { ModelAvailability, ModelAvailabilityMonitor } from "./utils/modelAvailability";
+import { Benchmarker, PerformanceStore, WarmthTracker, benchmarkRequest, performanceObserver, performancePath, type BenchmarkResult } from './utils/modelPerformance';
 import quoteEngine from "./utils/quoteEngine";
 import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
@@ -39,8 +40,11 @@ function settlementQueuePath(): string | undefined {
 class Application extends EventEmitter {
   private node: any;
   private algo: algorand;
-  private model: OpenAIInferenceModel;
+  private model: InferenceBackends;
   private models: ModelAvailability;
+  // Performance figures and the benchmarks that seed them (plan 018); null when `models.benchmark.enabled` is false.
+  private performance: PerformanceStore | null = null;
+  private benchmarker: Benchmarker | null = null;
   private quoteMgr: quoteEngine;
   private topics: string[] = [];
   private env: Environment;
@@ -91,8 +95,18 @@ class Application extends EventEmitter {
     super();
     this.env = environment;
     this.algo = new algorand();
-    this.model = new OpenAIInferenceModel(`${this.env.models.baseURL}:${this.env.models.port}/v1`, this);
-    this.models = new ModelAvailabilityMonitor(this.model);
+    this.model = new InferenceBackends(resolveBackends(this.env.models), this, { kinds: this.env.models.kinds });
+    const monitor = new ModelAvailabilityMonitor(this.model);
+    this.models = monitor;
+    if (this.env.models.enabled && this.env.models.benchmark?.enabled !== false) {
+      // The pool answers runtime questions (loaded? Ollama? digest?) for whichever backend serves the model.
+      const warmth = new WarmthTracker(this.model);
+      this.performance = new PerformanceStore(performancePath());
+      this.benchmarker = new Benchmarker({ backend: this.model, store: this.performance, warmth, ollama: this.model });
+      this.model.observer = performanceObserver(this.performance, warmth);
+      const benchmarker = this.benchmarker;
+      monitor.onModels = guarded('Benchmarking models', (list) => benchmarker.ensure(list));
+    }
     this.quoteMgr = new quoteEngine(this, this.algo);
   }
   
@@ -157,6 +171,20 @@ class Application extends EventEmitter {
     return this.reconnecting;
   }
 
+  /**
+   * `diiisco benchmark` on the running node: report or re-measure performance
+   * figures through the node's own benchmarker, so the run never races its
+   * live samples or file writes. Rejects with a message safe to show the user.
+   */
+  async benchmark(requested: string[], list: boolean): Promise<BenchmarkResult[]> {
+    if (!this.benchmarker || !this.performance) {
+      throw new Error('performance measurement is off on this node (models.benchmark.enabled is false)');
+    }
+    if (this.isShuttingDown) throw new Error('the node is shutting down');
+    await this.models.refresh();
+    return benchmarkRequest({ benchmarker: this.benchmarker, store: this.performance, served: this.models.models(), requested, list });
+  }
+
   async start() {
     // Load bootstrap server addresses for reconnection
     this.bootstrapAddresses = await lookupBootstrapServers();
@@ -184,6 +212,7 @@ class Application extends EventEmitter {
     // A backend that isn't up yet is a warning, not a fatal error: this used to
     // be a bare `getModels()` whose rejection took the whole node down, so the
     // node could not be started before Ollama.
+    this.performance?.load();
     await this.models.refresh();
     this.models.start();
 
@@ -226,7 +255,8 @@ class Application extends EventEmitter {
       this.node,
       this.requests,
       this.modelLists,
-      this.settlements
+      this.settlements,
+      this.performance
     );
     this.messageProcessor.resumeSettlements();
 
@@ -242,7 +272,7 @@ class Application extends EventEmitter {
 
     // Start the API Server
     if (this.env.api.enabled) {
-      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests, this.modelLists, () => this.messageProcessor?.pendingSettlements() ?? 0);
+      const { server } = createApiServer(this.node, this, this.algo, this.messageRouter!, meshQueue, this.model, this.models, this.requests, this.modelLists, () => this.messageProcessor?.pendingSettlements() ?? 0, (id) => this.performance?.performanceFor(id));
       this.apiServer = server;
     }
 
@@ -479,6 +509,8 @@ class Application extends EventEmitter {
       this.stopSleepDetector?.();
       this.keepAwake.stop();
       this.models.stop();
+      this.benchmarker?.stop();
+      this.performance?.close();
 
       // 3. Unsubscribe from pubsub topics
       for (const topic of this.topics) {

@@ -31,11 +31,30 @@ export type AlgorandFileConfig = Omit<AlgorandConfig, 'mnemonic'> & { mnemonic?:
  */
 export type TokenRate = number | { input: number; output: number };
 
-export interface ModelsConfig {
-  enabled: boolean;
+/**
+ * One inference runtime in `models.backends` (plan 019). Its own address and
+ * key; everything else (pricing, kinds, availability) is shared and keyed by
+ * model id.
+ */
+export interface BackendConfig {
+  /** Shown in logs only; defaults to `host:port`. Never sent to peers. */
+  name?: string;
   baseURL: string;
   port: number;
-  apiKey: string;
+  apiKey?: string;
+}
+
+export interface ModelsConfig {
+  enabled: boolean;
+  /** The single-backend form. Not allowed beside `backends` in a config file. */
+  baseURL?: string;
+  port?: number;
+  apiKey?: string;
+  /**
+   * Several runtimes at once (plan 019). A model served by more than one goes to
+   * the first listed that is up. Replaces `baseURL`/`port`/`apiKey`.
+   */
+  backends?: BackendConfig[];
   chargePer1MTokens?: {
     default: TokenRate;
     [key: string]: TokenRate;
@@ -52,6 +71,13 @@ export interface ModelsConfig {
    * `chat` are kept out of chat tools' model lists.
    */
   kinds?: Record<string, ModelKind>;
+  /**
+   * Performance measurement (plan 018). On by default: each served chat model
+   * is benchmarked once (time to first token cold and hot, tokens/s) and live
+   * inference keeps the figures current; they go out in quotes and on the
+   * status pages. `false` stops all of it.
+   */
+  benchmark?: { enabled?: boolean };
 }
 
 /**
@@ -198,6 +224,13 @@ export interface Environment {
     url?: string;
     port?: number;
     displayName?: string;
+    /**
+     * Free-form labels for this node's hardware or capabilities, e.g. "cuda",
+     * "apple-silicon-m4-pro", "nvidia-dgx-spark". Set by the operator, sent in
+     * every quote and shown on the status pages. Peers cannot verify them.
+     * Lowercase letters, digits and hyphens; at most 16 (see `src/utils/nodeInfo.ts`).
+     */
+    tags?: string[];
     publicStats?: boolean;  // default true — set false to stop publishing detailed stats on status pages
     statusPages?: boolean;  // default true — set false to disable the public status page routes
     /**
