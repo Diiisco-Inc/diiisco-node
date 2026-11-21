@@ -1,3 +1,5 @@
+import type { ModelKind } from './models';
+
 /**
  * How fast a node serves one model, as the node itself measured it (plan 018).
  * Carried in quotes and on the status pages. Self-reported: a receiver can
@@ -30,3 +32,11 @@ export interface ModelPerformance {
   updatedAt: number;
   coldStart?: ColdStartMethod;
 }
+
+/**
+ * The kinds that get figures. A decision model answers in one piece, so its
+ * time-to-first-token figures hold the whole response time and it has no
+ * tokens/s; an embedding is not measured.
+ */
+export const MEASURED_KINDS: readonly ModelKind[] = ['chat', 'decision'];
+export const isMeasured = (kind: ModelKind | undefined): boolean => MEASURED_KINDS.includes(kind ?? 'chat');

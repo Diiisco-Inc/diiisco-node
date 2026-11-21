@@ -116,11 +116,12 @@ describe('the provider', () => {
     expect('tags' in sentQuote(sent)).toBe(false);
   });
 
-  test('a System One quote carries no chat performance figures', async () => {
-    const { processor, sent } = provider({ tev: PERF });
+  test('a System One quote carries the decision model\'s response-time figures', async () => {
+    const decision = { ttftHotMs: { value: 120, samples: 3 }, updatedAt: PERF.updatedAt };
+    const { processor, sent } = provider({ tev: decision });
     await processor.process(quoteRequest('tev', 'systemone'), 'peer-requester');
     expect(sent.length).toBe(1);
-    expect('performance' in sentQuote(sent)).toBe(false);
+    expect(sentQuote(sent).performance).toEqual(decision);
   });
 
   test('publicStats: false still sends figures in quotes', async () => {

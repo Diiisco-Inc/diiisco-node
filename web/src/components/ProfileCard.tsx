@@ -32,6 +32,10 @@ function Figure({ figure, unit, note }: { figure?: PerformanceFigure; unit: 'ms'
 const coldNote = (p?: ModelPerformance) =>
   p?.coldStart === 'forced' ? 'the node unloaded the model to time this' : p?.coldStart === 'observed' ? 'seen on a real request' : undefined;
 
+// A decision model answers in one piece, so its "first token" is the whole response.
+const WHOLE_RESPONSE = 'whole response: a decision model answers in one piece';
+const notes = (...parts: (string | undefined)[]) => parts.filter(Boolean).join('; ') || undefined;
+
 export function ProfileCard({ profile }: { profile: NodeProfile }) {
   const title = profile.displayName || shortPeerId(profile.peerId);
   // A local network has no cost, so there is no price to show.
@@ -116,7 +120,7 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
                     {showPrices ? <th>Price / 1M tokens</th> : null}
                     {showPerformance ? (
                       <>
-                        <th title="Time to first token with the model already loaded">First token</th>
+                        <th title="Time to first token with the model already loaded (for a decision model, the whole response time)">First token</th>
                         <th title="Time to first token when the model had to be loaded first">Cold start</th>
                         <th title="Output tokens per second">Speed</th>
                       </>
@@ -133,8 +137,8 @@ export function ProfileCard({ profile }: { profile: NodeProfile }) {
                       {showPrices ? <td>{m.pricePer1MTokens != null ? `$${m.pricePer1MTokens}` : '—'}</td> : null}
                       {showPerformance ? (
                         <>
-                          <td><Figure figure={m.performance?.ttftHotMs} unit="ms" /></td>
-                          <td><Figure figure={m.performance?.ttftColdMs} unit="ms" note={coldNote(m.performance)} /></td>
+                          <td><Figure figure={m.performance?.ttftHotMs} unit="ms" note={m.kind === 'decision' ? WHOLE_RESPONSE : undefined} /></td>
+                          <td><Figure figure={m.performance?.ttftColdMs} unit="ms" note={notes(m.kind === 'decision' ? WHOLE_RESPONSE : undefined, coldNote(m.performance))} /></td>
                           <td><Figure figure={m.performance?.tokensPerSecond} unit="tok/s" /></td>
                         </>
                       ) : null}

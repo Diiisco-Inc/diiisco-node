@@ -1,7 +1,11 @@
 /**
  * Per-model performance figures (plan 018): time to first token cold and hot,
- * and decode tokens/s. A benchmark seeds them, then every live chat inference
- * keeps them current, as the median of the last few samples.
+ * and decode tokens/s. A benchmark seeds them, then every live inference keeps
+ * them current, as the median of the last few samples.
+ *
+ * Chat and decision models are measured. A decision model answers in one piece
+ * (`/v1/systemone`), so its "time to first token" figures hold the whole
+ * response time, hot and cold, and it has no tokens/s.
  *
  * The figures are kept in `model-benchmarks.json` beside the peer identity: no
  * prompts, no completions, only numbers and model ids.
@@ -11,10 +15,10 @@ import { dirname, join } from 'node:path';
 import environment from '../environment/runtime';
 import { resolvePath } from './paths';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import type { ModelInfo } from '../types/models';
-import type { ColdStartMethod, ModelPerformance, PerformanceFigure } from '../types/performance';
+import type { ModelInfo, ModelKind } from '../types/models';
+import { isMeasured, type ColdStartMethod, type ModelPerformance, type PerformanceFigure } from '../types/performance';
 import { logger } from './logger';
-import { toSample, type InferenceObserver, type InferenceSample, type OpenAIInferenceModel, type Warmth } from './models';
+import { systemOneSample, toSample, type InferenceObserver, type InferenceSample, type OpenAIInferenceModel, type Warmth } from './models';
 import type { OllamaRuntime } from './ollamaRuntime';
 import { version } from './version';
 
@@ -282,6 +286,17 @@ const BENCHMARK_MESSAGES: ChatCompletionMessageParam[] = [
   { role: 'user', content: 'Write one paragraph, about 100 words, on the history of the bicycle.' },
 ];
 const BENCHMARK_PARAMS = { max_tokens: 128, temperature: 0 };
+/** A decision model's benchmark: one small typed question, a few dozen tokens in. */
+const BENCHMARK_SYSTEMONE = {
+  state: { message: 'My order arrived two weeks late and the box was crushed.' },
+  questions: {
+    sentiment: {
+      type: 'choice',
+      instructions: 'How does the customer feel?',
+      criteria: { positive: 'Happy or satisfied', neutral: 'Neither', negative: 'Unhappy or frustrated' },
+    },
+  },
+};
 const HOT_RUNS = 3;
 const COLD_TIMEOUT_MS = 180_000;
 const HOT_TIMEOUT_MS = 60_000;
@@ -294,12 +309,15 @@ export interface BenchmarkResult {
 }
 
 export interface BenchmarkerDeps {
-  backend: Pick<OpenAIInferenceModel, 'chatTimed'>;
+  backend: Pick<OpenAIInferenceModel, 'chatTimed' | 'systemOneTimed'>;
   store: PerformanceStore;
   warmth: WarmthTracker;
   ollama: Pick<OllamaRuntime, 'isOllama' | 'digest' | 'unload'>;
   timeouts?: { coldMs?: number; hotMs?: number };
 }
+
+/** A model to measure: a bare id is a chat model. */
+export type BenchmarkTarget = string | Pick<ModelInfo, 'id' | 'kind'>;
 
 /**
  * Runs benchmarks one at a time, in the background. `ensure` is called after
@@ -320,21 +338,21 @@ export class Benchmarker {
     this.hotMs = deps.timeouts?.hotMs ?? HOT_TIMEOUT_MS;
   }
 
-  /** Queue whatever served chat models still need measuring. Cheap and idempotent. */
+  /** Queue whatever served chat and decision models still need measuring. Cheap and idempotent. */
   ensure(models: ModelInfo[]): void {
-    const chat = models.filter((m) => (m.kind ?? 'chat') === 'chat').map((m) => m.id);
-    const present = new Set(chat);
+    const measured = models.filter((m) => isMeasured(m.kind));
+    const present = new Set(measured.map((m) => m.id));
     for (const id of [...this.checked]) if (!present.has(id)) this.checked.delete(id);
-    for (const id of chat) {
-      if (this.checked.has(id)) continue;
-      this.checked.add(id);
-      void this.enqueue(id, false);
+    for (const m of measured) {
+      if (this.checked.has(m.id)) continue;
+      this.checked.add(m.id);
+      void this.enqueue(m.id, m.kind ?? 'chat', false);
     }
   }
 
   /** Measure `models` now (after anything already queued) and resolve with the results. */
-  run(models: string[]): Promise<BenchmarkResult[]> {
-    return Promise.all(models.map((id) => this.enqueue(id, true)));
+  run(models: BenchmarkTarget[]): Promise<BenchmarkResult[]> {
+    return Promise.all(models.map((m) => (typeof m === 'string' ? this.enqueue(m, 'chat', true) : this.enqueue(m.id, m.kind ?? 'chat', true))));
   }
 
   /** Abandon the run in progress and anything queued; for shutdown. */
@@ -342,23 +360,23 @@ export class Benchmarker {
     this.abort.abort();
   }
 
-  private enqueue(model: string, force: boolean): Promise<BenchmarkResult> {
+  private enqueue(model: string, kind: ModelKind, force: boolean): Promise<BenchmarkResult> {
     const existing = this.queued.get(model);
     if (existing) return existing;
-    const job = this.chain.then(() => this.measureIfNeeded(model, force)).finally(() => this.queued.delete(model));
+    const job = this.chain.then(() => this.measureIfNeeded(model, kind, force)).finally(() => this.queued.delete(model));
     this.queued.set(model, job);
     this.chain = job.catch(() => {});
     return job;
   }
 
-  private async measureIfNeeded(model: string, force: boolean): Promise<BenchmarkResult> {
+  private async measureIfNeeded(model: string, kind: ModelKind, force: boolean): Promise<BenchmarkResult> {
     if (this.abort.signal.aborted) return { model, ok: false, error: 'the node is shutting down' };
     const digest = await this.deps.ollama.digest(model);
     if (!force && !this.deps.store.needsBenchmark(model, digest)) {
       return { model, ok: true, performance: this.deps.store.performanceFor(model) };
     }
     try {
-      return await this.measure(model, digest);
+      return await this.measure(model, kind, digest);
     } catch (err) {
       const error = this.abort.signal.aborted ? 'the node is shutting down' : String((err as Error)?.message ?? err).replace(/\.+$/, '');
       if (!this.abort.signal.aborted) logger.warn(`⚠️ Could not benchmark ${model}: ${error}. It will be tried again on the next start.`);
@@ -366,20 +384,20 @@ export class Benchmarker {
     }
   }
 
-  private async measure(model: string, digest: string | undefined): Promise<BenchmarkResult> {
-    logger.info(`📏 Benchmarking ${model} (time to first token and tokens/s)…`);
+  private async measure(model: string, kind: ModelKind, digest: string | undefined): Promise<BenchmarkResult> {
+    logger.info(`📏 Benchmarking ${model} (${kind === 'decision' ? 'response time' : 'time to first token and tokens/s'})…`);
     const samples: { warmth: Warmth; sample: InferenceSample; coldStart?: ColdStartMethod }[] = [];
 
     // A cold start is only timed when one can be made to happen: Ollama unloads
     // on request. Elsewhere the first run's warmth is whatever is known about it.
     const forced = (await this.deps.ollama.isOllama()) && (await this.deps.ollama.unload(model, this.abort.signal));
     const firstWarmth: Warmth = forced ? 'cold' : await this.deps.warmth.before(model);
-    const first = await this.once(model, forced ? this.coldMs : this.hotMs);
+    const first = await this.once(model, kind, forced ? this.coldMs : this.hotMs);
     if (first) samples.push({ warmth: firstWarmth, sample: first, coldStart: forced ? 'forced' : undefined });
 
     for (let i = 0; i < HOT_RUNS; i++) {
       await this.deps.warmth.before(model);
-      const sample = await this.once(model, this.hotMs);
+      const sample = await this.once(model, kind, this.hotMs);
       if (sample) samples.push({ warmth: 'hot', sample });
     }
     if (samples.length === 0) throw new Error('the model produced no output');
@@ -390,20 +408,28 @@ export class Benchmarker {
     return { model, ok: true, performance };
   }
 
-  private async once(model: string, timeoutMs: number): Promise<InferenceSample | null> {
+  private async once(model: string, kind: ModelKind, timeoutMs: number): Promise<InferenceSample | null> {
     const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(timeoutMs)]);
+    if (kind === 'decision') {
+      const request = { model, ...BENCHMARK_SYSTEMONE };
+      const { body, elapsedMs } = await this.deps.backend.systemOneTimed(request, signal);
+      return systemOneSample(elapsedMs, request, body);
+    }
     const { completion, timing } = await this.deps.backend.chatTimed(model, BENCHMARK_MESSAGES, BENCHMARK_PARAMS, signal);
     return timing ? toSample(timing, completion, BENCHMARK_MESSAGES, BENCHMARK_PARAMS) : null;
   }
 }
 
-/** `cold 2140 ms, hot 85 ms, 54.2 tok/s (forced cold)` — for logs and the CLI. */
+/**
+ * `cold 2140 ms, hot 85 ms, 54.2 tok/s (forced cold)` — for logs and the CLI.
+ * A decision model has no tok/s, so that part is left out when absent.
+ */
 export function describePerformance(p: ModelPerformance | undefined): string {
   if (!p) return 'no figures yet';
   const parts = [
     `cold ${p.ttftColdMs ? `${p.ttftColdMs.value} ms` : '—'}`,
     `hot ${p.ttftHotMs ? `${p.ttftHotMs.value} ms` : '—'}`,
-    `${p.tokensPerSecond ? p.tokensPerSecond.value : '—'} tok/s`,
+    ...(p.tokensPerSecond ? [`${p.tokensPerSecond.value} tok/s`] : []),
   ];
   return `${parts.join(', ')}${p.coldStart ? ` (${p.coldStart} cold)` : ''}`;
 }
@@ -421,8 +447,9 @@ export const MAX_BENCHMARK_MODELS = 16;
  * What `diiisco benchmark` does, shared by the daemon (over the control
  * channel) and the CLI's own run when no daemon is up. With `list`, report the
  * figures held; otherwise re-measure the named models, or every served chat
- * model when none are named. A named model that is not a served chat model
- * comes back as a failed result rather than an error, so the rest still run.
+ * and decision model when none are named. A named model that is not served, or
+ * is an embedding model, comes back as a failed result rather than an error,
+ * so the rest still run.
  */
 export async function benchmarkRequest(options: {
   /** Not needed to `list`. */
@@ -433,22 +460,22 @@ export async function benchmarkRequest(options: {
   list: boolean;
 }): Promise<BenchmarkResult[]> {
   const { benchmarker, store, served, requested, list } = options;
-  const chat = served.filter((m) => (m.kind ?? 'chat') === 'chat').map((m) => m.id);
+  const measured = served.filter((m) => isMeasured(m.kind));
 
   if (list) {
-    const ids = requested.length > 0 ? requested : [...new Set([...chat, ...store.models()])].sort();
+    const ids = requested.length > 0 ? requested : [...new Set([...measured.map((m) => m.id), ...store.models()])].sort();
     return ids.map((model) => ({ model, ok: true, performance: store.performanceFor(model) }));
   }
 
   if (!benchmarker) throw new Error('nothing here can run a benchmark');
-  const targets = requested.length > 0 ? requested : chat;
+  const targets = requested.length > 0 ? requested : measured.map((m) => m.id);
   const results = new Map<string, BenchmarkResult>();
-  const runnable: string[] = [];
+  const runnable: ModelInfo[] = [];
   for (const model of targets) {
     const entry = served.find((m) => m.id === model);
     if (!entry) results.set(model, { model, ok: false, error: 'not served by this node right now' });
-    else if ((entry.kind ?? 'chat') !== 'chat') results.set(model, { model, ok: false, error: `it is a ${entry.kind} model; only chat models are measured` });
-    else runnable.push(model);
+    else if (!isMeasured(entry.kind)) results.set(model, { model, ok: false, error: `it is a ${entry.kind} model; only chat and decision models are measured` });
+    else runnable.push(entry);
   }
   for (const result of await benchmarker.run(runnable)) results.set(result.model, result);
   return targets.map((model) => results.get(model)!);

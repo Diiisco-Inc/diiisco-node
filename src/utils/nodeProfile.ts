@@ -8,7 +8,7 @@ import algorand from './algorand';
 import { getRatesPer1M } from './quoteCreationMethods';
 import { version } from './version';
 import { parseTags } from './nodeInfo';
-import type { ModelPerformance } from '../types/performance';
+import { isMeasured, type ModelPerformance } from '../types/performance';
 
 /**
  * Build this node's own public profile. Identity fields are always included;
@@ -53,7 +53,7 @@ export const buildOwnProfile = (
       models: availableModels.map((id) => {
         const { input, output } = getRatesPer1M(id);
         const kind = kindOf(id);
-        const performance = kind === 'chat' ? performanceFor(id) : undefined;
+        const performance = isMeasured(kind) ? performanceFor(id) : undefined;
         return {
           id,
           // Only the notable kinds are published: a chat model is the default,

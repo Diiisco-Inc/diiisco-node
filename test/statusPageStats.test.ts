@@ -38,18 +38,19 @@ afterAll(() => {
 });
 
 describe('the node\'s own profile', () => {
-  const kinds: Record<string, 'chat' | 'embedding'> = { gemma3: 'chat', embed: 'embedding' };
+  const kinds: Record<string, 'chat' | 'embedding' | 'decision'> = { gemma3: 'chat', embed: 'embedding', tev: 'decision' };
   const build = () => {
     const { buildOwnProfile } = require('../src/utils/nodeProfile');
-    return buildOwnProfile(node, algo, Object.keys(kinds), (id: string) => kinds[id], (id: string) => (id === 'gemma3' || id === 'embed' ? PERF : undefined));
+    return buildOwnProfile(node, algo, Object.keys(kinds), (id: string) => kinds[id], (id: string) => (id in kinds ? PERF : undefined));
   };
 
-  test('carries its tags and each chat model\'s figures; other kinds get none', () => {
+  test('carries its tags and each chat and decision model\'s figures; embeddings get none', () => {
     environment.node = { ...environment.node, tags: ['cuda', 'nvidia-dgx-spark'], publicStats: true };
     const profile = build();
     expect(profile.tags).toEqual(['cuda', 'nvidia-dgx-spark']);
     const byId = Object.fromEntries(profile.stats.models.map((m: any) => [m.id, m]));
     expect(byId.gemma3.performance).toEqual(PERF);
+    expect(byId.tev.performance).toEqual(PERF);
     expect('performance' in byId.embed).toBe(false);
   });
 

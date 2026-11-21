@@ -108,7 +108,7 @@ export function Directory() {
                 ) : null}
                 {showPerformance ? (
                   <>
-                    <th title="Median across nodes of each node's own time to first token (model loaded)">First token</th>
+                    <th title="Median across nodes of each node's own time to first token (model loaded); for a decision model, the whole response time">First token</th>
                     <th title="Median across nodes of each node's own output tokens per second">Speed</th>
                   </>
                 ) : null}

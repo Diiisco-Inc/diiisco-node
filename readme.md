@@ -109,7 +109,7 @@ diiisco <command> [flags]
   restart                Restart the daemon
   status [--json]        pid, uptime, /health and an Algorand summary
   logs [-f] [-n N]       Show (or follow) the daemon log
-  benchmark [model ...]  Re-measure time to first token and tokens/s (--list shows the current figures)
+  benchmark [model ...]  Re-measure response times and tokens/s (--list shows the current figures)
   serve                  Run the node in the foreground (Ctrl-C to stop)
   launch <app> [flags]   Point an agent tool at a node, starting one if needed
   config show|path|edit  Inspect or edit the config file (`path --key` for the wallet key)
@@ -272,7 +272,7 @@ absolute path is unambiguous.
 | `availability.checkIntervalMs` | `30000` | How often (ms) to re-check which models the backend is actually serving. `0` disables the background poll. |
 | `availability.freshForMs` | `10000` | Maximum age (ms) of that check when answering a quote request. Older than this and the node re-probes before quoting. |
 | `availability.timeoutMs` | `2000` | How long (ms) to wait for the backend to answer a check before treating it as down. |
-| `benchmark.enabled` | `true` | Measure each chat model's time to first token and tokens/s, and send the figures in quotes and on the status pages. See [Model performance](#-model-performance). `false` turns it all off. |
+| `benchmark.enabled` | `true` | Measure each chat model's time to first token and tokens/s, and each decision model's response time, and send the figures in quotes and on the status pages. See [Model performance](#-model-performance). `false` turns it all off. |
 | `kinds` | _none_ | Tell the node what a model is when your runtime doesn't say: an object of model id (or `*` glob) to `chat`, `embedding` or `decision`, e.g. `{ "tev1:*": "decision", "*embed*": "embedding" }`. Ollama and LM Studio are detected automatically. Models that aren't `chat` are left out of `GET /v1/models` by default (`?type=all` returns everything). |
 
 Your node re-checks its backend rather than trusting the list it built at startup. Stop Ollama and the node stops quoting within `checkIntervalMs` — it will not win auctions it can't honour — and starts again on its own when the backend comes back. No restart, and no need to start the backend before the node.
@@ -400,9 +400,11 @@ For each chat model it serves, the node publishes three figures:
 | **First token (cold)** | The same when the model has to be loaded first |
 | **Speed** | Output tokens per second after the first token |
 
+**Decision models** (System One) answer in one piece rather than token by token, so for them the two "first token" figures are the whole response time, hot and cold, and there is no speed figure. Embedding models are not measured.
+
 **How the figures are kept up to date**
 
-- **Benchmark.** When the node sees a chat model it has no figures for, it benchmarks it in the background: one cold run, then three hot runs, each with a short fixed prompt. This happens at startup or whenever a new model appears. Benchmarks run one at a time and never hold up startup or quoting. Until a model has figures, its quotes simply leave them out.
+- **Benchmark.** When the node sees a chat or decision model it has no figures for, it benchmarks it in the background: one cold run, then three hot runs, each with a short fixed prompt (a decision model gets one small typed question). This happens at startup or whenever a new model appears. Benchmarks run one at a time and never hold up startup or quoting. Until a model has figures, its quotes simply leave them out.
 - **Live updates.** Every chat request the node serves then updates the figures. Each figure is the median of its last 20 samples, so one slow request does not swing it.
   - Time to first token only counts requests with prompts of 1,024 tokens or fewer. It grows with prompt length, and agent tools send very long prompts.
   - Speed counts any reply of 16 tokens or more.
@@ -416,7 +418,7 @@ For each chat model it serves, the node publishes three figures:
 **Re-measuring.** Run `diiisco benchmark` after changing hardware or settings:
 
 ```
-diiisco benchmark                # re-measure every served chat model
+diiisco benchmark                # re-measure every served chat and decision model
 diiisco benchmark gemma3:12b     # just one
 diiisco benchmark --list         # show the current figures and sample counts, measuring nothing
 diiisco benchmark --json         # machine-readable

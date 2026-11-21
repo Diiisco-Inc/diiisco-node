@@ -98,6 +98,19 @@ export function startStubBackend(behaviour: StubBehaviour = {}): StubBackend {
         return Response.json({ object: 'list', data: [{ id: 'stub-model', object: 'model', created: 0, owned_by: 'stub' }] });
       }
 
+      if (url.pathname === '/v1/systemone') {
+        const body = await req.json();
+        state.requests.push({ stream: false, body });
+        if (b.hang) {
+          await new Promise((resolve) => req.signal.addEventListener('abort', resolve));
+          return new Response('aborted', { status: 499 });
+        }
+        state.loaded.add(body.model);
+        await sleep(b.firstTokenDelayMs ?? 0);
+        const answers = Object.fromEntries(Object.keys(body.questions ?? {}).map((id) => [id, { type: 'choice', choice: 'negative' }]));
+        return Response.json({ model: body.model, answers, usage: { input_tokens: 30, output_tokens: 2 } });
+      }
+
       if (url.pathname !== '/v1/chat/completions') return new Response('not found', { status: 404 });
 
       const body = await req.json();
