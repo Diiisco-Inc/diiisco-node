@@ -22,7 +22,7 @@ import type { ModelInfo, ModelKind } from '../types/models';
 import { logger } from './logger';
 import { backendOrigin, ModelKindDetector } from './modelCapabilities';
 import { countInputTokens, OpenAIInferenceModel, type GenerationParams, type InferenceObserver } from './models';
-import { OllamaRuntime } from './ollamaRuntime';
+import { OllamaRuntime, type RunningModel } from './ollamaRuntime';
 import type { SystemOneRequest } from './systemOne';
 
 export const MAX_BACKENDS = 16;
@@ -236,6 +236,11 @@ export class InferenceBackends {
 
   async unload(model: string, signal?: AbortSignal): Promise<boolean> {
     return (await this.routes.get(model)?.ollama.unload(model, signal)) ?? false;
+  }
+
+  /** What the runtime serving `model` holds in memory (benchmark trace). */
+  async running(model: string): Promise<RunningModel[] | undefined> {
+    return this.routes.get(model)?.ollama.running();
   }
 
   private route(model: string): Member {

@@ -124,12 +124,63 @@ describe('Benchmarker', () => {
     const [result] = await benchmarker.run(['m:latest']);
     expect(result.ok).toBe(true);
     expect(stub.unloads).toEqual(['m:latest']);
+    // It was loaded before the benchmark, so it is left loaded (plan 020).
+    expect(stub.loaded.has('m:latest')).toBe(true);
     expect(stub.requests.length).toBe(4); // 1 cold + 3 hot
     const p = store.performanceFor('m:latest')!;
     expect(p.coldStart).toBe('forced');
     expect(p.ttftColdMs?.samples).toBe(1);
     expect(p.ttftHotMs?.samples).toBe(3);
     expect(p.tokensPerSecond?.samples).toBe(4);
+  });
+
+  // Plan 020: a sweep must not leave every model it measured in memory.
+  test('on Ollama, a model that was not loaded before is unloaded again afterwards', async () => {
+    const { benchmarker } = setup({ ollama: true, chunks: words(20) });
+    const [result] = await benchmarker.run(['m:latest']);
+    expect(result.ok).toBe(true);
+    expect(stub.unloads).toEqual(['m:latest', 'm:latest']);
+    expect(stub.loaded.size).toBe(0);
+  });
+
+  test('a benchmark that fails still gives the memory back', async () => {
+    const { benchmarker } = setup({ ollama: true, hang: true }, { coldMs: 150, hotMs: 150 });
+    const [result] = await benchmarker.run(['m:latest']);
+    expect(result.ok).toBe(false);
+    expect(stub.unloads).toEqual(['m:latest', 'm:latest']);
+  });
+
+  test('--verbose hears every step: memory before and after, the unloads, each run and its timing', async () => {
+    const { benchmarker } = setup({ ollama: true, chunks: words(20) });
+    stub.loaded.add('other:latest');
+    const lines: string[] = [];
+    await benchmarker.run(['m:latest'], { onTrace: (line) => lines.push(line) });
+    expect(lines[0]).toBe('📏 m:latest: in memory before: other:latest (8.4 GB, 8.0 GB on GPU)');
+    expect(lines).toContain('📏 m:latest: unloaded for a cold start');
+    expect(lines).toContain('📏 m:latest: run 1/4 (cold): sending (timeout 180 s)');
+    expect(lines.filter((l) => /run \d\/4 \((cold|hot)\): first token \d+ ms, \d+ tokens in \d+ ms/.test(l)).length).toBe(4);
+    expect(lines).toContain('📏 m:latest: unloaded again, as it was not loaded before');
+    expect(lines.at(-1)).toBe('📏 m:latest: in memory after: other:latest (8.4 GB, 8.0 GB on GPU)');
+
+    // A listener is only attached for its own run.
+    const before = lines.length;
+    await benchmarker.run(['m:latest']);
+    expect(lines.length).toBe(before);
+  });
+
+  test('a failed run is in the trace with how long it took', async () => {
+    const { benchmarker } = setup({ hang: true }, { coldMs: 150, hotMs: 150 });
+    const lines: string[] = [];
+    await benchmarker.run(['m'], { onTrace: (line) => lines.push(line) });
+    expect(lines).toContain('📏 m: backend is not Ollama: no forced cold start, and nothing to unload afterwards');
+    expect(lines.some((l) => /^📏 m: run 1\/4 \(\w+\): failed after \d+ ms: /.test(l))).toBe(true);
+    expect(lines.at(-1)).toMatch(/^📏 m: failed: /);
+  });
+
+  test('a listener that throws cannot fail the benchmark', async () => {
+    const { benchmarker } = setup({ chunks: words(20) });
+    const [result] = await benchmarker.run(['m'], { onTrace: () => { throw new Error('boom'); } });
+    expect(result.ok).toBe(true);
   });
 
   test('elsewhere, no cold figure is claimed', async () => {

@@ -17,6 +17,13 @@ const DEFAULT_TIMEOUT_MS = 2_000;
 const UNLOAD_SETTLE_MS = 5_000;
 const UNLOAD_POLL_MS = 200;
 
+/** A model Ollama holds in memory (`/api/ps`). */
+export interface RunningModel {
+  name: string;
+  sizeBytes?: number;
+  vramBytes?: number;
+}
+
 export interface OllamaRuntimeOptions {
   fetch?: typeof fetch;
   now?: () => number;
@@ -49,6 +56,24 @@ export class OllamaRuntime {
     const body = await this.getJson('/api/ps', LOADED_TIMEOUT_MS);
     if (!Array.isArray(body?.models)) return undefined;
     return body.models.some((m: any) => sameModel(m?.name, model) || sameModel(m?.model, model));
+  }
+
+  /**
+   * Every model Ollama holds in memory now, with its size; `undefined` when that
+   * cannot be told. Diagnostics only (the benchmark trace), so it gets the
+   * ordinary timeout rather than `loaded`'s tight one.
+   */
+  async running(): Promise<RunningModel[] | undefined> {
+    if (!(await this.isOllama())) return undefined;
+    const body = await this.getJson('/api/ps', DEFAULT_TIMEOUT_MS);
+    if (!Array.isArray(body?.models)) return undefined;
+    return body.models
+      .filter((m: any) => typeof (m?.name ?? m?.model) === 'string')
+      .map((m: any) => ({
+        name: String(m.name ?? m.model),
+        sizeBytes: Number.isFinite(m.size) ? m.size : undefined,
+        vramBytes: Number.isFinite(m.size_vram) ? m.size_vram : undefined,
+      }));
   }
 
   /** The model's content digest, which changes when the model is re-pulled or replaced. */

@@ -5,10 +5,10 @@ import { assertValid, loadConfig, requireConfig } from '../config';
 import { migrateWalletKey } from '../keyMigration';
 import { ensureHome, logFile, resolvePath, userHome } from '../paths';
 import { recordControlChannel, startLogRotationWatcher } from '../daemon';
-import { ControlServer, ControlState, generateControlToken, startControlServer } from '../control';
+import { ControlServer, ControlState, MAX_TRACE_LINES, generateControlToken, startControlServer } from '../control';
 import { colour, error, info, warn } from '../output';
 import { installProcessGuards } from '../../utils/processGuards';
-import { logger } from '../../utils/logger';
+import { LOG_LEVEL_NAMES, logger, parseLogLevel } from '../../utils/logger';
 
 /**
  * If `Application.shutdown()` itself wedges, the process must still go away —
@@ -66,6 +66,21 @@ function safeHomedir(): string | undefined {
 }
 
 /**
+ * `DIIISCO_LOG_LEVEL`, else `node.logLevel` (validated already), else info.
+ * The variable is for a one-off run without editing the config; a bad value is
+ * said once and ignored rather than refusing to start.
+ */
+function applyLogLevel(configured: string | undefined): void {
+  const fromEnv = process.env.DIIISCO_LOG_LEVEL;
+  const parsed = fromEnv !== undefined && fromEnv !== '' ? parseLogLevel(fromEnv) : undefined;
+  if (fromEnv && parsed === undefined) {
+    warn(`Ignoring DIIISCO_LOG_LEVEL=${JSON.stringify(fromEnv)}; use one of ${LOG_LEVEL_NAMES.join(', ')}.`);
+  }
+  const level = parsed ?? parseLogLevel(configured);
+  if (level !== undefined) logger.setLevel(level);
+}
+
+/**
  * Run the node in the foreground. This is also the body of the daemon: `start`
  * re-spawns the executable with the internal `__daemon` argument, which lands
  * here with `daemon: true`.
@@ -100,6 +115,7 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
 
   assertValid(env);
   configureEnvironment(env);
+  applyLogLevel(env.node?.logLevel);
 
   if (options.daemon) startLogRotationWatcher();
 
@@ -146,7 +162,14 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
         state: controlState,
         onPeers: () => app.getPeerReport(),
         onReconnect: () => app.reconnectNow(),
-        onBenchmark: (models, list) => app.benchmark(models, list),
+        onBenchmark: async (models, list, verbose) => {
+          // `--verbose` (plan 020): collect the steps and send them back with the
+          // results. Capped, so a long sweep cannot make an unbounded reply.
+          const trace: string[] = [];
+          const collect = verbose ? (line: string) => { if (trace.length < MAX_TRACE_LINES) trace.push(line); } : undefined;
+          const results = await app.benchmark(models, list, collect);
+          return { results, ...(verbose ? { trace } : {}) };
+        },
       });
       const recorded = await recordControlChannel({ port: control.port, token: control.token });
       if (!recorded) {
