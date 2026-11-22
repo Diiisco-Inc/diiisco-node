@@ -17,20 +17,23 @@ describe('the benchmark control action', () => {
 
   test('carries the model names and the list flag, and returns the results', async () => {
     const token = generateControlToken();
-    const calls: { models: string[]; list: boolean; verbose: boolean }[] = [];
+    const calls: { models: string[]; list: boolean; verbose?: boolean; missingOnly?: boolean }[] = [];
     server = await startControlServer({
       token,
       onShutdown: () => {},
-      onBenchmark: async (models, list, verbose) => {
-        calls.push({ models, list, verbose });
+      onBenchmark: async (models, { list, verbose, missingOnly }) => {
+        calls.push({ models, list, verbose, missingOnly });
         return { results: [{ model: 'a', ok: true, performance: { updatedAt: 1, tokensPerSecond: { value: 50, samples: 4 } } }] };
       },
     });
-    const answer = await requestBenchmark(server.port, token, ['a'], true);
+    const answer = await requestBenchmark(server.port, token, ['a'], { list: true });
     expect(answer.ok).toBe(true);
     expect(answer.value?.results[0].performance?.tokensPerSecond?.value).toBe(50);
     expect(answer.value?.trace).toBeUndefined();
-    expect(calls).toEqual([{ models: ['a'], list: true, verbose: false }]);
+    expect(calls).toEqual([{ models: ['a'], list: true, verbose: false, missingOnly: false }]);
+
+    await requestBenchmark(server.port, token, [], { list: false, missingOnly: true });
+    expect(calls[1]).toEqual({ models: [], list: false, verbose: false, missingOnly: true });
   });
 
   test('--verbose asks the node for its steps and gets them back with the results', async () => {
@@ -38,12 +41,12 @@ describe('the benchmark control action', () => {
     server = await startControlServer({
       token,
       onShutdown: () => {},
-      onBenchmark: async (_models, _list, verbose) => ({
+      onBenchmark: async (_models, { verbose }) => ({
         results: [{ model: 'a', ok: true }],
         ...(verbose ? { trace: ['📏 a: unloaded for a cold start', '📏 a: run 1/4 (cold): sending (timeout 180 s)'] } : {}),
       }),
     });
-    const answer = await requestBenchmark(server.port, token, ['a'], false, true);
+    const answer = await requestBenchmark(server.port, token, ['a'], { list: false, verbose: true });
     expect(answer.ok).toBe(true);
     expect(answer.value?.trace).toEqual(['📏 a: unloaded for a cold start', '📏 a: run 1/4 (cold): sending (timeout 180 s)']);
   });
@@ -54,7 +57,7 @@ describe('the benchmark control action', () => {
       token, onShutdown: () => {},
       onBenchmark: async () => { throw new Error('performance measurement is off on this node'); },
     });
-    const answer = await requestBenchmark(server.port, token, [], false);
+    const answer = await requestBenchmark(server.port, token, [], { list: false });
     expect(answer).toMatchObject({ ok: false, error: 'performance measurement is off on this node' });
   });
 
@@ -62,16 +65,16 @@ describe('the benchmark control action', () => {
     const token = generateControlToken();
     let called = false;
     server = await startControlServer({ token, onShutdown: () => {}, onBenchmark: async () => { called = true; return { results: [] }; } });
-    const tooMany = await requestBenchmark(server.port, token, Array.from({ length: 17 }, (_, i) => `m${i}`), false);
+    const tooMany = await requestBenchmark(server.port, token, Array.from({ length: 17 }, (_, i) => `m${i}`), { list: false });
     expect(tooMany.ok).toBe(false);
-    const empty = await requestBenchmark(server.port, token, [''], false);
+    const empty = await requestBenchmark(server.port, token, [''], { list: false });
     expect(empty.ok).toBe(false);
     expect(called).toBe(false);
   });
 
   test('a wrong token gets nothing', async () => {
     server = await startControlServer({ token: generateControlToken(), onShutdown: () => {}, onBenchmark: async () => ({ results: [] }) });
-    const answer = await requestBenchmark(server.port, 'wrong', [], true);
+    const answer = await requestBenchmark(server.port, 'wrong', [], { list: true });
     expect(answer.ok).toBe(false);
   });
 });
@@ -126,6 +129,22 @@ describe('diiisco benchmark with no node running', () => {
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout).models[0].performance.tokensPerSecond.samples).toBeGreaterThan(0);
     expect(stub.requests.length).toBe(before);
+  });
+
+  test('--missing skips a model that already has figures, and says so', async () => {
+    const before = stub.requests.length;
+    const json = await cli(['benchmark', '--missing', '--json'], home);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.stdout).models[0]).toMatchObject({ model: 'stub-model', ok: true, skipped: true });
+    const table = await cli(['benchmark', '--missing'], home);
+    expect(table.stdout).toContain('Already measured, so not measured again (1): stub-model');
+    expect(stub.requests.length).toBe(before);
+  });
+
+  test('--list with --missing is refused', async () => {
+    const result = await cli(['benchmark', '--list', '--missing'], home);
+    expect(result.code).not.toBe(0);
+    expect(result.stdout + result.stderr).toContain('cannot be combined with --missing');
   });
 
   test('the table is readable', async () => {

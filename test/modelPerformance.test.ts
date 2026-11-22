@@ -183,6 +183,19 @@ describe('Benchmarker', () => {
     expect(result.ok).toBe(true);
   });
 
+  // Plan 021: `diiisco benchmark --missing`.
+  test('missingOnly measures only models with no figures, and says which it skipped', async () => {
+    const { store, benchmarker } = setup({ chunks: words(20) });
+    await benchmarker.run(['a']);
+    const measuredBefore = stub.requests.length;
+    const lines: string[] = [];
+    const results = await benchmarker.run(['a', 'b'], { missingOnly: true, onTrace: (l) => lines.push(l) });
+    expect(results.map((r) => [r.model, r.ok, r.skipped ?? false])).toEqual([['a', true, true], ['b', true, false]]);
+    expect(results[0].performance).toEqual(store.performanceFor('a'));
+    expect(stub.requests.slice(measuredBefore).every((r) => r.body.model === 'b')).toBe(true);
+    expect(lines).toContain('📏 a: already has figures, so it is not measured again');
+  });
+
   test('elsewhere, no cold figure is claimed', async () => {
     const { store, benchmarker } = setup({ chunks: words(20) });
     await benchmarker.run(['m']);

@@ -162,12 +162,12 @@ export async function runServe(options: { daemon?: boolean } = {}): Promise<void
         state: controlState,
         onPeers: () => app.getPeerReport(),
         onReconnect: () => app.reconnectNow(),
-        onBenchmark: async (models, list, verbose) => {
+        onBenchmark: async (models, { verbose, ...mode }) => {
           // `--verbose` (plan 020): collect the steps and send them back with the
           // results. Capped, so a long sweep cannot make an unbounded reply.
           const trace: string[] = [];
           const collect = verbose ? (line: string) => { if (trace.length < MAX_TRACE_LINES) trace.push(line); } : undefined;
-          const results = await app.benchmark(models, list, collect);
+          const results = await app.benchmark(models, mode, collect);
           return { results, ...(verbose ? { trace } : {}) };
         },
       });

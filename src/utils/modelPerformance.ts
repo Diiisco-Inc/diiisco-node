@@ -318,8 +318,18 @@ const HOT_TIMEOUT_MS = 60_000;
 export interface BenchmarkResult {
   model: string;
   ok: boolean;
+  /** `--missing`: it already had figures, so it was not measured; `performance` is what it had. */
+  skipped?: boolean;
   performance?: ModelPerformance;
   error?: string;
+}
+
+/** How `diiisco benchmark` was asked to run, as carried to a running node. */
+export interface BenchmarkMode {
+  /** Report the figures, measuring nothing. */
+  list: boolean;
+  /** Measure only models with no figures yet. */
+  missingOnly?: boolean;
 }
 
 export interface BenchmarkerDeps {
@@ -388,11 +398,14 @@ export class Benchmarker {
   }
 
   /** Measure `models` now (after anything already queued) and resolve with the results. */
-  async run(models: BenchmarkTarget[], options: { onTrace?: BenchmarkTrace } = {}): Promise<BenchmarkResult[]> {
+  async run(models: BenchmarkTarget[], options: { onTrace?: BenchmarkTrace; missingOnly?: boolean } = {}): Promise<BenchmarkResult[]> {
     const { onTrace } = options;
+    // `--missing` (plan 021) asks exactly what a node asks itself at startup:
+    // measure only what has no figures, or (Ollama) a re-pulled model.
+    const force = !options.missingOnly;
     if (onTrace) this.tracers.add(onTrace);
     try {
-      return await Promise.all(models.map((m) => (typeof m === 'string' ? this.enqueue(m, 'chat', true) : this.enqueue(m.id, m.kind ?? 'chat', true))));
+      return await Promise.all(models.map((m) => (typeof m === 'string' ? this.enqueue(m, 'chat', force) : this.enqueue(m.id, m.kind ?? 'chat', force))));
     } finally {
       if (onTrace) this.tracers.delete(onTrace);
     }
@@ -433,7 +446,8 @@ export class Benchmarker {
     if (this.abort.signal.aborted) return { model, ok: false, error: 'the node is shutting down' };
     const digest = await this.deps.ollama.digest(model);
     if (!force && !this.deps.store.needsBenchmark(model, digest)) {
-      return { model, ok: true, performance: this.deps.store.performanceFor(model) };
+      this.note(model, 'already has figures, so it is not measured again');
+      return { model, ok: true, skipped: true, performance: this.deps.store.performanceFor(model) };
     }
     try {
       return await this.measure(model, kind, digest);
@@ -562,10 +576,12 @@ export async function benchmarkRequest(options: {
   served: ModelInfo[];
   requested: string[];
   list: boolean;
+  /** Measure only models with no figures (`--missing`); unused with `list`. */
+  missingOnly?: boolean;
   /** Hears each step of the measuring (`--verbose`); unused with `list`. */
   onTrace?: BenchmarkTrace;
 }): Promise<BenchmarkResult[]> {
-  const { benchmarker, store, served, requested, list, onTrace } = options;
+  const { benchmarker, store, served, requested, list, missingOnly, onTrace } = options;
   const measured = served.filter((m) => isMeasured(m.kind));
 
   if (list) {
@@ -583,6 +599,6 @@ export async function benchmarkRequest(options: {
     else if (!isMeasured(entry.kind)) results.set(model, { model, ok: false, error: `it is a ${entry.kind} model; only chat and decision models are measured` });
     else runnable.push(entry);
   }
-  for (const result of await benchmarker.run(runnable, { onTrace })) results.set(result.model, result);
+  for (const result of await benchmarker.run(runnable, { onTrace, missingOnly })) results.set(result.model, result);
   return targets.map((model) => results.get(model)!);
 }
