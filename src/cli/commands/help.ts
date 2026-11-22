@@ -21,6 +21,7 @@ ${b('Commands')}
   logs [-f] [-n N]       Show (or follow) daemon logs (default 100 lines)
   peers [--reconnect]    Show who the node is connected to; --reconnect redials now (no restart)
   benchmark [model ...]  Re-measure response times and tokens/s; --list shows current figures
+                         --verbose prints each step (memory, unloads, every run)
   serve                  Run the node in the foreground (Ctrl-C to stop)
   launch <app> [flags]   Point an agent tool at a DIIISCO node, starting one if needed
   config show|path|edit  Inspect or edit the config file
@@ -77,6 +78,7 @@ ${b('Environment')}
   DIIISCO_ENDPOINT   Default endpoint for \`launch\`
   DIIISCO_API_KEY    Default API key for \`launch\`
   DIIISCO_OWNER      Recorded in daemon.json as who started the node (default "cli")
+  DIIISCO_LOG_LEVEL  Node log level: debug, info, warn or error (overrides node.logLevel)
   NO_COLOR           Disable coloured output
 
 ${b('Exit codes')}

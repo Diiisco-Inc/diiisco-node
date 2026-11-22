@@ -20,6 +20,7 @@ import { isMeasured, type ColdStartMethod, type ModelPerformance, type Performan
 import { logger } from './logger';
 import { systemOneSample, toSample, type InferenceObserver, type InferenceSample, type OpenAIInferenceModel, type Warmth } from './models';
 import { version } from './version';
+import type { RunningModel } from './ollamaRuntime';
 
 /** Samples kept per figure; the published value is their median. */
 export const WINDOW = 20;
@@ -252,6 +253,8 @@ export interface RuntimeProbe {
   loaded(model: string): Promise<boolean | undefined>;
   digest(model: string): Promise<string | undefined>;
   unload(model: string, signal?: AbortSignal): Promise<boolean>;
+  /** Everything the runtime holds in memory, for the benchmark trace. */
+  running(model: string): Promise<RunningModel[] | undefined>;
 }
 
 /**
@@ -323,8 +326,29 @@ export interface BenchmarkerDeps {
   backend: Pick<OpenAIInferenceModel, 'chatTimed' | 'systemOneTimed'>;
   store: PerformanceStore;
   warmth: WarmthTracker;
-  ollama: Pick<RuntimeProbe, 'isOllama' | 'digest' | 'unload'>;
+  ollama: Pick<RuntimeProbe, 'isOllama' | 'digest' | 'unload' | 'loaded' | 'running'>;
   timeouts?: { coldMs?: number; hotMs?: number };
+}
+
+/** Receives each step of a benchmark as one line, for `diiisco benchmark --verbose` (plan 020). */
+export type BenchmarkTrace = (line: string) => void;
+
+/** `qwen3:32b (20.1 GB, 19.8 GB on GPU), gemma3:12b (8.4 GB)` — or why it is unknown. */
+function describeRunning(models: RunningModel[] | undefined): string {
+  if (!models) return 'unknown';
+  if (models.length === 0) return 'none';
+  const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`;
+  return models.map((m) => {
+    const sizes = [m.sizeBytes !== undefined ? gb(m.sizeBytes) : null, m.vramBytes !== undefined ? `${gb(m.vramBytes)} on GPU` : null].filter(Boolean);
+    return sizes.length ? `${m.name} (${sizes.join(', ')})` : m.name;
+  }).join(', ');
+}
+
+/** One sample in the trace: `first token 412 ms, 128 tokens in 2310 ms (55.4 tok/s)`. */
+function describeSample(sample: InferenceSample, kind: ModelKind): string {
+  if (kind === 'decision') return `answered in ${Math.round(sample.ttftMs)} ms`;
+  const rate = sample.decodeMs > 0 ? ` (${((sample.completionTokens / sample.decodeMs) * 1000).toFixed(1)} tok/s)` : '';
+  return `first token ${Math.round(sample.ttftMs)} ms, ${sample.completionTokens} tokens in ${Math.round(sample.decodeMs)} ms${rate}`;
 }
 
 /** A model to measure: a bare id is a chat model. */
@@ -343,6 +367,8 @@ export class Benchmarker {
   private readonly abort = new AbortController();
   private readonly coldMs: number;
   private readonly hotMs: number;
+  /** Listeners of the `run` calls in progress; they also hear background jobs queued ahead. */
+  private readonly tracers = new Set<BenchmarkTrace>();
 
   constructor(private readonly deps: BenchmarkerDeps) {
     this.coldMs = deps.timeouts?.coldMs ?? COLD_TIMEOUT_MS;
@@ -362,8 +388,31 @@ export class Benchmarker {
   }
 
   /** Measure `models` now (after anything already queued) and resolve with the results. */
-  run(models: BenchmarkTarget[]): Promise<BenchmarkResult[]> {
-    return Promise.all(models.map((m) => (typeof m === 'string' ? this.enqueue(m, 'chat', true) : this.enqueue(m.id, m.kind ?? 'chat', true))));
+  async run(models: BenchmarkTarget[], options: { onTrace?: BenchmarkTrace } = {}): Promise<BenchmarkResult[]> {
+    const { onTrace } = options;
+    if (onTrace) this.tracers.add(onTrace);
+    try {
+      return await Promise.all(models.map((m) => (typeof m === 'string' ? this.enqueue(m, 'chat', true) : this.enqueue(m.id, m.kind ?? 'chat', true))));
+    } finally {
+      if (onTrace) this.tracers.delete(onTrace);
+    }
+  }
+
+  /**
+   * One step of a benchmark. Always a debug line, so a node at `logLevel: debug`
+   * has the whole sequence in its log — the only record left if the backend
+   * takes the machine down with it.
+   */
+  private note(model: string, text: string): void {
+    const line = `📏 ${model}: ${text}`;
+    logger.debug(line);
+    for (const trace of this.tracers) {
+      try {
+        trace(line);
+      } catch {
+        // A listener (a CLI printing, a control reply collecting) must never fail a benchmark.
+      }
+    }
   }
 
   /** Abandon the run in progress and anything queued; for shutdown. */
@@ -390,6 +439,7 @@ export class Benchmarker {
       return await this.measure(model, kind, digest);
     } catch (err) {
       const error = this.abort.signal.aborted ? 'the node is shutting down' : String((err as Error)?.message ?? err).replace(/\.+$/, '');
+      this.note(model, `failed: ${error}`);
       if (!this.abort.signal.aborted) logger.warn(`⚠️ Could not benchmark ${model}: ${error}. It will be tried again on the next start.`);
       return { model, ok: false, error };
     }
@@ -399,17 +449,31 @@ export class Benchmarker {
     logger.info(`📏 Benchmarking ${model} (${kind === 'decision' ? 'response time' : 'time to first token and tokens/s'})…`);
     const samples: { warmth: Warmth; sample: InferenceSample; coldStart?: ColdStartMethod }[] = [];
 
-    // A cold start is only timed when one can be made to happen: Ollama unloads
-    // on request. Elsewhere the first run's warmth is whatever is known about it.
-    const forced = (await this.deps.ollama.isOllama(model)) && (await this.deps.ollama.unload(model, this.abort.signal));
-    const firstWarmth: Warmth = forced ? 'cold' : await this.deps.warmth.before(model);
-    const first = await this.once(model, kind, forced ? this.coldMs : this.hotMs);
-    if (first) samples.push({ warmth: firstWarmth, sample: first, coldStart: forced ? 'forced' : undefined });
+    const ollama = await this.deps.ollama.isOllama(model);
+    // Whether to put the model back out of memory afterwards (plan 020). A sweep
+    // that left every model it measured loaded overcommitted unified-memory
+    // machines (DGX Spark), where Ollama's free-memory estimate is unreliable.
+    // Unknown counts as "was not loaded": the safe side is less memory held.
+    const wasLoaded = ollama ? await this.deps.ollama.loaded(model) : undefined;
+    if (ollama) this.note(model, `in memory before: ${describeRunning(await this.deps.ollama.running(model))}`);
+    else this.note(model, 'backend is not Ollama: no forced cold start, and nothing to unload afterwards');
 
-    for (let i = 0; i < HOT_RUNS; i++) {
-      await this.deps.warmth.before(model);
-      const sample = await this.once(model, kind, this.hotMs);
-      if (sample) samples.push({ warmth: 'hot', sample });
+    try {
+      // A cold start is only timed when one can be made to happen: Ollama unloads
+      // on request. Elsewhere the first run's warmth is whatever is known about it.
+      const forced = ollama && (await this.deps.ollama.unload(model, this.abort.signal));
+      if (ollama) this.note(model, forced ? 'unloaded for a cold start' : 'could not confirm an unload; the first run is not a forced cold start');
+      const firstWarmth: Warmth = forced ? 'cold' : await this.deps.warmth.before(model);
+      const first = await this.timedRun(model, kind, `run 1/${HOT_RUNS + 1} (${firstWarmth})`, forced ? this.coldMs : this.hotMs);
+      if (first) samples.push({ warmth: firstWarmth, sample: first, coldStart: forced ? 'forced' : undefined });
+
+      for (let i = 0; i < HOT_RUNS; i++) {
+        await this.deps.warmth.before(model);
+        const sample = await this.timedRun(model, kind, `run ${i + 2}/${HOT_RUNS + 1} (hot)`, this.hotMs);
+        if (sample) samples.push({ warmth: 'hot', sample });
+      }
+    } finally {
+      if (ollama) await this.restoreMemory(model, wasLoaded);
     }
     if (samples.length === 0) throw new Error('the model produced no output');
 
@@ -417,6 +481,35 @@ export class Benchmarker {
     const performance = this.deps.store.performanceFor(model);
     logger.info(`📏 ${model}: ${describePerformance(performance)}`);
     return { model, ok: true, performance };
+  }
+
+  /** `once`, with a trace line before (so a crash shows the step it died in) and after. */
+  private async timedRun(model: string, kind: ModelKind, label: string, timeoutMs: number): Promise<InferenceSample | null> {
+    this.note(model, `${label}: sending (timeout ${Math.round(timeoutMs / 1000)} s)`);
+    const started = performance.now();
+    try {
+      const sample = await this.once(model, kind, timeoutMs);
+      this.note(model, `${label}: ${sample ? describeSample(sample, kind) : 'answered without streaming, so it could not be timed'}`);
+      return sample;
+    } catch (err) {
+      this.note(model, `${label}: failed after ${Math.round(performance.now() - started)} ms: ${(err as Error)?.message ?? err}`);
+      throw err;
+    }
+  }
+
+  /**
+   * Leave the runtime's memory as the benchmark found it: unload a model that
+   * was not loaded before. Not tied to the abort signal, so a benchmark cut
+   * short at shutdown still gives the memory back; the unload has its own timeout.
+   */
+  private async restoreMemory(model: string, wasLoaded: boolean | undefined): Promise<void> {
+    if (wasLoaded === true) {
+      this.note(model, 'was loaded before, so it stays loaded');
+    } else {
+      const freed = await this.deps.ollama.unload(model);
+      this.note(model, freed ? 'unloaded again, as it was not loaded before' : 'could not confirm it was unloaded again');
+    }
+    this.note(model, `in memory after: ${describeRunning(await this.deps.ollama.running(model))}`);
   }
 
   private async once(model: string, kind: ModelKind, timeoutMs: number): Promise<InferenceSample | null> {
@@ -469,8 +562,10 @@ export async function benchmarkRequest(options: {
   served: ModelInfo[];
   requested: string[];
   list: boolean;
+  /** Hears each step of the measuring (`--verbose`); unused with `list`. */
+  onTrace?: BenchmarkTrace;
 }): Promise<BenchmarkResult[]> {
-  const { benchmarker, store, served, requested, list } = options;
+  const { benchmarker, store, served, requested, list, onTrace } = options;
   const measured = served.filter((m) => isMeasured(m.kind));
 
   if (list) {
@@ -488,6 +583,6 @@ export async function benchmarkRequest(options: {
     else if (!isMeasured(entry.kind)) results.set(model, { model, ok: false, error: `it is a ${entry.kind} model; only chat and decision models are measured` });
     else runnable.push(entry);
   }
-  for (const result of await benchmarker.run(runnable)) results.set(result.model, result);
+  for (const result of await benchmarker.run(runnable, { onTrace })) results.set(result.model, result);
   return targets.map((model) => results.get(model)!);
 }

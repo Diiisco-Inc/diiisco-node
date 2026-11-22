@@ -17,19 +17,35 @@ describe('the benchmark control action', () => {
 
   test('carries the model names and the list flag, and returns the results', async () => {
     const token = generateControlToken();
-    const calls: { models: string[]; list: boolean }[] = [];
+    const calls: { models: string[]; list: boolean; verbose: boolean }[] = [];
     server = await startControlServer({
       token,
       onShutdown: () => {},
-      onBenchmark: async (models, list) => {
-        calls.push({ models, list });
-        return [{ model: 'a', ok: true, performance: { updatedAt: 1, tokensPerSecond: { value: 50, samples: 4 } } }];
+      onBenchmark: async (models, list, verbose) => {
+        calls.push({ models, list, verbose });
+        return { results: [{ model: 'a', ok: true, performance: { updatedAt: 1, tokensPerSecond: { value: 50, samples: 4 } } }] };
       },
     });
     const answer = await requestBenchmark(server.port, token, ['a'], true);
     expect(answer.ok).toBe(true);
-    expect(answer.value?.[0].performance?.tokensPerSecond?.value).toBe(50);
-    expect(calls).toEqual([{ models: ['a'], list: true }]);
+    expect(answer.value?.results[0].performance?.tokensPerSecond?.value).toBe(50);
+    expect(answer.value?.trace).toBeUndefined();
+    expect(calls).toEqual([{ models: ['a'], list: true, verbose: false }]);
+  });
+
+  test('--verbose asks the node for its steps and gets them back with the results', async () => {
+    const token = generateControlToken();
+    server = await startControlServer({
+      token,
+      onShutdown: () => {},
+      onBenchmark: async (_models, _list, verbose) => ({
+        results: [{ model: 'a', ok: true }],
+        ...(verbose ? { trace: ['📏 a: unloaded for a cold start', '📏 a: run 1/4 (cold): sending (timeout 180 s)'] } : {}),
+      }),
+    });
+    const answer = await requestBenchmark(server.port, token, ['a'], false, true);
+    expect(answer.ok).toBe(true);
+    expect(answer.value?.trace).toEqual(['📏 a: unloaded for a cold start', '📏 a: run 1/4 (cold): sending (timeout 180 s)']);
   });
 
   test('a refusal from the node comes back as an error the user can read', async () => {
@@ -45,7 +61,7 @@ describe('the benchmark control action', () => {
   test('too many or malformed model names are refused before any work', async () => {
     const token = generateControlToken();
     let called = false;
-    server = await startControlServer({ token, onShutdown: () => {}, onBenchmark: async () => { called = true; return []; } });
+    server = await startControlServer({ token, onShutdown: () => {}, onBenchmark: async () => { called = true; return { results: [] }; } });
     const tooMany = await requestBenchmark(server.port, token, Array.from({ length: 17 }, (_, i) => `m${i}`), false);
     expect(tooMany.ok).toBe(false);
     const empty = await requestBenchmark(server.port, token, [''], false);
@@ -54,7 +70,7 @@ describe('the benchmark control action', () => {
   });
 
   test('a wrong token gets nothing', async () => {
-    server = await startControlServer({ token: generateControlToken(), onShutdown: () => {}, onBenchmark: async () => [] });
+    server = await startControlServer({ token: generateControlToken(), onShutdown: () => {}, onBenchmark: async () => ({ results: [] }) });
     const answer = await requestBenchmark(server.port, 'wrong', [], true);
     expect(answer.ok).toBe(false);
   });

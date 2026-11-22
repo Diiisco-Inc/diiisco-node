@@ -1,5 +1,5 @@
 /**
- * `diiisco benchmark [model ...] [--list] [--json]` — re-measure (or, with
+ * `diiisco benchmark [model ...] [--list] [--json] [--verbose]` — re-measure (or, with
  * `--list`, show) each chat model's time to first token and tokens/s, and each
  * decision model's response time (plan 018).
  *
@@ -7,6 +7,11 @@
  * run never races its live samples or its writes to `model-benchmarks.json`.
  * With none running, this process measures against the configured backend
  * itself: no libp2p, no wallet.
+ *
+ * `--verbose` (plan 020) prints each step — what the runtime holds in memory,
+ * unloads, every run's timing or failure — on stderr, so it never mixes with
+ * `--json`. Standalone the steps print as they happen; a running node sends
+ * them back with the results.
  */
 import { configureEnvironment } from '../../index';
 import { assertValid, loadConfig, requireConfig } from '../config';
@@ -26,7 +31,11 @@ export interface BenchmarkOptions {
   models: string[];
   list: boolean;
   json: boolean;
+  verbose: boolean;
 }
+
+/** One trace line, on stderr. */
+const printTrace = (line: string) => process.stderr.write(`${colour.dim(line)}\n`);
 
 const fmt = (f: PerformanceFigure | undefined, unit: string) => (f ? `${f.value}${unit} ${colour.dim(`(${f.samples})`)}` : colour.dim('—'));
 
@@ -54,7 +63,7 @@ function printResults(results: BenchmarkResult[], list: boolean): void {
 }
 
 /** Measure in this process, for when no node is running. */
-async function runStandalone(models: string[], list: boolean): Promise<BenchmarkResult[]> {
+async function runStandalone(models: string[], list: boolean, verbose: boolean): Promise<BenchmarkResult[]> {
   requireConfig();
   const env = loadConfig();
   assertValid(env);
@@ -76,7 +85,7 @@ async function runStandalone(models: string[], list: boolean): Promise<Benchmark
 
   const benchmarker = new Benchmarker({ backend: backends, store, warmth: new WarmthTracker(backends), ollama: backends });
   try {
-    return await benchmarkRequest({ benchmarker, store, served: monitor.models(), requested: models, list: false });
+    return await benchmarkRequest({ benchmarker, store, served: monitor.models(), requested: models, list: false, onTrace: verbose ? printTrace : undefined });
   } finally {
     store.close();
   }
@@ -95,9 +104,17 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<void> {
       if (!options.json && !options.list) {
         info(colour.dim('Asking the running node to measure; a cold start can take a minute or more per model…'));
       }
-      const answer = await requestBenchmark(state.control.port, state.control.token, options.models, options.list);
+      const verbose = options.verbose && !options.list;
+      if (verbose && !options.json) {
+        info(colour.dim('The steps print when the node finishes. To follow them live, set node.logLevel to "debug" and run: diiisco logs -f'));
+      }
+      const answer = await requestBenchmark(state.control.port, state.control.token, options.models, options.list, verbose);
       if (!answer.ok || !answer.value) throw new Error(answer.error ?? 'the node did not answer');
-      results = answer.value;
+      if (verbose) {
+        if (answer.value.trace) answer.value.trace.forEach(printTrace);
+        else warn('The running node sent no steps; it is older than this command. Restart it to use --verbose.');
+      }
+      results = answer.value.results;
     } else {
       if (state && !state.control) {
         die('This daemon did not record a control channel, so it cannot be asked to measure.', 'Restart it with: diiisco restart');
@@ -105,7 +122,7 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<void> {
       if (!options.json && !options.list) {
         info(colour.dim('The node is not running; measuring against the configured backend directly…'));
       }
-      results = await runStandalone(options.models, options.list);
+      results = await runStandalone(options.models, options.list, options.verbose && !options.list);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

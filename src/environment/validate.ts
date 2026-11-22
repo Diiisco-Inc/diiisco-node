@@ -1,3 +1,4 @@
+import { LOG_LEVEL_NAMES, parseLogLevel } from '../utils/logger';
 import { Environment } from './environment.types';
 import { MODEL_KINDS, type ModelKind } from '../types/models';
 import { isLoopbackHost } from '../utils/hosts';
@@ -153,6 +154,10 @@ export function validateEnvironment(env: Environment): string[] {
 
   if (env.models?.benchmark?.enabled !== undefined && typeof env.models.benchmark.enabled !== 'boolean') {
     errors.push(`\`models.benchmark.enabled\` must be true or false (got ${JSON.stringify(env.models.benchmark.enabled)}).`);
+  }
+
+  if (env.node?.logLevel !== undefined && parseLogLevel(env.node.logLevel) === undefined) {
+    errors.push(`\`node.logLevel\` must be one of ${LOG_LEVEL_NAMES.join(', ')} (got ${JSON.stringify(env.node.logLevel)}).`);
   }
 
   if (env.node?.tags !== undefined) {

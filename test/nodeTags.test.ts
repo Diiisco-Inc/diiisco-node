@@ -7,6 +7,7 @@ import { describe, expect, test } from 'bun:test';
 import { withDefaults } from '../src/environment/defaults';
 import { validateEnvironment } from '../src/environment/validate';
 import { MAX_TAGS, parseTags } from '../src/utils/nodeInfo';
+import { LOG_LEVEL_NAMES, LogLevel, parseLogLevel } from '../src/utils/logger';
 
 const localWith = (tags: unknown) =>
   validateEnvironment(withDefaults({
@@ -64,5 +65,28 @@ describe('parseTags (peer-supplied tags)', () => {
 
   test('an empty list is valid', () => {
     expect(parseTags([])).toEqual([]);
+  });
+});
+
+// Plan 020 lives here with the other `node.*` settings.
+describe('node.logLevel', () => {
+  const levelErrors = (logLevel: unknown) =>
+    validateEnvironment(withDefaults({
+      local: { enabled: true, privateTopic: 'tags-test/models/1.0.0' },
+      node: { logLevel } as any,
+    })).filter((e) => e.includes('node.logLevel'));
+
+  test('the four level names pass, and a typo is named', () => {
+    for (const level of LOG_LEVEL_NAMES) expect(levelErrors(level)).toEqual([]);
+    expect(levelErrors('verbose')).toEqual(['`node.logLevel` must be one of debug, info, warn, error (got "verbose").']);
+    expect(levelErrors(1)).toHaveLength(1);
+  });
+
+  test('parseLogLevel is case-insensitive and rejects anything else', () => {
+    expect(parseLogLevel('DEBUG')).toBe(LogLevel.DEBUG);
+    expect(parseLogLevel(' warn ')).toBe(LogLevel.WARN);
+    expect(parseLogLevel('error')).toBe(LogLevel.ERROR);
+    expect(parseLogLevel('silent')).toBeUndefined();
+    expect(parseLogLevel(undefined)).toBeUndefined();
   });
 });
