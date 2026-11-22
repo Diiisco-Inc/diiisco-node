@@ -1,5 +1,5 @@
 /**
- * `diiisco benchmark [model ...] [--list] [--json] [--verbose]` — re-measure (or, with
+ * `diiisco benchmark [model ...] [--list | --missing] [--json] [--verbose]` — re-measure (or, with
  * `--list`, show) each chat model's time to first token and tokens/s, and each
  * decision model's response time (plan 018).
  *
@@ -7,6 +7,9 @@
  * run never races its live samples or its writes to `model-benchmarks.json`.
  * With none running, this process measures against the configured backend
  * itself: no libp2p, no wallet.
+ *
+ * `--missing` (plan 021) measures only models with no figures yet (or, on
+ * Ollama, a re-pulled one): what a node does by itself at startup.
  *
  * `--verbose` (plan 020) prints each step — what the runtime holds in memory,
  * unloads, every run's timing or failure — on stderr, so it never mixes with
@@ -22,7 +25,7 @@ import { logger, LogLevel } from '../../utils/logger';
 import { InferenceBackends, resolveBackends } from '../../utils/backendPool';
 import { ModelAvailabilityMonitor } from '../../utils/modelAvailability';
 import {
-  Benchmarker, MAX_BENCHMARK_MODELS, PerformanceStore, WarmthTracker, benchmarkRequest, performancePath, type BenchmarkResult,
+  Benchmarker, MAX_BENCHMARK_MODELS, PerformanceStore, WarmthTracker, benchmarkRequest, performancePath, type BenchmarkMode, type BenchmarkResult,
 } from '../../utils/modelPerformance';
 import { EventEmitter } from 'node:events';
 import type { PerformanceFigure } from '../../types/performance';
@@ -32,6 +35,7 @@ export interface BenchmarkOptions {
   list: boolean;
   json: boolean;
   verbose: boolean;
+  missing: boolean;
 }
 
 /** One trace line, on stderr. */
@@ -39,7 +43,17 @@ const printTrace = (line: string) => process.stderr.write(`${colour.dim(line)}\n
 
 const fmt = (f: PerformanceFigure | undefined, unit: string) => (f ? `${f.value}${unit} ${colour.dim(`(${f.samples})`)}` : colour.dim('—'));
 
-function printResults(results: BenchmarkResult[], list: boolean): void {
+function printResults(all: BenchmarkResult[], list: boolean): void {
+  // `--missing`: models that already had figures get one line, not a row each.
+  const skipped = all.filter((r) => r.skipped).map((r) => r.model);
+  const results = all.filter((r) => !r.skipped);
+  if (skipped.length > 0) {
+    info(colour.dim(`Already measured, so not measured again (${skipped.length}): ${skipped.join(', ')}`));
+    if (results.length === 0) {
+      info('Every model already has figures. Run without --missing to re-measure them.');
+      return;
+    }
+  }
   if (results.length === 0) {
     info(list ? 'No figures yet, and no chat or decision models are being served.' : 'No chat or decision models are being served, so there is nothing to measure.');
     return;
@@ -63,7 +77,8 @@ function printResults(results: BenchmarkResult[], list: boolean): void {
 }
 
 /** Measure in this process, for when no node is running. */
-async function runStandalone(models: string[], list: boolean, verbose: boolean): Promise<BenchmarkResult[]> {
+async function runStandalone(models: string[], mode: BenchmarkMode, verbose: boolean): Promise<BenchmarkResult[]> {
+  const { list } = mode;
   requireConfig();
   const env = loadConfig();
   assertValid(env);
@@ -85,7 +100,7 @@ async function runStandalone(models: string[], list: boolean, verbose: boolean):
 
   const benchmarker = new Benchmarker({ backend: backends, store, warmth: new WarmthTracker(backends), ollama: backends });
   try {
-    return await benchmarkRequest({ benchmarker, store, served: monitor.models(), requested: models, list: false, onTrace: verbose ? printTrace : undefined });
+    return await benchmarkRequest({ benchmarker, store, served: monitor.models(), requested: models, list: false, missingOnly: mode.missingOnly, onTrace: verbose ? printTrace : undefined });
   } finally {
     store.close();
   }
@@ -96,6 +111,10 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<void> {
   if (options.models.length > MAX_BENCHMARK_MODELS) {
     die(`Name at most ${MAX_BENCHMARK_MODELS} models at a time.`);
   }
+  if (options.list && options.missing) {
+    die('--list measures nothing, so it cannot be combined with --missing.', 'Use --list to see the figures, or --missing to measure only models without any.');
+  }
+  const mode: BenchmarkMode = { list: options.list, missingOnly: options.missing };
 
   const { state } = liveDaemon();
   let results: BenchmarkResult[];
@@ -108,7 +127,7 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<void> {
       if (verbose && !options.json) {
         info(colour.dim('The steps print when the node finishes. To follow them live, set node.logLevel to "debug" and run: diiisco logs -f'));
       }
-      const answer = await requestBenchmark(state.control.port, state.control.token, options.models, options.list, verbose);
+      const answer = await requestBenchmark(state.control.port, state.control.token, options.models, { ...mode, verbose });
       if (!answer.ok || !answer.value) throw new Error(answer.error ?? 'the node did not answer');
       if (verbose) {
         if (answer.value.trace) answer.value.trace.forEach(printTrace);
@@ -122,7 +141,7 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<void> {
       if (!options.json && !options.list) {
         info(colour.dim('The node is not running; measuring against the configured backend directly…'));
       }
-      results = await runStandalone(options.models, options.list, options.verbose && !options.list);
+      results = await runStandalone(options.models, mode, options.verbose && !options.list);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -133,7 +152,7 @@ export async function runBenchmark(options: BenchmarkOptions): Promise<void> {
   }
 
   const ok = results.every((r) => r.ok);
-  if (options.json) json({ ok, models: results.map(({ model, ok: fine, performance, error }) => ({ model, ok: fine, performance, error })) });
+  if (options.json) json({ ok, models: results.map(({ model, ok: fine, skipped, performance, error }) => ({ model, ok: fine, ...(skipped ? { skipped } : {}), performance, error })) });
   else printResults(results, options.list);
   if (!ok) process.exitCode = 1;
 }

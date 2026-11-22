@@ -21,6 +21,7 @@ ${b('Commands')}
   logs [-f] [-n N]       Show (or follow) daemon logs (default 100 lines)
   peers [--reconnect]    Show who the node is connected to; --reconnect redials now (no restart)
   benchmark [model ...]  Re-measure response times and tokens/s; --list shows current figures
+                         --missing measures only models with no figures yet
                          --verbose prints each step (memory, unloads, every run)
   serve                  Run the node in the foreground (Ctrl-C to stop)
   launch <app> [flags]   Point an agent tool at a DIIISCO node, starting one if needed

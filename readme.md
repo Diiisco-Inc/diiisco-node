@@ -446,12 +446,14 @@ For each chat model it serves, the node publishes three figures:
 diiisco benchmark                # re-measure every served chat and decision model
 diiisco benchmark gemma3:12b     # just one
 diiisco benchmark --list         # show the current figures and sample counts, measuring nothing
+diiisco benchmark --missing      # measure only models with no figures yet, e.g. after pulling new ones
 diiisco benchmark --json         # machine-readable
 diiisco benchmark --verbose      # also print each step: memory, unloads, every run's timing or error
 ```
 
 - **If the node is running**, the command asks the node to do the measuring. If you press Ctrl-C, the node still finishes the run and saves the result.
 - **If it isn't running**, the command measures against the configured backend itself.
+- **Without `--missing`**, it re-measures every model you name, or every served chat and decision model, even ones that already have figures. **With `--missing`**, it skips models that already have figures, as the node does by itself at startup (on Ollama, a re-pulled model counts as missing).
 
 **When a benchmark goes wrong.** `--verbose` shows what the runtime held in memory before and after, each unload, and each run as it starts and finishes. Without a running node, the steps print as they happen. With one, they print when it finishes; to follow them live, set `node.logLevel` to `"debug"` (or start the node with `DIIISCO_LOG_LEVEL=debug`) and run `diiisco logs -f`. The debug log is also what survives if the backend takes the whole machine down: its last lines show the step it died in.
 
