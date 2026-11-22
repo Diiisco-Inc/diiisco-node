@@ -50,7 +50,7 @@ import { createServer, createConnection, type Server, type Socket } from 'node:n
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { version } from './version';
 import type { PeerReport, ReconnectReport } from '../libp2p/peerReport';
-import { MAX_BENCHMARK_MODELS, type BenchmarkResult } from '../utils/modelPerformance';
+import { MAX_BENCHMARK_MODELS, type BenchmarkMode, type BenchmarkResult } from '../utils/modelPerformance';
 
 /** Longest request we will read before hanging up. A shutdown line is ~90 bytes. */
 const MAX_REQUEST_BYTES = 8192;
@@ -60,6 +60,18 @@ const SOCKET_TIMEOUT_MS = 5_000;
 
 /** A `reconnect` runs dials that time out at 10 s and a DHT walk, so it may be quiet for longer. */
 export const RECONNECT_TIMEOUT_MS = 60_000;
+
+/** What `benchmark` asks of the node: the mode, and whether to send the steps back. */
+export type BenchmarkRequestOptions = BenchmarkMode & { verbose?: boolean };
+
+/** The node's reply to `benchmark`: the results, and the steps when `verbose` was asked for. */
+export interface BenchmarkAnswer {
+  results: BenchmarkResult[];
+  trace?: string[];
+}
+
+/** Trace lines a node sends back for one `benchmark --verbose` (about a dozen per model). */
+export const MAX_TRACE_LINES = 2_000;
 
 /** A benchmark is a cold load plus a few generations per model; give a whole run plenty of room. */
 export const BENCHMARK_TIMEOUT_MS = 30 * 60_000;
@@ -120,7 +132,7 @@ export function startControlServer(options: {
   /** Redial now, for `reconnect`. Rejects with a message safe to show the user. */
   onReconnect?: () => Promise<unknown>;
   /** Report or re-measure model performance, for `benchmark`. Rejects with a message safe to show the user. */
-  onBenchmark?: (models: string[], list: boolean) => Promise<unknown>;
+  onBenchmark?: (models: string[], options: BenchmarkRequestOptions) => Promise<BenchmarkAnswer>;
 }): Promise<ControlServer> {
   const { token, onShutdown, onPeers, onReconnect, onBenchmark } = options;
   const state: ControlState = options.state ?? { ready: false, apiEnabled: true };
@@ -201,8 +213,8 @@ export function startControlServer(options: {
             return;
           }
           socket.setTimeout(BENCHMARK_TIMEOUT_MS, () => socket.destroy());
-          onBenchmark(models, request.list === true).then(
-            (results) => socket.end(`${JSON.stringify({ ok: true, results })}\n`),
+          onBenchmark(models, { list: request.list === true, missingOnly: request.missing === true, verbose: request.verbose === true }).then(
+            ({ results, trace }) => socket.end(`${JSON.stringify({ ok: true, results, trace })}\n`),
             (err: unknown) => socket.end(`${JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) })}\n`),
           );
           return;
@@ -450,8 +462,14 @@ export function requestBenchmark(
   port: number,
   token: string,
   models: string[],
-  list: boolean,
+  options: BenchmarkRequestOptions,
   timeoutMs = BENCHMARK_TIMEOUT_MS,
-): Promise<ControlQueryResult<BenchmarkResult[]>> {
-  return controlQuery<BenchmarkResult[]>(port, token, 'benchmark', (r) => r.results as BenchmarkResult[], timeoutMs, { models, list });
+): Promise<ControlQueryResult<BenchmarkAnswer>> {
+  const { list, missingOnly = false, verbose = false } = options;
+  const pick = (r: any): BenchmarkAnswer => ({
+    results: r.results as BenchmarkResult[],
+    // An older node ignores `verbose` and sends no trace.
+    trace: Array.isArray(r.trace) ? r.trace.filter((l: unknown): l is string => typeof l === 'string') : undefined,
+  });
+  return controlQuery<BenchmarkAnswer>(port, token, 'benchmark', pick, timeoutMs, { models, list, missing: missingOnly, verbose });
 }

@@ -6,6 +6,17 @@ export enum LogLevel {
   SILENT = 4,
 }
 
+/** The names `node.logLevel` and `DIIISCO_LOG_LEVEL` accept (plan 020). */
+export const LOG_LEVEL_NAMES = ['debug', 'info', 'warn', 'error'] as const;
+export type LogLevelName = (typeof LOG_LEVEL_NAMES)[number];
+
+/** `"debug"` → `LogLevel.DEBUG`, case-insensitive; `undefined` for anything else. */
+export function parseLogLevel(value: unknown): LogLevel | undefined {
+  if (typeof value !== 'string') return undefined;
+  const index = (LOG_LEVEL_NAMES as readonly string[]).indexOf(value.trim().toLowerCase());
+  return index === -1 ? undefined : (index as LogLevel);
+}
+
 class Logger {
   private level: LogLevel;
 

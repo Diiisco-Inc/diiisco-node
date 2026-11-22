@@ -84,7 +84,7 @@ export function startStubBackend(behaviour: StubBehaviour = {}): StubBackend {
 
       if (b.ollama) {
         if (url.pathname === '/api/version') return Response.json({ version: '0.12.0' });
-        if (url.pathname === '/api/ps') return Response.json({ models: [...state.loaded].map((name) => ({ name, model: name })) });
+        if (url.pathname === '/api/ps') return Response.json({ models: [...state.loaded].map((name) => ({ name, model: name, size: 8_400_000_000, size_vram: 8_000_000_000 })) });
         if (url.pathname === '/api/tags') {
           return Response.json({ models: [...state.digests].map(([name, digest]) => ({ name, model: name, digest })) });
         }

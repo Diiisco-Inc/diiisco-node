@@ -11,7 +11,7 @@ import environment from "./environment/runtime";
 import { Environment } from "./environment/environment.types";
 import { InferenceBackends, resolveBackends } from "./utils/backendPool";
 import { ModelAvailability, ModelAvailabilityMonitor } from "./utils/modelAvailability";
-import { Benchmarker, PerformanceStore, WarmthTracker, benchmarkRequest, performanceObserver, performancePath, type BenchmarkResult } from './utils/modelPerformance';
+import { Benchmarker, PerformanceStore, WarmthTracker, benchmarkRequest, performanceObserver, performancePath, type BenchmarkMode, type BenchmarkResult, type BenchmarkTrace } from './utils/modelPerformance';
 import quoteEngine from "./utils/quoteEngine";
 import { logger } from './utils/logger';
 import { DirectMessagingHandler } from './messaging/directMessaging';
@@ -176,13 +176,13 @@ class Application extends EventEmitter {
    * figures through the node's own benchmarker, so the run never races its
    * live samples or file writes. Rejects with a message safe to show the user.
    */
-  async benchmark(requested: string[], list: boolean): Promise<BenchmarkResult[]> {
+  async benchmark(requested: string[], mode: BenchmarkMode, onTrace?: BenchmarkTrace): Promise<BenchmarkResult[]> {
     if (!this.benchmarker || !this.performance) {
       throw new Error('performance measurement is off on this node (models.benchmark.enabled is false)');
     }
     if (this.isShuttingDown) throw new Error('the node is shutting down');
     await this.models.refresh();
-    return benchmarkRequest({ benchmarker: this.benchmarker, store: this.performance, served: this.models.models(), requested, list });
+    return benchmarkRequest({ benchmarker: this.benchmarker, store: this.performance, served: this.models.models(), requested, ...mode, onTrace });
   }
 
   async start() {

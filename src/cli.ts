@@ -101,7 +101,7 @@ async function main(argv: string[]): Promise<void> {
     case 'benchmark': {
       const parsed = parseArgs(rest, { valueFlags: ['config'] });
       applyConfigOverride(parsed);
-      return runBenchmark({ models: parsed.positionals, list: flagBoolean(parsed, 'list'), json: flagBoolean(parsed, 'json') });
+      return runBenchmark({ models: parsed.positionals, list: flagBoolean(parsed, 'list'), json: flagBoolean(parsed, 'json'), verbose: flagBoolean(parsed, 'verbose'), missing: flagBoolean(parsed, 'missing') });
     }
 
     case 'setup':

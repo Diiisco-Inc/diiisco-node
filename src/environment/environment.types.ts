@@ -1,3 +1,4 @@
+import type { LogLevelName } from '../utils/logger';
 import { QuoteCreationFunction, QuoteSelectionFunction } from '../types/quotes';
 import type { ModelKind } from '../types/models';
 
@@ -231,6 +232,12 @@ export interface Environment {
      * Lowercase letters, digits and hyphens; at most 16 (see `src/utils/nodeInfo.ts`).
      */
     tags?: string[];
+    /**
+     * How much the node logs: "debug" | "info" | "warn" | "error" (default
+     * "info"). `DIIISCO_LOG_LEVEL` overrides it. "debug" adds every step of
+     * each benchmark, among other detail (plan 020).
+     */
+    logLevel?: LogLevelName;
     publicStats?: boolean;  // default true — set false to stop publishing detailed stats on status pages
     statusPages?: boolean;  // default true — set false to disable the public status page routes
     /**
